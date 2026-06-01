@@ -44,6 +44,11 @@ class MiniPlayer extends ConsumerWidget {
                             width: 56,
                             height: 56,
                             fit: BoxFit.cover,
+                            // Декод в маленький bitmap — экономит CPU
+                            // и RAM (см. подробный комментарий в
+                            // search_page.dart).
+                            memCacheWidth: 112,
+                            memCacheHeight: 112,
                             // Тихий фоллбэк — без него 404 от img.youtube.com
                             // улетают как Unhandled Exception в логах.
                             errorWidget: (_, __, ___) => Container(

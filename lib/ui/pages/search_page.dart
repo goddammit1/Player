@@ -112,6 +112,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                 ? const Center(child: Text('Введите запрос для поиска'))
                 : ListView.builder(
                     itemCount: state.results.length,
+                    // Чуть меньше дефолтного (~250), чтобы не держать в
+                    // дереве лишние CachedNetworkImage за пределами
+                    // видимой области.
+                    cacheExtent: 200,
                     itemBuilder: (context, i) {
                       final t = state.results[i];
                       return ListTile(
@@ -123,6 +127,18 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                                   width: 48,
                                   height: 48,
                                   fit: BoxFit.cover,
+                                  // Декодим картинку в памяти как 96x96
+                                  // (× device pixel ratio Flutter добавит
+                                  // сам). Исходный PNG с Genius может
+                                  // быть 600x600 и весить под мегабайт —
+                                  // декодировать его полным размером для
+                                  // 48×48 виджета = впустую жечь CPU и
+                                  // ~5 МБ RAM на КАЖДУЮ обложку.
+                                  memCacheWidth: 96,
+                                  memCacheHeight: 96,
+                                  fadeInDuration: const Duration(
+                                    milliseconds: 120,
+                                  ),
                                   errorWidget: (context, url, error) =>
                                       const _ArtworkPlaceholder(),
                                 )

@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/track.dart';
+import '../sources/muzmo_source.dart';
 import '../sources/source_registry.dart';
 import 'player_service.dart';
 
@@ -62,11 +63,26 @@ class SearchController extends StateNotifier<SearchState> {
     }
     final useSource = sourceId ?? _sourceId;
     state = state.copyWith(query: query, loading: true, error: null);
+    final myQuery = query;
     try {
       final source = SourceRegistry.instance.require(useSource);
       final results = await source.search(query);
+      // Перед публикацией результатов убеждаемся, что пользователь не
+      // успел ввести новый запрос или сменить источник.
+      if (state.query != myQuery || _sourceId != useSource) return;
       state = state.copyWith(results: results, loading: false);
+
+      // Для Muzmo обогащаем обложками асинхронно: треки уже видны,
+      // обложки доезжают волной по мере получения от Genius/iTunes.
+      if (source is MuzmoSource) {
+        source.enrichArtworksInBackground(results, (updated) {
+          // Игнорируем колбэки от устаревшего поиска.
+          if (state.query != myQuery || _sourceId != useSource) return;
+          state = state.copyWith(results: updated);
+        });
+      }
     } catch (e) {
+      if (state.query != myQuery) return;
       state = state.copyWith(loading: false, error: e.toString());
     }
   }

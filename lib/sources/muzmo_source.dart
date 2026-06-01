@@ -96,12 +96,23 @@ class MuzmoSource implements TrackSource {
 
     final tracks = _parseTracks(resp.data!).take(limit).toList();
 
-    // Обогащаем обложками асинхронно и параллельно, но с ограничением
-    // (одновременно не более 6 запросов к Genius/iTunes — иначе
-    // получаем 429). По мере получения — обновляем элементы списка.
-    await _enrichArtworks(tracks);
-
+    // Обложки НЕ ждём здесь — иначе UI висит после Enter, пока 20
+    // параллельных запросов к Genius/iTunes отработают. Список треков
+    // возвращаем сразу; обогащение запускается вызывающей стороной
+    // через [enrichArtworksInBackground].
     return tracks;
+  }
+
+  /// Запускает асинхронное обогащение списка треков обложками. Каждый
+  /// раз, когда обложка для какого-то трека найдена, вызывается
+  /// [onUpdate] с новым списком (с тем же порядком, обновлены только
+  /// поля artworkUrl). Метод возвращается сразу — работа идёт в фоне.
+  void enrichArtworksInBackground(
+    List<Track> tracks,
+    void Function(List<Track> updated) onUpdate,
+  ) {
+    final mutable = List<Track>.of(tracks);
+    unawaited(_enrichArtworks(mutable, onUpdate));
   }
 
   /// Парсит HTML страницы поиска muzmo и возвращает треки в исходном
@@ -207,15 +218,28 @@ class MuzmoSource implements TrackSource {
     return null;
   }
 
-  /// Параллельно (с ограничением concurrency) запрашиваем обложки и
-  /// in-place мутируем элементы списка через copyWith. Список треков
-  /// уже находится в [results] поискового стейта — Riverpod увидит
-  /// новый список после await search(), но мы можем чуть лучше: вызвать
-  /// callback. На первом этапе достаточно дождаться всех артов перед
-  /// возвратом из search() — выдача и так показывается с лоадером.
-  Future<void> _enrichArtworks(List<Track> tracks) async {
+  /// Параллельно (с ограничением concurrency) запрашиваем обложки.
+  /// По мере получения каждого URL мутируем элемент списка через
+  /// copyWith и пушим обновлённый список через [onUpdate], если он
+  /// задан. Без [onUpdate] просто мутируем `tracks` in-place.
+  ///
+  /// Уведомления через [onUpdate] дебаунсятся (50 мс), чтобы не делать
+  /// 20 setState-ов подряд при «пакетном» возврате обложек.
+  Future<void> _enrichArtworks(
+    List<Track> tracks, [
+    void Function(List<Track> updated)? onUpdate,
+  ]) async {
     const concurrency = 6;
     var index = 0;
+
+    Timer? notifyTimer;
+    void scheduleNotify() {
+      if (onUpdate == null) return;
+      notifyTimer?.cancel();
+      notifyTimer = Timer(const Duration(milliseconds: 50), () {
+        onUpdate(List<Track>.of(tracks));
+      });
+    }
 
     Future<void> worker() async {
       while (true) {
@@ -228,6 +252,7 @@ class MuzmoSource implements TrackSource {
               .timeout(const Duration(seconds: 6));
           if (url != null && url.isNotEmpty) {
             tracks[i] = t.copyWith(artworkUrl: url);
+            scheduleNotify();
           }
         } catch (_) {
           // best-effort
@@ -236,6 +261,11 @@ class MuzmoSource implements TrackSource {
     }
 
     await Future.wait(List.generate(concurrency, (_) => worker()));
+
+    // Финальный push — на случай если последнее обновление пришлось
+    // на «хвост» дебаунса.
+    notifyTimer?.cancel();
+    if (onUpdate != null) onUpdate(List<Track>.of(tracks));
   }
 
   @override

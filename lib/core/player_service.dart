@@ -14,13 +14,13 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer(
     audioLoadConfiguration: const AudioLoadConfiguration(
       androidLoadControl: AndroidLoadControl(
-        // Начальный буфер 1.5 с — быстрый старт (вместо «15 секунд»),
-        // но достаточно, чтобы не уходить в buffering на медленной
-        // сети. После rebuffer / seek нам нужно лишь ~0.8 с — данные
-        // уже на диске благодаря LockCachingAudioSource, лишние
-        // секунды ожидания только мешают перемотке.
-        minBufferDuration: Duration(seconds: 30),
-        maxBufferDuration: Duration(seconds: 90),
+        // Поскольку весь трек кэшируется в локальный файл
+        // (LockCachingAudioSource), огромный rolling-буфер в RAM
+        // лишний — он только давит на GC при длинной очереди.
+        // 15..30 секунд более чем достаточно для seek/rebuffer,
+        // дальше данные читаются с диска мгновенно.
+        minBufferDuration: Duration(seconds: 15),
+        maxBufferDuration: Duration(seconds: 30),
         bufferForPlaybackDuration: Duration(milliseconds: 1500),
         bufferForPlaybackAfterRebufferDuration: Duration(milliseconds: 800),
       ),
@@ -119,6 +119,18 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       }
       _log('[$myGen] AudioSource ready in ${sw.elapsedMilliseconds} ms');
 
+      // Явно стопаем плеер перед загрузкой нового источника. Это
+      // детерминированно освобождает предыдущий LockCachingAudioSource
+      // (его прокси-сервер, HTTP-клиент, ExoPlayer внутренние буферы),
+      // вместо того чтобы полагаться на lazy-cleanup в event loop'е.
+      // На активном переключении треков это убирает накапливающиеся
+      // микро-фризы UI после 3-5 нажатий «next».
+      try {
+        await _player.stop();
+      } catch (_) {
+        // best-effort; stop из idle состояния безопасен
+      }
+
       await _player.setAudioSource(audioSource, preload: true);
 
       if (myGen != _loadGeneration) {
@@ -131,9 +143,10 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
           ' starting playback');
       await _player.play();
 
-      // После старта текущего трека — фоном прогреваем следующий,
-      // чтобы skipToNext был мгновенным.
-      _prefetchNext(myGen);
+      // Прогрев следующего трека — с задержкой, чтобы не конкурировать
+      // за сеть/CPU с буферизацией текущего. К моменту реального
+      // skipToNext этот prefetch уже отработает.
+      _schedulePrefetchNext(myGen);
     } catch (e, st) {
       if (myGen != _loadGeneration) return;
       _isLoading = false;
@@ -142,22 +155,33 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  /// Best-effort предзагрузка манифеста следующего трека.
-  void _prefetchNext(int gen) {
-    final nextIdx = _currentIndex + 1;
-    if (nextIdx < 0 || nextIdx >= _queue.length) return;
-    final next = _queue[nextIdx];
-    final src = SourceRegistry.instance.require(next.sourceId);
-    unawaited(() async {
-      try {
-        await src.prefetch(next);
-        if (gen == _loadGeneration) {
-          _log('[$gen] prefetched next: "${next.title}"');
+  /// Отложенный таймер прогрева следующего трека.
+  Timer? _prefetchTimer;
+
+  /// Best-effort предзагрузка манифеста следующего трека. Запускается
+  /// с задержкой [_prefetchDelay], чтобы не конкурировать с заливкой
+  /// текущего трека в буфер ExoPlayer'а на первых секундах.
+  static const Duration _prefetchDelay = Duration(seconds: 5);
+
+  void _schedulePrefetchNext(int gen) {
+    _prefetchTimer?.cancel();
+    _prefetchTimer = Timer(_prefetchDelay, () {
+      if (gen != _loadGeneration) return;
+      final nextIdx = _currentIndex + 1;
+      if (nextIdx < 0 || nextIdx >= _queue.length) return;
+      final next = _queue[nextIdx];
+      final src = SourceRegistry.instance.require(next.sourceId);
+      unawaited(() async {
+        try {
+          await src.prefetch(next);
+          if (gen == _loadGeneration) {
+            _log('[$gen] prefetched next: "${next.title}"');
+          }
+        } catch (_) {
+          // молча
         }
-      } catch (_) {
-        // молча
-      }
-    }());
+      }());
+    });
   }
 
   // ===== audio_service controls =====
