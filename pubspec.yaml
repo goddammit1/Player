@@ -1,0 +1,49 @@
+name: player
+description: "Music player with multi-source parsing"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # --- Audio / background playback ---
+  just_audio: ^0.9.40
+  audio_service: ^0.18.15
+  audio_session: ^0.1.21
+
+  # --- Source parsers ---
+  youtube_explode_dart: ^3.1.0
+  dio: ^5.7.0
+  dio_cookie_manager: ^3.1.1
+  cookie_jar: ^4.0.8
+  html: ^0.15.5
+
+  # --- State management ---
+  flutter_riverpod: ^2.6.1
+
+  # --- Local storage ---
+  sqflite: ^2.4.1
+  path_provider: ^2.1.5
+  path: ^1.9.0
+  shared_preferences: ^2.3.3
+
+  # --- UI ---
+  cached_network_image: ^3.4.1
+  marquee: ^2.3.0
+  rxdart: ^0.28.0
+
+  # --- Permissions / offline ---
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
