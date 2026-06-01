@@ -1,7 +1,7 @@
 name: player
 description: "Music player with multi-source parsing"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.11.4
@@ -36,6 +36,10 @@ dependencies:
   cached_network_image: ^3.4.1
   marquee: ^2.3.0
   rxdart: ^0.28.0
+
+  # --- Misc ---
+  uuid: ^4.5.1
+  package_info_plus: ^8.0.2
 
   # --- Permissions / offline ---
   permission_handler: ^11.3.1

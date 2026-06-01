@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/playlist.dart';
 import '../models/track.dart';
 import '../sources/muzmo_source.dart';
 import '../sources/source_registry.dart';
 import 'player_service.dart';
+import 'playlist_repository.dart';
 
 /// PlayerService инициализируется в main.dart и пробрасывается сюда через
 /// override. См. main.dart -> ProviderScope(overrides: [...]).
@@ -92,4 +94,18 @@ final searchProvider = StateNotifierProvider<SearchController, SearchState>((
   ref,
 ) {
   return SearchController();
+});
+
+/// Поток всех пользовательских плейлистов. UI слушает через
+/// `ref.watch(playlistsProvider)` и получает `AsyncValue<List<Playlist>>`.
+final playlistsProvider = StreamProvider<List<Playlist>>((ref) async* {
+  // Гарантируем, что данные подняты с диска до первого emit.
+  await PlaylistRepository.instance.ensureLoaded();
+  yield PlaylistRepository.instance.current;
+  yield* PlaylistRepository.instance.stream;
+});
+
+/// Удобный доступ к репозиторию из UI: для мутаций.
+final playlistRepositoryProvider = Provider<PlaylistRepository>((ref) {
+  return PlaylistRepository.instance;
 });

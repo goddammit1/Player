@@ -1,11 +1,16 @@
-import 'package:cached_network_image/cached_network_image.dart';
+import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../main.dart' show AppColors;
 import '../../sources/source_registry.dart';
+import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/artwork.dart';
 import '../widgets/mini_player.dart';
 
+/// Экран поиска: открывается с главной по тапу на поисковую таблетку.
+/// Тап на трек = play; long-press = bottom sheet «Add to playlist».
 class SearchPage extends ConsumerStatefulWidget {
   const SearchPage({super.key});
 
@@ -15,10 +20,21 @@ class SearchPage extends ConsumerStatefulWidget {
 
 class _SearchPageState extends ConsumerState<SearchPage> {
   final _controller = TextEditingController();
+  final _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    // Автофокус через post-frame, чтобы анимация перехода не глитчила.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focus.requestFocus();
+    });
+  }
 
   @override
   void dispose() {
     _controller.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -31,140 +47,115 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     final currentSourceId = searchCtl.sourceId;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Player'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(108),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Переключатель источников: YouTube / Muzmo / ...
-              SizedBox(
-                height: 40,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  itemCount: sources.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (context, i) {
-                    final s = sources[i];
-                    final selected = s.id == currentSourceId;
-                    return ChoiceChip(
-                      label: Text(s.displayName),
-                      selected: selected,
-                      onSelected: (_) => searchCtl.setSourceId(s.id),
-                    );
+      backgroundColor: AppColors.background,
+      body: Stack(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                _TopBar(
+                  controller: _controller,
+                  focus: _focus,
+                  loading: state.loading,
+                  onSubmit: (q) => searchCtl.search(q),
+                  onClear: () {
+                    _controller.clear();
+                    searchCtl.search('');
                   },
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                child: TextField(
-                  controller: _controller,
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    hintText: 'Поиск треков...',
-                    filled: true,
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: state.loading
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          )
-                        : IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _controller.clear();
-                              ref.read(searchProvider.notifier).search('');
-                            },
-                          ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
-                  onSubmitted: (q) =>
-                      ref.read(searchProvider.notifier).search(q),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      body: Column(
-        children: [
-          if (state.error != null)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              color: Colors.red.withValues(alpha: 0.1),
-              child: Text(
-                state.error!,
-                style: const TextStyle(color: Colors.red),
-              ),
-            ),
-          Expanded(
-            child: state.results.isEmpty && !state.loading
-                ? const Center(child: Text('Введите запрос для поиска'))
-                : ListView.builder(
-                    itemCount: state.results.length,
-                    // Чуть меньше дефолтного (~250), чтобы не держать в
-                    // дереве лишние CachedNetworkImage за пределами
-                    // видимой области.
-                    cacheExtent: 200,
+                // Чипы переключения источников.
+                SizedBox(
+                  height: 44,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    itemCount: sources.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
                     itemBuilder: (context, i) {
-                      final t = state.results[i];
-                      return ListTile(
-                        leading: ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: t.artworkUrl != null
-                              ? CachedNetworkImage(
-                                  imageUrl: t.artworkUrl!,
-                                  width: 48,
-                                  height: 48,
-                                  fit: BoxFit.cover,
-                                  // Декодим картинку в памяти как 96x96
-                                  // (× device pixel ratio Flutter добавит
-                                  // сам). Исходный PNG с Genius может
-                                  // быть 600x600 и весить под мегабайт —
-                                  // декодировать его полным размером для
-                                  // 48×48 виджета = впустую жечь CPU и
-                                  // ~5 МБ RAM на КАЖДУЮ обложку.
-                                  memCacheWidth: 96,
-                                  memCacheHeight: 96,
-                                  fadeInDuration: const Duration(
-                                    milliseconds: 120,
-                                  ),
-                                  errorWidget: (context, url, error) =>
-                                      const _ArtworkPlaceholder(),
-                                )
-                              : const _ArtworkPlaceholder(),
+                      final s = sources[i];
+                      final selected = s.id == currentSourceId;
+                      return ChoiceChip(
+                        label: Text(s.displayName),
+                        selected: selected,
+                        labelStyle: TextStyle(
+                          color: selected
+                              ? Colors.black
+                              : AppColors.textPrimary,
+                          fontWeight: FontWeight.w600,
                         ),
-                        title: Text(
-                          t.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          t.artist,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: t.duration != null
-                            ? Text(_formatDuration(t.duration!))
-                            : null,
-                        onTap: () {
-                          player.setQueue(state.results, startIndex: i);
-                        },
+                        backgroundColor: AppColors.elevated,
+                        selectedColor: AppColors.textPrimary,
+                        side: BorderSide.none,
+                        showCheckmark: false,
+                        onSelected: (_) => searchCtl.setSourceId(s.id),
                       );
                     },
                   ),
+                ),
+                if (state.error != null)
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      state.error!,
+                      style: const TextStyle(color: Colors.redAccent),
+                    ),
+                  ),
+                Expanded(
+                  child: state.results.isEmpty && !state.loading
+                      ? const Center(
+                          child: Text(
+                            'Type to search...',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          ),
+                        )
+                      // Стрим текущего MediaItem нужен, чтобы
+                      // подсветить трек, который сейчас играет.
+                      // Сравниваем по globalId — он же лежит в
+                      // MediaItem.id (см. PlayerService._toMediaItem).
+                      : StreamBuilder<MediaItem?>(
+                          stream: player.mediaItem,
+                          builder: (context, mediaSnap) {
+                            final currentId = mediaSnap.data?.id;
+                            return ListView.builder(
+                              itemCount: state.results.length,
+                              cacheExtent: 200,
+                              padding: const EdgeInsets.fromLTRB(8, 8, 8, 120),
+                              itemBuilder: (context, i) {
+                                final t = state.results[i];
+                                final isPlaying =
+                                    currentId != null &&
+                                    currentId == t.globalId;
+                                return _TrackTile(
+                                  track: t,
+                                  isPlaying: isPlaying,
+                                  player: player,
+                                  duration: t.duration != null
+                                      ? _formatDuration(t.duration!)
+                                      : null,
+                                  onTap: () => player.setQueue(
+                                    state.results,
+                                    startIndex: i,
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
           ),
-          const MiniPlayer(),
+          const Align(
+            alignment: Alignment.bottomCenter,
+            child: SafeArea(top: false, child: MiniPlayer()),
+          ),
         ],
       ),
     );
@@ -177,16 +168,189 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   }
 }
 
-class _ArtworkPlaceholder extends StatelessWidget {
-  const _ArtworkPlaceholder();
+/// Один элемент поисковой выдачи. Выделен в отдельный виджет ради:
+/// 1. подсветки текущего проигрываемого трека (фон + цветной title +
+///    маленький play-индикатор слева от обложки),
+/// 2. локализации rebuild'ов: при изменении mediaItem ВСЕ tile'ы
+///    перерисовываются всё равно из StreamBuilder, но виджет здесь
+///    более структурирован и удобен для дальнейших правок.
+class _TrackTile extends StatelessWidget {
+  const _TrackTile({
+    required this.track,
+    required this.isPlaying,
+    required this.player,
+    required this.onTap,
+    this.duration,
+  });
+
+  final dynamic track;
+  final bool isPlaying;
+  final dynamic player;
+  final VoidCallback onTap;
+  final String? duration;
 
   @override
   Widget build(BuildContext context) {
+    final accent = isPlaying
+        ? const Color(0xFF6EE7B7) // мягкий мятный — отличается от текста
+        : AppColors.textPrimary;
+
     return Container(
-      width: 48,
-      height: 48,
-      color: Colors.grey.shade300,
-      child: const Icon(Icons.music_note, color: Colors.white),
+      // Фоновое выделение трека, который играет: едва заметная плашка,
+      // чтобы пользователь сразу понимал «это я слушаю».
+      decoration: isPlaying
+          ? BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(12),
+            )
+          : null,
+      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        leading: Stack(
+          alignment: Alignment.center,
+          children: [
+            Artwork(url: track.artworkUrl, size: 48, borderRadius: 8),
+            if (isPlaying)
+              // Кружок-индикатор поверх обложки: показывает, что трек
+              // активен. Не запускаем здесь анимацию (волны/эквалайзер)
+              // — статичная иконка не отвлекает от скролла.
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                alignment: Alignment.center,
+                child: Icon(Icons.equalizer_rounded, color: accent, size: 22),
+              ),
+          ],
+        ),
+        title: Text(
+          track.title as String,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: accent,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        subtitle: Text(
+          track.artist as String,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+          ),
+        ),
+        trailing: duration != null
+            ? Text(
+                duration!,
+                style: const TextStyle(color: AppColors.textSecondary),
+              )
+            : null,
+        onTap: onTap,
+        onLongPress: () => showAddToPlaylistSheet(context, track),
+      ),
+    );
+  }
+}
+
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.controller,
+    required this.focus,
+    required this.loading,
+    required this.onSubmit,
+    required this.onClear,
+  });
+  final TextEditingController controller;
+  final FocusNode focus;
+  final bool loading;
+  final ValueChanged<String> onSubmit;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.chevron_left_rounded, size: 28),
+            color: AppColors.textPrimary,
+            // popUntil(first) — если в стеке между home и search
+            // случайно оказалась player_page (например, после быстрого
+            // тапа), back из поиска возвращает строго на home.
+            onPressed: () => Navigator.of(context)
+                .popUntil((route) => route.isFirst),
+          ),
+          Expanded(
+            child: Container(
+              height: 44,
+              decoration: BoxDecoration(
+                color: AppColors.elevated,
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(width: 14),
+                  const Icon(
+                    Icons.search_rounded,
+                    color: AppColors.textSecondary,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: controller,
+                      focusNode: focus,
+                      textInputAction: TextInputAction.search,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 15,
+                      ),
+                      decoration: const InputDecoration(
+                        hintText: 'Search',
+                        hintStyle: TextStyle(
+                          color: AppColors.textSecondary,
+                        ),
+                        border: InputBorder.none,
+                        isCollapsed: true,
+                        contentPadding: EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      onSubmitted: onSubmit,
+                    ),
+                  ),
+                  if (loading)
+                    const Padding(
+                      padding: EdgeInsets.only(right: 12),
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  else if (controller.text.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: AppColors.textSecondary,
+                        size: 20,
+                      ),
+                      onPressed: onClear,
+                    )
+                  else
+                    const SizedBox(width: 8),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
