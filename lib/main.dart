@@ -20,9 +20,11 @@ class AppColors {
   static const Color elevated = Color(0xFF2A2A2A);
   static const Color elevatedHi = Color(0xFF3A3A3A);
   static const Color outline = Color(0xFF2F2F2F);
-  static const Color textPrimary = Color(0xFFFFFFFF);
-  static const Color textSecondary = Color(0xFF9A9A9A);
-  static const Color textTertiary = Color(0xFF6E6E6E);
+  // Весь текст в приложении — единый off-white #F9F8F8. Вторичный и
+  // третичный различаются только прозрачностью того же цвета.
+  static const Color textPrimary = Color(0xFFF9F8F8);
+  static const Color textSecondary = Color(0xB3F9F8F8); // 70% alpha
+  static const Color textTertiary = Color(0x80F9F8F8); // 50% alpha
 }
 
 Future<void> main() async {
@@ -91,6 +93,7 @@ class PlayerApp extends StatelessWidget {
     final base = ThemeData(
       brightness: Brightness.dark,
       useMaterial3: true,
+      fontFamily: 'Geist',
       scaffoldBackgroundColor: AppColors.background,
       canvasColor: AppColors.background,
       colorScheme: const ColorScheme.dark(
@@ -111,7 +114,7 @@ class PlayerApp extends StatelessWidget {
         textTheme: base.textTheme.apply(
           bodyColor: AppColors.textPrimary,
           displayColor: AppColors.textPrimary,
-          fontFamily: 'Roboto',
+          fontFamily: 'Geist',
         ),
         appBarTheme: const AppBarTheme(
           backgroundColor: AppColors.background,

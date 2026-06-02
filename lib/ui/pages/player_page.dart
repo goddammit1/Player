@@ -22,89 +22,108 @@ import '../widgets/snack.dart';
 /// 4. Кастомный прогресс-бар + времена.
 /// 5. Контролы: круг prev — pill play — круг next.
 /// 6. Bottom action bar: repeat — pill queue — three-dots.
-class PlayerPage extends ConsumerWidget {
+class PlayerPage extends StatelessWidget {
   const PlayerPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(child: PlayerContent()),
+    );
+  }
+}
+
+/// Содержимое полноэкранного плеера без [Scaffold]/[SafeArea].
+///
+/// Вынесено в отдельный виджет, чтобы переиспользовать как в
+/// самостоятельном маршруте [PlayerPage], так и внутри
+/// выезжающего снизу `NowPlayingOverlay`.
+///
+/// [onClose] — если задан, вызывается по нажатию кнопки «вниз»
+/// (используется оверлеем, чтобы свернуть плеер вместо `Navigator.pop`).
+class PlayerContent extends ConsumerWidget {
+  const PlayerContent({super.key, this.onClose});
+
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final player = ref.watch(playerServiceProvider);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: StreamBuilder<MediaItem?>(
-          stream: player.mediaItem,
-          builder: (context, snap) {
-            final item = snap.data;
-            if (item == null) {
-              return const Center(
-                child: Text(
-                  'No track',
-                  style: TextStyle(color: AppColors.textSecondary),
-                ),
-              );
-            }
+    return StreamBuilder<MediaItem?>(
+      stream: player.mediaItem,
+      builder: (context, snap) {
+        final item = snap.data;
+        if (item == null) {
+          return const Center(
+            child: Text(
+              'No track',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          );
+        }
 
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-              child: Column(
-                children: [
-                  _TopBar(item: item),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        LayoutBuilder(
-                          builder: (_, c) {
-                            final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                            return Artwork(
-                              url: item.artUri?.toString(),
-                              size: size,
-                              borderRadius: 28,
-                              memCacheSize: 800,
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 28),
-                        _TitleScroller(text: item.title),
-                        const SizedBox(height: 6),
-                        Text(
-                          item.artist ?? '',
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+          child: Column(
+            children: [
+              _TopBar(item: item, onClose: onClose),
+              const SizedBox(height: 12),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    LayoutBuilder(
+                      builder: (_, c) {
+                        final size = c.maxWidth.clamp(0, 420.0).toDouble();
+                        return Artwork(
+                          url: item.artUri?.toString(),
+                          size: size,
+                          borderRadius: 28,
+                          memCacheSize: 800,
+                        );
+                      },
                     ),
-                  ),
-                  _Controls(player: player),
-                  const SizedBox(height: 16),
-                  _ProgressBar(player: player, fallbackDuration: item.duration),
-                  const SizedBox(height: 24),
-                  _BottomActions(player: player, item: item),
-                ],
+                    const SizedBox(height: 28),
+                    _TitleScroller(text: item.title),
+                    const SizedBox(height: 6),
+                    Text(
+                      item.artist ?? '',
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            );
-          },
-        ),
-      ),
+              _Controls(player: player),
+              const SizedBox(height: 16),
+              _ProgressBar(player: player, fallbackDuration: item.duration),
+              const SizedBox(height: 24),
+              _BottomActions(player: player, item: item),
+            ],
+          ),
+        );
+      },
     );
   }
 }
+
 
 // =====================================================================
 //  TOP BAR
 // =====================================================================
 
 class _TopBar extends ConsumerWidget {
-  const _TopBar({required this.item});
+  const _TopBar({required this.item, this.onClose});
   final MediaItem item;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -115,7 +134,7 @@ class _TopBar extends ConsumerWidget {
           shape: const CircleBorder(),
           child: InkWell(
             customBorder: const CircleBorder(),
-            onTap: () => Navigator.of(context).pop(),
+            onTap: onClose ?? () => Navigator.of(context).pop(),
             child: const SizedBox(
               width: 44,
               height: 44,
@@ -126,6 +145,7 @@ class _TopBar extends ConsumerWidget {
             ),
           ),
         ),
+
         const Spacer(),
         Material(
           color: AppColors.elevated,

@@ -5,7 +5,8 @@ import '../../core/providers.dart';
 import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
-import '../widgets/mini_player.dart';
+import '../widgets/now_playing_overlay.dart';
+
 
 /// Экран отдельного плейлиста: большая обложка-мозаика, имя, кнопка
 /// Play, список треков. Используется и для пустого («только что
@@ -211,10 +212,8 @@ class PlaylistPage extends ConsumerWidget {
               ],
             ),
           ),
-          const Align(
-            alignment: Alignment.bottomCenter,
-            child: SafeArea(top: false, child: MiniPlayer()),
-          ),
+          const NowPlayingOverlay(),
+
         ],
       ),
     );

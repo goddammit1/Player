@@ -5,8 +5,9 @@ import '../../core/providers.dart';
 import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
-import '../widgets/mini_player.dart';
+import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
+
 import 'playlist_page.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
@@ -71,14 +72,11 @@ class HomePage extends ConsumerWidget {
               ],
             ),
           ),
-          // Mini-player float over content. Прижат к самому низу,
-          // через всю ширину — по дизайну это сплошная плашка,
-          // а не «карточка» с отступами.
-          const Align(
-            alignment: Alignment.bottomCenter,
-            child: SafeArea(top: false, child: MiniPlayer()),
-          ),
+          // Выезжающий снизу плеер. Сам использует Positioned и тянется
+          // за пальцем, разворачиваясь в полноэкранный плеер.
+          const NowPlayingOverlay(),
         ],
+
       ),
     );
   }
