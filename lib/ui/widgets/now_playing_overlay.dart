@@ -27,7 +27,7 @@ class NowPlayingOverlay extends ConsumerStatefulWidget {
   const NowPlayingOverlay({super.key});
 
   /// Высота свёрнутой мини-плашки (без учёта системного отступа снизу).
-  static const double miniHeight = 64;
+  static const double miniHeight = 72;
 
   @override
   ConsumerState<NowPlayingOverlay> createState() => _NowPlayingOverlayState();
@@ -203,15 +203,15 @@ class _MiniBar extends StatelessWidget {
     // Мини-плеер — прямоугольник со скруглёнными углами, не во всю ширину:
     // по бокам и снизу оставлен отступ, чтобы плашка «висела» над контентом
     // как карточка (единый стиль с поисковой строкой и тайлами).
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       child: Material(
         // Собственный непрозрачный фон мини-плашки. Раньше фон давала
         // панель целиком, но теперь она прозрачна (чтобы при drag не
         // мелькала серая подложка), поэтому фон нужен здесь. Он тает
         // вместе с самой плашкой (она обёрнута в Opacity снаружи).
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
@@ -221,13 +221,13 @@ class _MiniBar extends StatelessWidget {
               children: [
                 _ProgressFill(player: player, item: item),
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  padding: const EdgeInsets.fromLTRB(5, 0, 10, 0),
                   child: Row(
                     children: [
                       Artwork(
                         url: item.artUri?.toString(),
-                        size: 44,
-                        borderRadius: 8,
+                        size: 54,
+                        borderRadius: 11,
                         memCacheSize: 112,
                       ),
                       const SizedBox(width: 12),
@@ -242,7 +242,7 @@ class _MiniBar extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.w700,
                                 fontSize: 14,
                               ),
                             ),
@@ -253,7 +253,8 @@ class _MiniBar extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
-                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 10,
                               ),
                             ),
                           ],

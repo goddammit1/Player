@@ -5,6 +5,8 @@ import 'package:just_audio/just_audio.dart';
 import 'package:marquee/marquee.dart';
 import 'package:rxdart/rxdart.dart';
 
+import 'dart:ui'; // для lerpDouble
+
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
 import '../../main.dart' show AppColors;
@@ -65,159 +67,54 @@ class PlayerContent extends ConsumerWidget {
         }
 
         return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
           child: Column(
             children: [
-              _TopBar(item: item, onClose: onClose),
-              const SizedBox(height: 12),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    LayoutBuilder(
-                      builder: (_, c) {
-                        final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                        return Artwork(
-                          url: item.artUri?.toString(),
-                          size: size,
-                          borderRadius: 28,
-                          memCacheSize: 800,
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 28),
-                    _TitleScroller(text: item.title),
-                    const SizedBox(height: 6),
-                    Text(
-                      item.artist ?? '',
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
+              // Пустое пространство сверху — толкает всё вниз к центру
+              Expanded(child: SizedBox.shrink()),
+              
+              // Обложка без Expanded — занимает ровно свой размер
+              LayoutBuilder(
+                builder: (_, c) {
+                  final size = c.maxWidth.clamp(0, 420.0).toDouble();
+                  return Artwork(
+                    url: item.artUri?.toString(),
+                    size: size,
+                    borderRadius: 10,
+                    memCacheSize: 800,
+                  );
+                },
+              ),
+              
+              const SizedBox(height: 40),
+              _TitleScroller(text: item.title),
+              const SizedBox(height: 10),
+              Text(
+                item.artist ?? '',
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
+              const SizedBox(height: 40),
+
+
               _Controls(player: player),
-              const SizedBox(height: 16),
+              const SizedBox(height: 15),
               _ProgressBar(player: player, fallbackDuration: item.duration),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               _BottomActions(player: player, item: item),
+              
+              // Пустое пространство снизу — балансирует верхний Expanded
+              //Expanded(child: SizedBox.shrink()),
             ],
           ),
         );
       },
-    );
-  }
-}
-
-
-// =====================================================================
-//  TOP BAR
-// =====================================================================
-
-class _TopBar extends ConsumerWidget {
-  const _TopBar({required this.item, this.onClose});
-  final MediaItem item;
-  final VoidCallback? onClose;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return Row(
-      children: [
-        Material(
-          color: AppColors.elevated,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: onClose ?? () => Navigator.of(context).pop(),
-            child: const SizedBox(
-              width: 44,
-              height: 44,
-              child: Icon(
-                Icons.keyboard_arrow_down_rounded,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          ),
-        ),
-
-        const Spacer(),
-        Material(
-          color: AppColors.elevated,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: () => _showMore(context, ref, item),
-            child: const SizedBox(
-              width: 44,
-              height: 44,
-              child: Icon(
-                Icons.more_horiz_rounded,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  void _showMore(BuildContext context, WidgetRef ref, MediaItem item) {
-    final track = _trackFromMedia(item);
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      showDragHandle: true,
-      builder: (ctx) {
-        return SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.playlist_add_rounded),
-                title: const Text('Add to playlist'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  if (track != null) {
-                    showAddToPlaylistSheet(context, track);
-                  }
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.share_outlined),
-                title: const Text('Share'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  showSnack(context, 'Share — coming soon');
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  /// Восстановить Track из MediaItem (нам нужно для add-to-playlist).
-  /// Используем поля + extras: `sourceId` мы туда положили в
-  /// PlayerService._toMediaItem.
-  Track? _trackFromMedia(MediaItem m) {
-    final sourceId = m.extras?['sourceId'] as String?;
-    final trackId = m.extras?['trackId'] as String?;
-    if (sourceId == null || trackId == null) return null;
-    return Track(
-      id: trackId,
-      sourceId: sourceId,
-      title: m.title,
-      artist: m.artist ?? '',
-      duration: m.duration,
-      artworkUrl: m.artUri?.toString(),
     );
   }
 }
@@ -236,11 +133,12 @@ class _Controls extends StatelessWidget {
       // Раздаём 3 элемента по строке с одинаковыми отступами — это
       // выглядит симметрично и не зависит от ширины центральной pill.
       children: [
+        const SizedBox(width: 5),
         _RoundButton(
           icon: Icons.skip_previous_rounded,
           onTap: player.skipToPrevious,
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
           child: StreamBuilder<PlaybackState>(
             stream: player.playbackState,
@@ -282,11 +180,12 @@ class _Controls extends StatelessWidget {
             },
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         _RoundButton(
           icon: Icons.skip_next_rounded,
           onTap: player.skipToNext,
         ),
+        const SizedBox(width: 5),
       ],
     );
   }
@@ -358,12 +257,12 @@ class _RoundButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: AppColors.elevated,
-      shape: const CircleBorder(),
+      borderRadius: BorderRadius.circular(32),
       child: InkWell(
-        customBorder: const CircleBorder(),
+        borderRadius: BorderRadius.circular(32),
         onTap: onTap,
         child: SizedBox(
-          width: 64,
+          width: 56,
           height: 64,
           child: Icon(icon, color: AppColors.textPrimary, size: 28),
         ),
@@ -385,17 +284,34 @@ class _ProgressBar extends StatefulWidget {
   State<_ProgressBar> createState() => _ProgressBarState();
 }
 
-class _ProgressBarState extends State<_ProgressBar> {
+class _ProgressBarState extends State<_ProgressBar> 
+    with SingleTickerProviderStateMixin {
   /// Когда пользователь тянет ползунок — показываем эту позицию вместо
   /// реальной из стрима, иначе UI «дёргается».
+
   double? _dragFraction;
+  bool _isDragging = false;
+
+  // Анимация thumb
+  late final AnimationController _thumbAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 50),
+    value: 0, // 0 = нормальный размер, 1 = сжатый
+  );
+
+  @override
+  void dispose() {
+    _thumbAnim.dispose();
+    super.dispose();
+  }
+
+
 
   @override
   Widget build(BuildContext context) {
-    // Тротлим до ~25 fps. Достаточно плавно, экономит CPU.
-    final pos = (widget.player.positionStream)
-        .throttleTime(const Duration(milliseconds: 40));
 
+    final pos = (widget.player.positionStream);
+        
     return StreamBuilder<Duration>(
       stream: pos,
       builder: (context, posSnap) {
@@ -411,78 +327,118 @@ class _ProgressBarState extends State<_ProgressBar> {
                 : 0.0;
             final f = _dragFraction ?? realF;
 
-            return Column(
+                        return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 LayoutBuilder(
                   builder: (_, c) {
                     final width = c.maxWidth;
-                    return GestureDetector(
+                     return GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onHorizontalDragStart: (d) {
+                        _thumbAnim.forward(); // сжимаем
                         setState(() {
-                          _dragFraction = (d.localPosition.dx / width)
-                              .clamp(0.0, 1.0);
+                          _isDragging = true;
+                          // НЕ меняем _dragFraction здесь — thumb не двигается
                         });
                       },
                       onHorizontalDragUpdate: (d) {
                         setState(() {
-                          _dragFraction = (d.localPosition.dx / width)
-                              .clamp(0.0, 1.0);
+                          _dragFraction = (d.localPosition.dx / width).clamp(0.0, 1.0);
                         });
                       },
                       onHorizontalDragEnd: (_) {
+                        _thumbAnim.reverse(); // возвращаем
                         if (_dragFraction != null && maxMs > 0) {
                           widget.player.seek(
-                            Duration(
-                              milliseconds: (_dragFraction! * maxMs).round(),
-                            ),
+                            Duration(milliseconds: (_dragFraction! * maxMs).round()),
                           );
                         }
-                        setState(() => _dragFraction = null);
+                        setState(() {
+                          _isDragging = false;
+                          _dragFraction = null;
+                        });
                       },
                       onTapDown: (d) {
-                        final frac =
-                            (d.localPosition.dx / width).clamp(0.0, 1.0);
+                        _thumbAnim.forward(); // сжимаем при касании
+                        setState(() {
+                          _isDragging = true;
+                          // НЕ меняем _dragFraction — thumb остаётся на месте
+                        });
+                      },
+                      onTapUp: (d) {
+                        _thumbAnim.reverse(); // возвращаем
+                        // Перемещаем thumb к позиции отпускания
+                        final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
                         if (maxMs > 0) {
                           widget.player.seek(
-                            Duration(
-                              milliseconds: (frac * maxMs).round(),
-                            ),
+                            Duration(milliseconds: (frac * maxMs).round()),
                           );
                         }
+                        setState(() {
+                          _isDragging = false;
+                          _dragFraction = null;
+                        });
                       },
-                      child: CustomPaint(
-                        size: const Size(double.infinity, 14),
-                        painter: _ProgressPainter(fraction: f),
+                      onTapCancel: () {
+                        _thumbAnim.reverse(); // возвращаем
+                        setState(() {
+                          _isDragging = false;
+                          _dragFraction = null;
+                        });
+                      },
+                      child: Container(
+                        height: 80,
+                        color: Colors.transparent,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Прогресс-бар прижат кверху области
+                            Padding(
+                              padding: const EdgeInsets.only(top: 30),
+                              child: CustomPaint(
+                                size: const Size(double.infinity, 14),
+                                painter: _ProgressPainter(
+                                  fraction: f,
+                                  thumbAnim: _thumbAnim,
+                                ),
+                              ),
+                            ),
+                            // Время внутри той же области, компактно
+                            const SizedBox(height: 20),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    _fmt(maxMs > 0
+                                        ? Duration(milliseconds: (f * maxMs).round())
+                                        : position),
+                                    style: const TextStyle(
+                                      color: AppColors.textPrimary,
+                                      fontSize: 12,
+                                      fontFeatures: [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                  Text(
+                                    _fmt(duration),
+                                    style: const TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12,
+                                      fontFeatures: [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     );
                   },
                 ),
-                const SizedBox(height: 6),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      _fmt(maxMs > 0
-                          ? Duration(milliseconds: (f * maxMs).round())
-                          : position),
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 12,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                    Text(
-                      _fmt(duration),
-                      style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
+                // УБРАНО: const SizedBox(height: 6) и Row с временем — они теперь внутри GestureDetector
               ],
             );
           },
@@ -501,57 +457,87 @@ class _ProgressBarState extends State<_ProgressBar> {
 /// Толстая горизонтальная линия трека + прямоугольный «карандашный»
 /// бегунок, делящий полосу в позиции [fraction] (0..1). Линия скруглена.
 class _ProgressPainter extends CustomPainter {
-  _ProgressPainter({required this.fraction});
+  _ProgressPainter({
+    required this.fraction,
+    required this.thumbAnim,
+  }) : super(repaint: thumbAnim); // <-- автоматическая перерисовка при анимации
+  
   final double fraction;
+  final Animation<double> thumbAnim;
 
-  static const _trackHeight = 6.0;
-  static const _thumbWidth = 4.0;
-  static const _thumbHeight = 14.0;
-
+  static const _trackHeight = 10.0;        // толще трек
+  static const _thumbWidthNormal = 8.0;         // шире бегунок
+  static const _thumbHeightNormal = 48.0;       // выше бегунок (как на скриншоте)
+  static const _thumbHeightDragging = 48.0;
+  static const _thumbRadius = 4.0;        // скругление бегунка               
+  static const _gapDragging = 6.0;
+  static const _gapNormal = 4.0;          // зазор между бегунком и полосками
+  static const _thumbWidthDragging = 4.0;
+  static const _margin = 16.0;            // отступ слева и справа
+  
   @override
   void paint(Canvas canvas, Size size) {
     final centerY = size.height / 2;
+    final totalWidth = size.width - _margin * 2;
+    final filledW = totalWidth * fraction.clamp(0.0, 1.0);
+    
+    // Плавная интерполяция через анимацию (0..1)
+    final double t = thumbAnim.value;
+    
+    final double thumbWidth = _thumbWidthNormal + (_thumbWidthDragging - _thumbWidthNormal) * t;
+    final double thumbHeight = _thumbHeightNormal + (_thumbHeightDragging - _thumbHeightNormal) * t;
+    final double gap = _gapNormal + (_gapDragging - _gapNormal) * t;
+    
+    // Скругление у thumb: от нормального (2) к сжатому (4)
+    final double thumbCornerRadius = 2 + 2 * t;
+    
+    final double thumbX = _margin + filledW - thumbWidth / 2;
+    final double clampedThumbX = thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
 
-    final trackRect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(
-        0,
-        centerY - _trackHeight / 2,
-        size.width,
-        _trackHeight,
-      ),
-      const Radius.circular(3),
-    );
-    final trackPaint = Paint()..color = AppColors.elevated;
-    canvas.drawRRect(trackRect, trackPaint);
-
-    // Заполненная часть слева от бегунка чуть светлее.
-    final filledW = size.width * fraction.clamp(0.0, 1.0);
-    if (filledW > 0) {
-      final filledRect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-          0,
-          centerY - _trackHeight / 2,
-          filledW,
-          _trackHeight,
-        ),
-        const Radius.circular(3),
+    // Фоновый трек
+    if (clampedThumbX + thumbWidth + gap < _margin + totalWidth) {
+      final double trackStart = clampedThumbX + thumbWidth + gap;
+      final double trackWidth = (_margin + totalWidth) - trackStart;
+      
+      final trackRect = RRect.fromRectAndCorners(
+        Rect.fromLTWH(trackStart, centerY - _trackHeight / 2, trackWidth, _trackHeight),
+        topLeft: Radius.circular(thumbCornerRadius),
+        topRight: const Radius.circular(_trackHeight / 2),
+        bottomLeft: Radius.circular(thumbCornerRadius),
+        bottomRight: const Radius.circular(_trackHeight / 2),
       );
-      // Контрастный белый цвет — заметная заливка слева от бегунка.
-      final filledPaint = Paint()..color = AppColors.textPrimary;
+      final trackPaint = Paint()..color = AppColors.elevated.withOpacity(0.5);
+      canvas.drawRRect(trackRect, trackPaint);
+    }
+
+    // Заполненная часть
+    if (clampedThumbX > _margin + gap) {
+      final double filledWidth = clampedThumbX - gap - _margin;
+      
+      final filledRect = RRect.fromRectAndCorners(
+        Rect.fromLTWH(_margin, centerY - _trackHeight / 2, filledWidth, _trackHeight),
+        topLeft: const Radius.circular(_trackHeight / 2),
+        topRight: Radius.circular(thumbCornerRadius),
+        bottomLeft: const Radius.circular(_trackHeight / 2),
+        bottomRight: Radius.circular(thumbCornerRadius),
+      );
+      final filledPaint = Paint()..color = const Color(0xFF8B8689);
       canvas.drawRRect(filledRect, filledPaint);
     }
 
-    final thumbX = (filledW - _thumbWidth / 2).clamp(0.0, size.width - _thumbWidth);
+    // Бегунок
     final thumbRect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(thumbX, centerY - _thumbHeight / 2, _thumbWidth, _thumbHeight),
-      const Radius.circular(2),
+      Rect.fromLTWH(clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
+      const Radius.circular(_thumbRadius),
     );
-    final thumbPaint = Paint()..color = AppColors.textPrimary;
+    final thumbPaint = Paint()..color = const Color(0xFF8B8689);
     canvas.drawRRect(thumbRect, thumbPaint);
   }
 
   @override
-  bool shouldRepaint(_ProgressPainter old) => old.fraction != fraction;
+  bool shouldRepaint(_ProgressPainter old) {
+    return old.fraction != fraction || old.thumbAnim.value != thumbAnim.value;
+  }
 }
 
 // =====================================================================
@@ -576,6 +562,7 @@ class _BottomActionsState extends State<_BottomActions> {
   Widget build(BuildContext context) {
     return Row(
       children: [
+        const SizedBox(width: 5),
         _SquircleButton(
           icon: _loop == LoopMode.one
               ? Icons.repeat_one_rounded
@@ -583,7 +570,7 @@ class _BottomActionsState extends State<_BottomActions> {
           highlighted: _loop != LoopMode.off,
           onTap: _cycleLoop,
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
           child: Material(
             color: AppColors.elevated,
@@ -603,12 +590,13 @@ class _BottomActionsState extends State<_BottomActions> {
             ),
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         _SquircleButton(
           icon: Icons.more_horiz_rounded,
           onTap: () => _showExtra(context),
           shape: BoxShape.circle,
         ),
+        const SizedBox(width: 5),
       ],
     );
   }
