@@ -123,77 +123,7 @@ class PlayerContent extends ConsumerWidget {
 //  CONTROLS
 // =====================================================================
 
-class _Controls extends StatelessWidget {
-  const _Controls({required this.player});
-  final PlayerService player;
 
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      // Раздаём 3 элемента по строке с одинаковыми отступами — это
-      // выглядит симметрично и не зависит от ширины центральной pill.
-      children: [
-        const SizedBox(width: 5),
-        _RoundButton(
-          icon: Icons.skip_previous_rounded,
-          onTap: player.skipToPrevious,
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: StreamBuilder<PlaybackState>(
-            stream: player.playbackState,
-            builder: (context, snap) {
-              final st = snap.data;
-              final loading = st != null &&
-                  (st.processingState == AudioProcessingState.loading ||
-                      st.processingState == AudioProcessingState.buffering);
-              final playing = st?.playing ?? false;
-              return Material(
-                color: AppColors.elevatedHi,
-                borderRadius: BorderRadius.circular(32),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(32),
-                  onTap: () => playing ? player.pause() : player.play(),
-                  child: SizedBox(
-                    height: 64,
-                    child: Center(
-                      child: loading
-                          ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.4,
-                                color: AppColors.textPrimary,
-                              ),
-                            )
-                          : Icon(
-                              playing
-                                  ? Icons.pause_rounded
-                                  : Icons.play_arrow_rounded,
-                              color: AppColors.textPrimary,
-                              size: 36,
-                            ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        const SizedBox(width: 10),
-        _RoundButton(
-          icon: Icons.skip_next_rounded,
-          onTap: player.skipToNext,
-        ),
-        const SizedBox(width: 5),
-      ],
-    );
-  }
-}
-
-/// Заголовок текущего трека: если влезает в одну строку — обычный
-/// Text, иначе бегущая строка через `marquee`. Это удобнее, чем
-/// двухстрочный с ellipsis: пользователь успевает прочитать всё.
 class _TitleScroller extends StatelessWidget {
   const _TitleScroller({required this.text});
   final String text;
@@ -211,8 +141,6 @@ class _TitleScroller extends StatelessWidget {
       height: 30,
       child: LayoutBuilder(
         builder: (_, c) {
-          // Заранее меряем ширину текста — если влезает, marquee не
-          // нужен и тратить кадры на анимацию незачем.
           final tp = TextPainter(
             text: TextSpan(text: text, style: _style),
             textDirection: TextDirection.ltr,
@@ -248,10 +176,256 @@ class _TitleScroller extends StatelessWidget {
   }
 }
 
-class _RoundButton extends StatelessWidget {
-  const _RoundButton({required this.icon, required this.onTap});
+class _Controls extends StatefulWidget {
+  const _Controls({required this.player});
+  final PlayerService player;
+
+  @override
+  State<_Controls> createState() => _ControlsState();
+}
+
+class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
+  late final AnimationController _playAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 500),
+    value: 0,
+  );
+  
+  late final AnimationController _prevAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+    value: 0,
+  );
+  
+  late final AnimationController _nextAnim = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+    value: 0,
+  );
+  
+  bool _isPlayPressed = false;
+  bool _isPrevPressed = false;
+  bool _isNextPressed = false;
+
+  @override
+  void dispose() {
+    _playAnim.dispose();
+    _prevAnim.dispose();
+    _nextAnim.dispose();
+    super.dispose();
+  }
+
+  void _onPlayPointerDown(PointerDownEvent event) {
+    if (!_isPlayPressed) {
+      _isPlayPressed = true;
+      _playAnim.animateTo(
+        1,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  void _onPlayPointerUp(PointerUpEvent event) => _onPlayRelease();
+  void _onPlayPointerCancel(PointerCancelEvent event) => _onPlayRelease();
+
+  void _onPlayRelease() {
+    if (_isPlayPressed) {
+      _isPlayPressed = false;
+      _playAnim.animateTo(
+        0,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCirc,
+      );
+    }
+  }
+
+  void _onPrevPointerDown(PointerDownEvent event) {
+    if (!_isPrevPressed) {
+      _isPrevPressed = true;
+      _prevAnim.animateTo(
+        1,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  void _onPrevPointerUp(PointerUpEvent event) => _onPrevRelease();
+  void _onPrevPointerCancel(PointerCancelEvent event) => _onPrevRelease();
+
+  void _onPrevRelease() {
+    if (_isPrevPressed) {
+      _isPrevPressed = false;
+      _prevAnim.animateTo(
+        0,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCirc,
+      );
+    }
+  }
+
+  void _onNextPointerDown(PointerDownEvent event) {
+    if (!_isNextPressed) {
+      _isNextPressed = true;
+      _nextAnim.animateTo(
+        1,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  void _onNextPointerUp(PointerUpEvent event) => _onNextRelease();
+  void _onNextPointerCancel(PointerCancelEvent event) => _onNextRelease();
+
+  void _onNextRelease() {
+    if (_isNextPressed) {
+      _isNextPressed = false;
+      _nextAnim.animateTo(
+        0,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCirc,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<PlaybackState>(
+      stream: widget.player.playbackState,
+      builder: (context, snap) {
+        final st = snap.data;
+        final loading = st != null &&
+            (st.processingState == AudioProcessingState.loading ||
+                st.processingState == AudioProcessingState.buffering);
+        final playing = st?.playing ?? false;
+
+        return AnimatedBuilder(
+          animation: Listenable.merge([_playAnim, _prevAnim, _nextAnim]),
+          builder: (context, _) {
+            final playExpanded = _playAnim.value;
+            final prevExpanded = _prevAnim.value;
+            final nextExpanded = _nextAnim.value;
+            
+            // ИСПРАВЛЕНО: prev/next сужаются при нажатии на play
+            // Как в Kotlin: if (isPlayPausePressed) 0.35f else 0.45f
+            // prevWidth = base - shrink * playExpanded + expand * prevExpanded
+            final prevWidth = 56 - 20 * playExpanded + 24 * prevExpanded;
+            final nextWidth = 56 - 20 * playExpanded + 24 * nextExpanded;
+            final playWidth = 170 + 40 * playExpanded - 30 * (prevExpanded + nextExpanded);
+            
+            final isPlayPressed = _playAnim.value > 0 || _isPlayPressed;
+            final isPrevPressed = _prevAnim.value > 0 || _isPrevPressed;
+            final isNextPressed = _nextAnim.value > 0 || _isNextPressed;
+
+            return Row(
+              children: [
+                const SizedBox(width: 5),
+                // Prev — сужается при нажатии на play
+                Listener(
+                  onPointerDown: _onPrevPointerDown,
+                  onPointerUp: _onPrevPointerUp,
+                  onPointerCancel: _onPrevPointerCancel,
+                  child: GestureDetector(
+                    onTap: widget.player.skipToPrevious,
+                    child: Material(
+                      color: AppColors.elevated,
+                      borderRadius: BorderRadius.circular(isPrevPressed ? 32 : 32),
+                      child: SizedBox(
+                        width: prevWidth,
+                        height: 64,
+                        child: Icon(
+                          Icons.skip_previous_rounded,
+                          color: AppColors.textPrimary,
+                          size: 28,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // Play/pause — расширяется при нажатии
+                                Listener(
+                  onPointerDown: _onPlayPointerDown,
+                  onPointerUp: _onPlayPointerUp,
+                  onPointerCancel: _onPlayPointerCancel,
+                  child: GestureDetector(
+                    onTap: () => playing ? widget.player.pause() : widget.player.play(),
+                    child: Material(
+                      color: AppColors.elevatedHi,
+                      borderRadius: BorderRadius.circular(
+                        playing 
+                          ? (isPlayPressed ? 20 : 20)  // Pause: зажат=16, отпущен=20
+                          : (isPlayPressed ? 32 : 32), // Play: зажат=32, отпущен=62
+                      ),
+                      child: SizedBox(
+                        width: playWidth,
+                        height: 64,
+                        child: Center(
+                          child: loading
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.4,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                )
+                              : Icon(
+                                  playing
+                                      ? Icons.pause_rounded
+                                      : Icons.play_arrow_rounded,
+                                  color: AppColors.textPrimary,
+                                  size: 36,
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // Next — сужается при нажатии на play
+                Listener(
+                  onPointerDown: _onNextPointerDown,
+                  onPointerUp: _onNextPointerUp,
+                  onPointerCancel: _onNextPointerCancel,
+                  child: GestureDetector(
+                    onTap: widget.player.skipToNext,
+                    child: Material(
+                      color: AppColors.elevated,
+                      borderRadius: BorderRadius.circular(isNextPressed ? 32 : 32),
+                      child: SizedBox(
+                        width: nextWidth,
+                        height: 64,
+                        child: Icon(
+                          Icons.skip_next_rounded,
+                          color: AppColors.textPrimary,
+                          size: 28,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 5),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _AnimatedSideButton extends StatelessWidget {
+  const _AnimatedSideButton({
+    required this.icon,
+    required this.onTap,
+    required this.width,
+  });
   final IconData icon;
   final VoidCallback onTap;
+  final double width;
 
   @override
   Widget build(BuildContext context) {
@@ -262,7 +436,7 @@ class _RoundButton extends StatelessWidget {
         borderRadius: BorderRadius.circular(32),
         onTap: onTap,
         child: SizedBox(
-          width: 56,
+          width: width,
           height: 64,
           child: Icon(icon, color: AppColors.textPrimary, size: 28),
         ),
