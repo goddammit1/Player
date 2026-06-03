@@ -3,9 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:marquee/marquee.dart';
-import 'package:rxdart/rxdart.dart';
-
-import 'dart:ui'; // для lerpDouble
 
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
@@ -464,7 +461,6 @@ class _ProgressBarState extends State<_ProgressBar>
   /// реальной из стрима, иначе UI «дёргается».
 
   double? _dragFraction;
-  bool _isDragging = false;
 
   // Анимация thumb
   late final AnimationController _thumbAnim = AnimationController(
@@ -511,10 +507,7 @@ class _ProgressBarState extends State<_ProgressBar>
                       behavior: HitTestBehavior.opaque,
                       onHorizontalDragStart: (d) {
                         _thumbAnim.forward(); // сжимаем
-                        setState(() {
-                          _isDragging = true;
-                          // НЕ меняем _dragFraction здесь — thumb не двигается
-                        });
+                        // НЕ меняем _dragFraction здесь — thumb не двигается
                       },
                       onHorizontalDragUpdate: (d) {
                         setState(() {
@@ -529,16 +522,12 @@ class _ProgressBarState extends State<_ProgressBar>
                           );
                         }
                         setState(() {
-                          _isDragging = false;
                           _dragFraction = null;
                         });
                       },
                       onTapDown: (d) {
                         _thumbAnim.forward(); // сжимаем при касании
-                        setState(() {
-                          _isDragging = true;
-                          // НЕ меняем _dragFraction — thumb остаётся на месте
-                        });
+                        // НЕ меняем _dragFraction — thumb остаётся на месте
                       },
                       onTapUp: (d) {
                         _thumbAnim.reverse(); // возвращаем
@@ -550,14 +539,12 @@ class _ProgressBarState extends State<_ProgressBar>
                           );
                         }
                         setState(() {
-                          _isDragging = false;
                           _dragFraction = null;
                         });
                       },
                       onTapCancel: () {
                         _thumbAnim.reverse(); // возвращаем
                         setState(() {
-                          _isDragging = false;
                           _dragFraction = null;
                         });
                       },
@@ -680,7 +667,7 @@ class _ProgressPainter extends CustomPainter {
         bottomLeft: Radius.circular(thumbCornerRadius),
         bottomRight: const Radius.circular(_trackHeight / 2),
       );
-      final trackPaint = Paint()..color = AppColors.elevated.withOpacity(0.5);
+      final trackPaint = Paint()..color = AppColors.elevated.withValues(alpha: 0.5);
       canvas.drawRRect(trackRect, trackPaint);
     }
 
