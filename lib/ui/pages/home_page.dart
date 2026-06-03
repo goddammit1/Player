@@ -24,59 +24,110 @@ class HomePage extends ConsumerWidget {
     final async = ref.watch(playlistsProvider);
     final playlists = async.value ?? const <Playlist>[];
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Stack(
-        children: [
-          SafeArea(
-            bottom: false,
-            child: CustomScrollView(
-              physics: const BouncingScrollPhysics(),
-              slivers: [
-                const SliverToBoxAdapter(child: _TopBar()),
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(20, 20, 20, 16),
-                    child: Text(
-                      'Playlists',
-                      style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.4,
+    return _HomePageAnimator(
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: Stack(
+          children: [
+            SafeArea(
+              bottom: false,
+              child: CustomScrollView(
+                physics: const BouncingScrollPhysics(),
+                slivers: [
+                  const SliverToBoxAdapter(child: _TopBar()),
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(20, 20, 20, 16),
+                      child: Text(
+                        'Playlists',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 32,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                SliverPadding(
-                  // Снизу резервируем место под мини-плеер + системную
-                  // навигацию, чтобы последний ряд карточек не уходил
-                  // за плашку плеера.
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
-                  sliver: SliverGrid.builder(
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      mainAxisSpacing: 16,
-                      crossAxisSpacing: 16,
-                      childAspectRatio: 0.82,
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                    sliver: SliverGrid.builder(
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        mainAxisSpacing: 16,
+                        crossAxisSpacing: 16,
+                        childAspectRatio: 0.82,
+                      ),
+                      itemCount: playlists.length + 1,
+                      itemBuilder: (context, i) {
+                        if (i == playlists.length) return const _AddNewCard();
+                        final p = playlists[i];
+                        return _PlaylistCard(playlist: p);
+                      },
                     ),
-                    itemCount: playlists.length + 1,
-                    itemBuilder: (context, i) {
-                      if (i == playlists.length) return const _AddNewCard();
-                      final p = playlists[i];
-                      return _PlaylistCard(playlist: p);
-                    },
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          // Выезжающий снизу плеер. Сам использует Positioned и тянется
-          // за пальцем, разворачиваясь в полноэкранный плеер.
-          const NowPlayingOverlay(),
-        ],
+            const NowPlayingOverlay(),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
+/// Отдельный StatefulWidget для анимации — не трогает HomePage
+class _HomePageAnimator extends StatefulWidget {
+  const _HomePageAnimator({required this.child});
+  final Widget child;
+
+  @override
+  State<_HomePageAnimator> createState() => _HomePageAnimatorState();
+}
+
+class _HomePageAnimatorState extends State<_HomePageAnimator>
+    with SingleTickerProviderStateMixin {
+  
+  late final AnimationController _anim;
+  late final Animation<double> _slide;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _slide = Tween<double>(begin: 10, end: 0).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic),
+    );
+    _fade = Tween<double>(begin: 0.7, end: 1).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeOut),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _anim.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (context, _) => Transform.translate(
+        offset: Offset(0, _slide.value),
+        child: Opacity(
+          opacity: _fade.value,
+          child: widget.child,
+        ),
       ),
     );
   }
@@ -88,16 +139,16 @@ class _TopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
         children: [
           _CircleButton(
             icon: Icons.history_rounded,
             onTap: () => showSnack(context, 'History — coming soon'),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(child: _SearchPill()),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           _CircleButton(
             icon: Icons.settings_rounded,
             onTap: () => Navigator.of(context).push(
@@ -118,14 +169,14 @@ class _CircleButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.elevated,
+      color: AppColors.surface,
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onTap,
         child: SizedBox(
-          width: 44,
-          height: 44,
+          width: 60,
+          height: 60,
           child: Icon(icon, color: AppColors.textPrimary, size: 20),
         ),
       ),
@@ -137,33 +188,35 @@ class _SearchPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.elevated,
-      borderRadius: BorderRadius.circular(22),
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(32),
       child: InkWell(
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(32),
         onTap: () {
           Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const SearchPage()),
+            PageRouteBuilder(
+              pageBuilder: (context, animation, secondaryAnimation) =>
+                  const SearchPage(),
+              transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                return child;
+              },
+              transitionDuration: Duration.zero,
+              reverseTransitionDuration: Duration.zero,
+            ),
           );
         },
         child: const SizedBox(
-          height: 44,
+          height: 60,
           child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
+            padding: EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
-                Icon(
-                  Icons.search_rounded,
-                  color: AppColors.textSecondary,
-                  size: 20,
-                ),
-                SizedBox(width: 10),
                 Text(
                   'Search',
                   style: TextStyle(
                     color: AppColors.textSecondary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -202,7 +255,7 @@ class _PlaylistCard extends StatelessWidget {
                     child: ArtworkMosaic(
                       urls: playlist.coverThumbnails,
                       size: c.maxWidth,
-                      borderRadius: 18,
+                      borderRadius: 20,
                     ),
                   ),
                   Positioned(
@@ -225,7 +278,7 @@ class _PlaylistCard extends StatelessWidget {
               style: const TextStyle(
                 color: AppColors.textPrimary,
                 fontSize: 14,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
@@ -245,7 +298,7 @@ class _CountBadge extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         // Полупрозрачный тёмный круг — поверх любой обложки читается.
-        color: Colors.black.withValues(alpha: 0.55),
+        color: Colors.black.withValues(alpha: 0.6),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(

@@ -27,7 +27,7 @@ class NowPlayingOverlay extends ConsumerStatefulWidget {
   const NowPlayingOverlay({super.key});
 
   /// Высота свёрнутой мини-плашки (без учёта системного отступа снизу).
-  static const double miniHeight = 72;
+  static const double miniHeight = 80;
 
   @override
   ConsumerState<NowPlayingOverlay> createState() => _NowPlayingOverlayState();
@@ -204,7 +204,7 @@ class _MiniBar extends StatelessWidget {
     // по бокам и снизу оставлен отступ, чтобы плашка «висела» над контентом
     // как карточка (единый стиль с поисковой строкой и тайлами).
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       child: Material(
         // Собственный непрозрачный фон мини-плашки. Раньше фон давала
         // панель целиком, но теперь она прозрачна (чтобы при drag не
@@ -308,7 +308,7 @@ class _ProgressFill extends StatelessWidget {
                 widthFactor: f,
                 heightFactor: 1,
                 child: Container(
-                  color: Colors.white.withValues(alpha: 0.06),
+                  color: AppColors.surfaceProgressBar,
                 ),
               ),
             );

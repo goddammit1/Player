@@ -102,7 +102,6 @@ class ArtworkMosaic extends StatelessWidget {
       );
     }
 
-    // 4 ячейки в 2×2.
     final cells = List<String?>.generate(4, (i) => i < urls.length ? urls[i] : null);
     final cell = size / 2;
 
@@ -111,23 +110,38 @@ class ArtworkMosaic extends StatelessWidget {
       child: SizedBox(
         width: size,
         height: size,
-        child: Column(
+        // Используем Stack вместо Column+Row — полный контроль позиционирования
+        child: Stack(
           children: [
-            Expanded(
-              child: Row(
-                children: [
-                  Expanded(child: _Tile(url: cells[0], size: cell)),
-                  Expanded(child: _Tile(url: cells[1], size: cell)),
-                ],
-              ),
+            // Верхний ряд
+            Positioned(
+              top: 0,
+              left: 0,
+              width: cell,
+              height: cell,
+              child: _Tile(url: cells[0], size: cell),
             ),
-            Expanded(
-              child: Row(
-                children: [
-                  Expanded(child: _Tile(url: cells[2], size: cell)),
-                  Expanded(child: _Tile(url: cells[3], size: cell)),
-                ],
-              ),
+            Positioned(
+              top: 0,
+              right: 0,
+              width: cell,
+              height: cell,
+              child: _Tile(url: cells[1], size: cell),
+            ),
+            // Нижний ряд
+            Positioned(
+              bottom: 0,
+              left: 0,
+              width: cell,
+              height: cell,
+              child: _Tile(url: cells[2], size: cell),
+            ),
+            Positioned(
+              bottom: 0,
+              right: 0,
+              width: cell,
+              height: cell,
+              child: _Tile(url: cells[3], size: cell),
             ),
           ],
         ),
@@ -145,15 +159,19 @@ class _Tile extends StatelessWidget {
   Widget build(BuildContext context) {
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final cache = (size * dpr).round();
+    
     if (url == null || url!.isEmpty) {
       return Container(color: AppColors.surfaceVariant);
     }
+    
     return CachedNetworkImage(
       imageUrl: url!,
       fit: BoxFit.cover,
+      width: size,
+      height: size,
       memCacheWidth: cache,
       memCacheHeight: cache,
-      fadeInDuration: const Duration(milliseconds: 100),
+      fadeInDuration: Duration.zero,  // убираем fade для мозаики
       placeholder: (_, _) => Container(color: AppColors.surfaceVariant),
       errorWidget: (_, _, _) => Container(color: AppColors.surfaceVariant),
     );

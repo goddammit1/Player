@@ -15,10 +15,11 @@ import 'ui/pages/home_page.dart';
 /// никакого «цветного» акцента — по дизайну, переданному заказчиком.
 class AppColors {
   static const Color background = Color(0xFF000000);
-  static const Color surface = Color(0xFF111111);
-  static const Color surfaceVariant = Color(0xFF1C1C1C);
-  static const Color elevated = Color(0xFF2A2A2A);
-  static const Color elevatedHi = Color(0xFF3A3A3A);
+  static const Color surface = Color(0xFF161618);
+  static const Color surfaceVariant = Color(0xFF212124);
+  static const Color elevated = Color(0xFF212124);
+  static const Color elevatedHi = Color(0xFF747474);
+  static const Color surfaceProgressBar = Color(0x66747474);
   static const Color outline = Color(0xFF2F2F2F);
   // Весь текст в приложении — единый off-white #F9F8F8. Вторичный и
   // третичный различаются только прозрачностью того же цвета.

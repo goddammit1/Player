@@ -83,9 +83,9 @@ class PlayerContent extends ConsumerWidget {
                 },
               ),
               
-              const SizedBox(height: 40),
+              const SizedBox(height: 30),
               _TitleScroller(text: item.title),
-              const SizedBox(height: 10),
+              const SizedBox(height: 0),
               Text(
                 item.artist ?? '',
                 textAlign: TextAlign.center,
@@ -93,11 +93,11 @@ class PlayerContent extends ConsumerWidget {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: AppColors.textSecondary,
-                  fontSize: 14,
+                  fontSize: 16,
                   fontWeight: FontWeight.w500,
                 ),
               ),
-              const SizedBox(height: 40),
+              const SizedBox(height: 30),
 
 
               _Controls(player: player),
@@ -217,8 +217,8 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _isPlayPressed = true;
       _playAnim.animateTo(
         1,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeInOut,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.ease,
       );
     }
   }
@@ -243,7 +243,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _prevAnim.animateTo(
         1,
         duration: const Duration(milliseconds: 120),
-        curve: Curves.easeInOut,
+        curve: Curves.ease,
       );
     }
   }
@@ -268,7 +268,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _nextAnim.animateTo(
         1,
         duration: const Duration(milliseconds: 120),
-        curve: Curves.easeInOut,
+        curve: Curves.ease,
       );
     }
   }
@@ -306,7 +306,6 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
             final nextExpanded = _nextAnim.value;
             
             // ИСПРАВЛЕНО: prev/next сужаются при нажатии на play
-            // Как в Kotlin: if (isPlayPausePressed) 0.35f else 0.45f
             // prevWidth = base - shrink * playExpanded + expand * prevExpanded
             final prevWidth = 56 - 20 * playExpanded + 24 * prevExpanded;
             final nextWidth = 56 - 20 * playExpanded + 24 * nextExpanded;
@@ -343,7 +342,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                 ),
                 const SizedBox(width: 10),
                 // Play/pause — расширяется при нажатии
-                                Listener(
+                Listener(
                   onPointerDown: _onPlayPointerDown,
                   onPointerUp: _onPlayPointerUp,
                   onPointerCancel: _onPlayPointerCancel,
@@ -682,7 +681,7 @@ class _ProgressPainter extends CustomPainter {
         bottomLeft: const Radius.circular(_trackHeight / 2),
         bottomRight: Radius.circular(thumbCornerRadius),
       );
-      final filledPaint = Paint()..color = const Color(0xFF8B8689);
+      final filledPaint = Paint()..color = AppColors.elevatedHi;
       canvas.drawRRect(filledRect, filledPaint);
     }
 
@@ -691,7 +690,7 @@ class _ProgressPainter extends CustomPainter {
       Rect.fromLTWH(clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
       const Radius.circular(_thumbRadius),
     );
-    final thumbPaint = Paint()..color = const Color(0xFF8B8689);
+    final thumbPaint = Paint()..color = AppColors.elevatedHi;
     canvas.drawRRect(thumbRect, thumbPaint);
   }
 

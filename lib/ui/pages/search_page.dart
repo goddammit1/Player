@@ -9,20 +9,6 @@ import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
 
-
-/// Экран поиска: открывается с главной по тапу на поисковую таблетку.
-///
-/// Дизайн (строгий тёмный список / минимализм):
-/// - сверху — крупная строка поиска (скруглённый прямоугольник): стрелка
-///   «назад» слева, текстовое поле по центру, крестик «очистить» справа;
-/// - под ней — горизонтальный ряд pill-фильтров (иконка + текст). Активный
-///   выделен светлым фоном, неактивные — тёмно-серым;
-/// - основная часть — вертикальный список треков: квадратная миниатюра,
-///   двухстрочный текстовый блок (белый заголовок + серый подзаголовок),
-///   длительность справа;
-/// - снизу поверх списка закреплён мини-плеер (NowPlayingOverlay).
-///
-/// Тап на трек = play; long-press = bottom sheet «Add to playlist».
 class SearchPage extends ConsumerStatefulWidget {
   const SearchPage({super.key});
 
@@ -30,24 +16,112 @@ class SearchPage extends ConsumerStatefulWidget {
   ConsumerState<SearchPage> createState() => _SearchPageState();
 }
 
-class _SearchPageState extends ConsumerState<SearchPage> {
+class _SearchPageState extends ConsumerState<SearchPage>
+    with TickerProviderStateMixin {
+  
   final _controller = TextEditingController();
   final _focus = FocusNode();
+  bool _isPopping = false;
+  
+  late final AnimationController _barAnim;
+  late final Animation<double> _barExpand;
+  
+  late final AnimationController _contentAnim;
+  late final Animation<double> _chipsSlide;
+  late final Animation<double> _chipsFade;
+  late final Animation<double> _listSlide;
+  late final Animation<double> _listFade;
 
   @override
   void initState() {
     super.initState();
-    // Автофокус через post-frame, чтобы анимация перехода не глитчила.
+    
+    // === SEARCHBAR: быстрое закрытие ===
+    _barAnim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+      reverseDuration: const Duration(milliseconds: 180),  // ← быстрее
+    );
+    
+    _barExpand = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _barAnim,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      ),
+    );
+
+    // === КОНТЕНТ ===
+    _contentAnim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+      reverseDuration: const Duration(milliseconds: 120),  // ← мгновенный fade out
+    );
+
+    _chipsSlide = Tween<double>(begin: -12, end: 0).animate(
+      CurvedAnimation(
+        parent: _contentAnim,
+        curve: const Interval(0.35, 0.75, curve: Curves.easeOutCubic),
+        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
+      ),
+    );
+    _chipsFade = Tween<double>(begin: 0, end: 1).animate(
+      CurvedAnimation(
+        parent: _contentAnim,
+        curve: const Interval(0.35, 0.65, curve: Curves.easeOut),
+        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
+      ),
+    );
+
+    _listSlide = Tween<double>(begin: 16, end: 0).animate(
+      CurvedAnimation(
+        parent: _contentAnim,
+        curve: const Interval(0.5, 0.9, curve: Curves.easeOutCubic),
+        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
+      ),
+    );
+    _listFade = Tween<double>(begin: 0, end: 1).animate(
+      CurvedAnimation(
+        parent: _contentAnim,
+        curve: const Interval(0.5, 0.8, curve: Curves.easeOut),
+        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
+      ),
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focus.requestFocus();
+      if (mounted) {
+        _focus.requestFocus();
+        _barAnim.forward();
+        _contentAnim.forward();
+      }
     });
   }
 
   @override
   void dispose() {
+    _barAnim.dispose();
+    _contentAnim.dispose();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
+  }
+
+  /// Выход: контент быстро fade out, строка сжимается
+  Future<void> _popWithAnimation() async {
+    if (_isPopping) return;
+    _isPopping = true;
+    
+    _focus.unfocus();
+    
+    // Контент мгновенно fade out (120ms)
+    _contentAnim.reverse();
+    
+    // Строка сжимается чуть дольше (180ms)
+    await _barAnim.reverse();
+    
+    if (mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
   }
 
   @override
@@ -56,8 +130,6 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     final player = ref.read(playerServiceProvider);
     final searchCtl = ref.read(searchProvider.notifier);
     final sources = SourceRegistry.instance.all;
-    // Берём активный источник из СТЕЙТА (а не из приватного поля), чтобы
-    // чип переключался сразу по watch — даже при пустом запросе.
     final currentSourceId = state.sourceId;
 
     return Scaffold(
@@ -68,24 +140,104 @@ class _SearchPageState extends ConsumerState<SearchPage> {
             bottom: false,
             child: Column(
               children: [
-                _SearchBar(
-                  controller: _controller,
-                  focus: _focus,
-                  loading: state.loading,
-                  onSubmit: (q) => searchCtl.search(q),
-                  onClear: () {
-                    _controller.clear();
-                    searchCtl.search('');
-                    setState(() {});
+                // === SEARCHBAR ===
+                AnimatedBuilder(
+                  animation: _barAnim,
+                  builder: (context, child) {
+                    final expand = _barExpand.value;
+                    final maxWidth = MediaQuery.of(context).size.width - 32;
+                    const startWidth = 200.0;
+                    
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      child: Container(
+                        height: 60,
+                        width: startWidth + (maxWidth - startWidth) * expand,
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(32 - 20 * expand),
+                        ),
+                        child: child,
+                      ),
+                    );
                   },
-                  onChanged: (_) => setState(() {}),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_rounded, size: 24),
+                        color: AppColors.textPrimary,
+                        onPressed: _popWithAnimation,
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: _controller,
+                          focusNode: _focus,
+                          textInputAction: TextInputAction.search,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 16,
+                          ),
+                          decoration: const InputDecoration(
+                            hintText: 'Search...',
+                            hintStyle: TextStyle(color: AppColors.textSecondary),
+                            border: InputBorder.none,
+                            isCollapsed: true,
+                            contentPadding: EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          onChanged: (_) => setState(() {}),
+                          onSubmitted: (q) => searchCtl.search(q),
+                        ),
+                      ),
+                      if (state.loading)
+                        const Padding(
+                          padding: EdgeInsets.only(right: 16),
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      else if (_controller.text.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 22),
+                          color: AppColors.textPrimary,
+                          onPressed: () {
+                            _controller.clear();
+                            searchCtl.search('');
+                            setState(() {});
+                          },
+                        )
+                      else
+                        const SizedBox(width: 12),
+                    ],
+                  ),
                 ),
-                // Pill-фильтры переключения источников.
-                _FilterChips(
-                  sources: sources,
-                  currentSourceId: currentSourceId,
-                  onSelected: searchCtl.setSourceId,
+
+                // === ФИЛЬТРЫ ===
+                AnimatedBuilder(
+                  animation: _contentAnim,
+                  builder: (context, child) {
+                    return Transform.translate(
+                      offset: Offset(0, _chipsSlide.value),
+                      child: Opacity(
+                        opacity: _chipsFade.value,
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: Column(  // ← оборачиваем в Column
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _FilterChips(
+                        sources: sources,
+                        currentSourceId: currentSourceId,
+                        onSelected: searchCtl.setSourceId,
+                      ),
+                      const SizedBox(height: 16),  // ← отступ 16px
+                    ],
+                  ),
                 ),
+
                 if (state.error != null)
                   Container(
                     width: double.infinity,
@@ -100,43 +252,50 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                       style: const TextStyle(color: Colors.redAccent),
                     ),
                   ),
+
+                // === СПИСОК ===
                 Expanded(
-                  child: state.results.isEmpty && !state.loading
-                      ? const _EmptyState()
-                      // Стрим текущего MediaItem нужен, чтобы подсветить
-                      // трек, который сейчас играет. Сравниваем по
-                      // globalId — он же лежит в MediaItem.id.
-                      : StreamBuilder<MediaItem?>(
-                          stream: player.mediaItem,
-                          builder: (context, mediaSnap) {
-                            final currentId = mediaSnap.data?.id;
-                            return ListView.builder(
-                              itemCount: state.results.length,
-                              cacheExtent: 200,
-                              // Верхний отступ подобран так, чтобы зазор от
-                              // фильтров до ВЕРХНЕЙ ГРАНИЦЫ обложки первого
-                              // трека был 16: 16 - margin(3) - padding(8) = 5.
-                              padding:
-                                  const EdgeInsets.fromLTRB(12, 5, 12, 132),
-                              itemBuilder: (context, i) {
-                                final t = state.results[i];
-                                final isPlaying = currentId != null &&
-                                    currentId == t.globalId;
-                                return _TrackTile(
-                                  track: t,
-                                  isPlaying: isPlaying,
-                                  duration: t.duration != null
-                                      ? _formatDuration(t.duration!)
-                                      : null,
-                                  onTap: () => player.setQueue(
-                                    state.results,
-                                    startIndex: i,
-                                  ),
-                                );
-                              },
-                            );
-                          },
+                  child: AnimatedBuilder(
+                    animation: _contentAnim,
+                    builder: (context, child) {
+                      return Transform.translate(
+                        offset: Offset(0, _listSlide.value),
+                        child: Opacity(
+                          opacity: _listFade.value,
+                          child: child,
                         ),
+                      );
+                    },
+                    child: state.results.isEmpty && !state.loading
+                        ? const _EmptyState()
+                        : StreamBuilder<MediaItem?>(
+                            stream: player.mediaItem,
+                            builder: (context, mediaSnap) {
+                              final currentId = mediaSnap.data?.id;
+                              return ListView.builder(
+                                itemCount: state.results.length,
+                                cacheExtent: 200,
+                                padding: const EdgeInsets.fromLTRB(12, 0, 12, 132),
+                                itemBuilder: (context, i) {
+                                  final t = state.results[i];
+                                  final isPlaying = currentId != null &&
+                                      currentId == t.globalId;
+                                  return _TrackTile(
+                                    track: t,
+                                    isPlaying: isPlaying,
+                                    duration: t.duration != null
+                                        ? _formatDuration(t.duration!)
+                                        : null,
+                                    onTap: () => player.setQueue(
+                                      state.results,
+                                      startIndex: i,
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                  ),
                 ),
               ],
             ),
@@ -154,7 +313,6 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   }
 }
 
-/// Заглушка пустого состояния: строгая, приглушённый серый.
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
 
@@ -183,8 +341,7 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-/// Горизонтальный ряд pill-фильтров (иконка + текст источника).
-class _FilterChips extends StatelessWidget {
+class _FilterChips extends StatefulWidget {
   const _FilterChips({
     required this.sources,
     required this.currentSourceId,
@@ -195,28 +352,77 @@ class _FilterChips extends StatelessWidget {
   final String currentSourceId;
   final ValueChanged<String> onSelected;
 
-  // Сопоставление машинного id источника с иконкой. TrackSource не несёт
-  // иконку, поэтому решаем это здесь — централизованно и без правок API.
-  static IconData _iconFor(String id) {
-    switch (id) {
-      case kAllSourcesId:
-        return Icons.public_rounded;
-      case 'youtube':
-        return Icons.play_circle_fill_rounded;
-      case 'muzmo':
-        return Icons.music_note_rounded;
-      default:
-        return Icons.library_music_rounded;
+  @override
+  State<_FilterChips> createState() => _FilterChipsState();
+}
+
+class _FilterChipsState extends State<_FilterChips>
+    with TickerProviderStateMixin {
+  
+  late final List<AnimationController> _controllers;
+  late final List<Animation<double>> _slides;
+  late final List<Animation<double>> _fades;
+
+  @override
+  void initState() {
+    super.initState();
+    
+    final entries = <String>[
+      kAllSourcesId,
+      for (final s in widget.sources) s.id as String,
+    ];
+    
+    final count = entries.length;
+    
+    _controllers = List.generate(
+      count,
+      (i) => AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 350),
+      ),
+    );
+    
+    _slides = List.generate(
+      count,
+      (i) => Tween<double>(begin: -16, end: 0).animate(
+        CurvedAnimation(
+          parent: _controllers[i],
+          curve: Curves.easeOutCubic,
+        ),
+      ),
+    );
+    
+    _fades = List.generate(
+      count,
+      (i) => Tween<double>(begin: 0, end: 1).animate(
+        CurvedAnimation(
+          parent: _controllers[i],
+          curve: Curves.easeOut,
+        ),
+      ),
+    );
+
+    // Запускаем по очереди с задержкой 60ms между чипами
+    for (var i = 0; i < count; i++) {
+      Future.delayed(Duration(milliseconds: i * 100), () {
+        if (mounted) _controllers[i].forward();
+      });
     }
   }
 
   @override
+  void dispose() {
+    for (final c in _controllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // Первый чип — виртуальный «All» (поиск во всех источниках сразу),
-    // далее — реальные источники из реестра.
     final entries = <({String id, String label})>[
       (id: kAllSourcesId, label: 'Все'),
-      for (final s in sources)
+      for (final s in widget.sources)
         (id: s.id as String, label: s.displayName as String),
     ];
 
@@ -229,22 +435,44 @@ class _FilterChips extends StatelessWidget {
         separatorBuilder: (_, _) => const SizedBox(width: 16),
         itemBuilder: (context, i) {
           final e = entries[i];
-          final selected = e.id == currentSourceId;
-          return _FilterPill(
-            icon: _iconFor(e.id),
-            label: e.label,
-            selected: selected,
-            onTap: () => onSelected(e.id),
+          final selected = e.id == widget.currentSourceId;
+          
+          return AnimatedBuilder(
+            animation: _controllers[i],
+            builder: (context, _) {
+              return Transform.translate(
+                offset: Offset(0, _slides[i].value),
+                child: Opacity(
+                  opacity: _fades[i].value,
+                  child: _FilterPill(
+                    icon: _iconFor(e.id),
+                    label: e.label,
+                    selected: selected,
+                    onTap: () => widget.onSelected(e.id),
+                  ),
+                ),
+              );
+            },
           );
         },
       ),
     );
   }
+
+  static IconData _iconFor(String id) {
+    switch (id) {
+      case kAllSourcesId:
+        return Icons.public_rounded;
+      case 'youtube':
+        return Icons.play_circle_fill_rounded;
+      case 'muzmo':
+        return Icons.music_note_rounded;
+      default:
+        return Icons.library_music_rounded;
+    }
+  }
 }
 
-
-/// Одна кнопка-таблетка фильтра. Активная — светлый фон + тёмные иконка
-/// и текст; неактивная — тёмно-серый фон + светлый текст.
 class _FilterPill extends StatelessWidget {
   const _FilterPill({
     required this.icon,
@@ -260,9 +488,9 @@ class _FilterPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fg = selected ? Colors.black : AppColors.textPrimary;
+    final fg = selected ?  AppColors.textPrimary : AppColors.textPrimary;
     return Material(
-      color: selected ? AppColors.textPrimary : AppColors.elevated,
+      color: selected ? AppColors.elevatedHi : AppColors.surface,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         onTap: onTap,
@@ -290,9 +518,6 @@ class _FilterPill extends StatelessWidget {
   }
 }
 
-/// Один элемент поисковой выдачи: квадратная обложка, двухстрочный текст,
-/// длительность справа. Текущий проигрываемый трек подсвечивается фоном,
-/// акцентным title и иконкой-эквалайзером поверх обложки.
 class _TrackTile extends StatelessWidget {
   const _TrackTile({
     required this.track,
@@ -309,13 +534,13 @@ class _TrackTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = isPlaying
-        ? const Color(0xFF6EE7B7) // мягкий мятный — отличается от текста
+        ? const Color(0xFFF9F8F8)
         : AppColors.textPrimary;
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 3),
       decoration: BoxDecoration(
-        color: isPlaying ? AppColors.surface : Colors.transparent,
+        color: isPlaying ? AppColors.elevatedHi : Colors.transparent,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Material(
@@ -328,7 +553,6 @@ class _TrackTile extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             child: Row(
               children: [
-                // Квадратная миниатюра со скруглёнными краями.
                 Stack(
                   alignment: Alignment.center,
                   children: [
@@ -355,7 +579,6 @@ class _TrackTile extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(width: 12),
-                // Текстовый блок: заголовок + подзаголовок.
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -385,7 +608,6 @@ class _TrackTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                // Длительность трека — мелким белым шрифтом справа.
                 if (duration != null) ...[
                   const SizedBox(width: 8),
                   Text(
@@ -406,9 +628,6 @@ class _TrackTile extends StatelessWidget {
   }
 }
 
-/// Верхняя строка поиска: стрелка «назад», текстовое поле, крестик/спиннер.
-/// Крупный прямоугольник с сильно скруглёнными углами и фоном светлее
-/// основного.
 class _SearchBar extends StatelessWidget {
   const _SearchBar({
     required this.controller,
@@ -433,20 +652,16 @@ class _SearchBar extends StatelessWidget {
         height: 60,
         decoration: BoxDecoration(
           color: AppColors.elevated,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
           children: [
-            // Слева: иконка «Назад».
             IconButton(
               icon: const Icon(Icons.arrow_back_rounded, size: 24),
               color: AppColors.textPrimary,
-              // popUntil(first) — если в стеке между home и search случайно
-              // оказалась player_page, back из поиска вернёт строго на home.
               onPressed: () => Navigator.of(context)
                   .popUntil((route) => route.isFirst),
             ),
-            // По центру: текстовое поле с поисковым запросом.
             Expanded(
               child: TextField(
                 controller: controller,
@@ -457,7 +672,7 @@ class _SearchBar extends StatelessWidget {
                   fontSize: 16,
                 ),
                 decoration: const InputDecoration(
-                  hintText: 'Поиск',
+                  hintText: 'Search...',
                   hintStyle: TextStyle(color: AppColors.textSecondary),
                   border: InputBorder.none,
                   isCollapsed: true,
@@ -467,7 +682,6 @@ class _SearchBar extends StatelessWidget {
                 onSubmitted: onSubmit,
               ),
             ),
-            // Справа: спиннер при загрузке, иначе крестик очистки.
             if (loading)
               const Padding(
                 padding: EdgeInsets.only(right: 16),
