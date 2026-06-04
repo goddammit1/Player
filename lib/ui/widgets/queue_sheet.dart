@@ -9,7 +9,7 @@ import 'artwork.dart';
 
 extension MediaItemToTrack on MediaItem {
   Track toTrack() {
-    final extra = this.extras ?? {};
+    final extra = extras ?? {};
     return Track(
       id: id,
       sourceId: extra['source_id'] as String? ?? 'local',
@@ -319,55 +319,53 @@ class _Header extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 children: [
-                  Container(
-                    child: Row(
-                      children: [
-                        Artwork(
-                          url: item?.artUri?.toString(),
-                          size: 56,
-                          borderRadius: 12,
-                          memCacheSize: 128,
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                item?.title ?? '',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: AppColors.textPrimary,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w700,
-                                ),
+                  Row(
+                    children: [
+                      Artwork(
+                        url: item?.artUri?.toString(),
+                        size: 56,
+                        borderRadius: 12,
+                        memCacheSize: 128,
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              item?.title ?? '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
                               ),
-                              Text(
-                                item?.artist ?? '',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: AppColors.textSecondary,
-                                  fontSize: 13,
-                                ),
+                            ),
+                            Text(
+                              item?.artist ?? '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 13,
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          onPressed: () {
-                            if (item == null) return;
-                            showAddToPlaylistSheet(context, item.toTrack());
-                          },
-                          icon: const Icon(
-                            Icons.more_vert_rounded,
-                            color: AppColors.textPrimary,
-                          ),
+                      ),
+                      IconButton(
+                        onPressed: () {
+                          if (item == null) return;
+                          showAddToPlaylistSheet(context, item.toTrack());
+                        },
+                        icon: const Icon(
+                          Icons.more_vert_rounded,
+                          color: AppColors.textPrimary,
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
 
                   const SizedBox(height: 12),

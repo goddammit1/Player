@@ -729,13 +729,11 @@ class _BottomActions extends StatefulWidget {
 
 class _BottomActionsState extends State<_BottomActions> {
   bool _queueDragged = false;
-  double _maxHeight = 0;
   double _startFingerY = 0;
   double _startValue = 0;
 
   @override
   Widget build(BuildContext context) {
-    _maxHeight = MediaQuery.of(context).size.height;
     return Row(
       children: [
         const SizedBox(width: 5),
