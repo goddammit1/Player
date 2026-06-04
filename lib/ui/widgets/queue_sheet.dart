@@ -1,10 +1,28 @@
 import 'package:audio_service/audio_service.dart';
+
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../core/player_service.dart';
 import '../../main.dart' show AppColors;
 import 'artwork.dart';
+
+/// Форматирует длительность трека в вид `m:ss` или `h:mm:ss`.
+/// Если длительность неизвестна — возвращает `--:--`.
+String _formatDuration(Duration? d) {
+  if (d == null) return '--:--';
+  final totalSeconds = d.inSeconds;
+  final hours = totalSeconds ~/ 3600;
+  final minutes = (totalSeconds % 3600) ~/ 60;
+  final seconds = totalSeconds % 60;
+  final ss = seconds.toString().padLeft(2, '0');
+  if (hours > 0) {
+    final mm = minutes.toString().padLeft(2, '0');
+    return '$hours:$mm:$ss';
+  }
+  return '$minutes:$ss';
+}
+
 
 /// Контроллер 2-позиционного окна очереди.
 ///
@@ -75,9 +93,12 @@ class QueueSheetController extends ChangeNotifier {
     final v = value;
 
     if (fromButton) {
-      // Исключение: при первичном drag с кнопки, если довели > 70% —
-      // сразу Full. Иначе — Part (или закрыть при сильном броске вниз).
-      if (v >= fullThreshold || velocity < -fling) {
+      // Первичный drag с кнопки: окно всегда останавливается на Part.
+      // Единственное исключение — пользователь ЦЕЛЕНАПРАВЛЕННО дотянул
+      // окно выше порога (>70% высоты): тогда раскрываем на Full.
+      // Скорость броска тут НЕ учитывается — резкий флик вверх не должен
+      // сам по себе открывать Full, только фактическая протяжка.
+      if (v >= fullThreshold) {
         openFull();
       } else if (velocity > fling && v < partPosition * 0.6) {
         close();
@@ -86,6 +107,7 @@ class QueueSheetController extends ChangeNotifier {
       }
       return;
     }
+
 
     // Drag уже внутри открытого окна — магнитимся к ближайшей из
     // {0, part, 1} с учётом броска.
@@ -168,16 +190,26 @@ class QueueSheet extends StatelessWidget {
         return Positioned.fill(
           child: Stack(
             children: [
-              // Затемнение — тап по нему закрывает окно.
+              // Затемнение — тап по нему закрывает окно. Вертикальный
+              // свайп по затемнению управляет ТОЛЬКО очередью (тянет/
+              // примагничивает её), а не пробрасывается на плеер под ним —
+              // пока очередь открыта, жест взаимодействует лишь с ней.
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: controller.close,
+                  onVerticalDragUpdate: (d) =>
+                      controller.drag(d.primaryDelta ?? 0, maxHeight),
+                  onVerticalDragEnd: (d) => controller.settle(
+                    d.primaryVelocity ?? 0,
+                    fromButton: false,
+                  ),
                   child: ColoredBox(
                     color: Colors.black.withValues(alpha: scrimOpacity),
                   ),
                 ),
               ),
+
               // Окно на полную высоту, сдвинуто вниз на slideOffset.
               Positioned.fill(
                 child: Transform.translate(
@@ -463,29 +495,37 @@ class _QueueList extends StatelessWidget {
               for (var i = start; i < all.length; i++) MapEntry(i, all[i]),
             ];
 
-            return ReorderableListView.builder(
-              // Нижний отступ учитывает системную навигацию, чтобы
-              // последний трек не прятался под неё.
-              padding: EdgeInsets.only(top: 6, bottom: 24 + bottomInset),
-              buildDefaultDragHandles: false,
-              itemCount: visible.length,
-              onReorder: (oldLocal, newLocal) {
-                if (newLocal > oldLocal) newLocal -= 1;
-                final from = visible[oldLocal].key;
-                final to = visible[newLocal].key;
-                player.reorderQueueItem(from, to);
-              },
-              itemBuilder: (context, localIndex) {
-                final entry = visible[localIndex];
-                final realIndex = entry.key;
-                final m = entry.value;
-                return _QueueTile(
-                  key: ValueKey('${m.id}_$realIndex'),
-                  index: localIndex,
-                  media: m,
-                  onTap: () => player.skipToQueueItem(realIndex),
-                );
-              },
+            return Column(
+              children: [
+                // Небольшая надпись над треками — сколько в очереди.
+                _QueueCount(count: visible.length),
+                Expanded(
+                  child: ReorderableListView.builder(
+                    // Нижний отступ учитывает системную навигацию, чтобы
+                    // последний трек не прятался под неё.
+                    padding: EdgeInsets.only(top: 2, bottom: 24 + bottomInset),
+                    buildDefaultDragHandles: false,
+                    itemCount: visible.length,
+                    onReorder: (oldLocal, newLocal) {
+                      if (newLocal > oldLocal) newLocal -= 1;
+                      final from = visible[oldLocal].key;
+                      final to = visible[newLocal].key;
+                      player.reorderQueueItem(from, to);
+                    },
+                    itemBuilder: (context, localIndex) {
+                      final entry = visible[localIndex];
+                      final realIndex = entry.key;
+                      final m = entry.value;
+                      return _QueueTile(
+                        key: ValueKey('${m.id}_$realIndex'),
+                        index: localIndex,
+                        media: m,
+                        onTap: () => player.skipToQueueItem(realIndex),
+                      );
+                    },
+                  ),
+                ),
+              ],
             );
           },
         );
@@ -493,6 +533,40 @@ class _QueueList extends StatelessWidget {
     );
   }
 }
+
+/// Надпись над списком очереди: слева слово «Очередь», справа — число.
+class _QueueCount extends StatelessWidget {
+  const _QueueCount({required this.count});
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    const style = TextStyle(
+      color: AppColors.textTertiary,
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.3,
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text('Очередь', style: style),
+          Text(
+            '$count',
+            style: style.copyWith(
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+
 
 class _QueueTile extends StatelessWidget {
   const _QueueTile({
@@ -551,18 +625,36 @@ class _QueueTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              // Две полоски справа — за них перетаскиваем трек.
-              ReorderableDragStartListener(
-                index: index,
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                  child: Icon(
-                    Icons.drag_handle_rounded,
-                    color: AppColors.textSecondary,
+              // Справа: две полоски (за них перетаскиваем трек), а под
+              // ними — длительность трека.
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ReorderableDragStartListener(
+                    index: index,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      child: Icon(
+                        Icons.drag_handle_rounded,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _formatDuration(media.duration),
+                    style: const TextStyle(
+                      color: AppColors.textTertiary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
               ),
             ],
+
           ),
         ),
       ),
