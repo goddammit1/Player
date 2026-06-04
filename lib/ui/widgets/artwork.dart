@@ -3,11 +3,6 @@ import 'package:flutter/material.dart';
 
 import '../../main.dart' show AppColors;
 
-/// Универсальный артворк-плейсхолдер. Отрисовывает либо обложку с
-/// `imageUrl`, либо мягкий серый плейсхолдер с нотой. Используется во
-/// всех списках и карточках — это позволяет согласованно управлять
-/// `memCacheWidth/Height` (декодирование уменьшенного bitmap'а) и
-/// fallback-поведением.
 class Artwork extends StatelessWidget {
   const Artwork({
     super.key,
@@ -20,11 +15,6 @@ class Artwork extends StatelessWidget {
   final String? url;
   final double size;
   final double borderRadius;
-
-  /// Размер декодированного bitmap'а в логических пикселях. По
-  /// умолчанию = `size * 2` (≈ retina-плотность). Указывать вручную
-  /// стоит для очень крупных артов на player_page, где имеет смысл
-  /// `min(displaySize * dpr, 720)`.
   final double? memCacheSize;
 
   @override
@@ -38,18 +28,63 @@ class Artwork extends StatelessWidget {
         width: size,
         height: size,
         child: url != null && url!.isNotEmpty
-            ? CachedNetworkImage(
-                imageUrl: url!,
-                width: size,
-                height: size,
-                fit: BoxFit.cover,
-                memCacheWidth: cacheSize,
-                memCacheHeight: cacheSize,
+            ? _CroppedImage(
+                url: url!,
+                size: size,
+                cacheSize: cacheSize,
                 fadeInDuration: const Duration(milliseconds: 100),
-                placeholder: (_, _) => const _Placeholder(),
-                errorWidget: (_, _, _) => const _Placeholder(),
+                placeholder: const _Placeholder(),
+                errorWidget: const _Placeholder(),
               )
             : const _Placeholder(),
+      ),
+    );
+  }
+}
+
+class _CroppedImage extends StatelessWidget {
+  const _CroppedImage({
+    required this.url,
+    required this.size,
+    required this.cacheSize,
+    required this.fadeInDuration,
+    required this.placeholder,
+    required this.errorWidget,
+  });
+
+  final String url;
+  final double size;
+  final int cacheSize;
+  final Duration fadeInDuration;
+  final Widget placeholder;
+  final Widget errorWidget;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageWidth = size * 16 / 9;
+    final imageHeight = size;
+    final cacheWidth = (cacheSize * 16 / 9).round();
+    final cacheHeight = cacheSize;
+
+    return ClipRect(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: FittedBox(
+          fit: BoxFit.cover,
+          alignment: Alignment.center,
+          child: CachedNetworkImage(
+            imageUrl: url,
+            width: imageWidth,
+            height: imageHeight,
+            fit: BoxFit.cover,
+            memCacheWidth: cacheWidth,
+            memCacheHeight: cacheHeight,
+            fadeInDuration: fadeInDuration,
+            placeholder: (_, __) => placeholder,
+            errorWidget: (_, __, ___) => errorWidget,
+          ),
+        ),
       ),
     );
   }
@@ -72,9 +107,6 @@ class _Placeholder extends StatelessWidget {
   }
 }
 
-/// Мозаика 2×2 из обложек первых четырёх треков плейлиста. Если
-/// треков меньше — недостающие ячейки заполняются плейсхолдером.
-/// Если треков нет вовсе — рисует один большой плейсхолдер.
 class ArtworkMosaic extends StatelessWidget {
   const ArtworkMosaic({
     super.key,
@@ -110,10 +142,8 @@ class ArtworkMosaic extends StatelessWidget {
       child: SizedBox(
         width: size,
         height: size,
-        // Используем Stack вместо Column+Row — полный контроль позиционирования
         child: Stack(
           children: [
-            // Верхний ряд
             Positioned(
               top: 0,
               left: 0,
@@ -128,7 +158,6 @@ class ArtworkMosaic extends StatelessWidget {
               height: cell,
               child: _Tile(url: cells[1], size: cell),
             ),
-            // Нижний ряд
             Positioned(
               bottom: 0,
               left: 0,
@@ -164,16 +193,31 @@ class _Tile extends StatelessWidget {
       return Container(color: AppColors.surfaceVariant);
     }
     
-    return CachedNetworkImage(
-      imageUrl: url!,
-      fit: BoxFit.cover,
-      width: size,
-      height: size,
-      memCacheWidth: cache,
-      memCacheHeight: cache,
-      fadeInDuration: Duration.zero,  // убираем fade для мозаики
-      placeholder: (_, _) => Container(color: AppColors.surfaceVariant),
-      errorWidget: (_, _, _) => Container(color: AppColors.surfaceVariant),
+    final imageWidth = size * 16 / 9;
+    final imageHeight = size;
+    final cacheWidth = (cache * 16 / 9).round();
+    final cacheHeight = cache;
+
+    return ClipRect(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: FittedBox(
+          fit: BoxFit.cover,
+          alignment: Alignment.center,
+          child: CachedNetworkImage(
+            imageUrl: url!,
+            width: imageWidth,
+            height: imageHeight,
+            fit: BoxFit.cover,
+            memCacheWidth: cacheWidth,
+            memCacheHeight: cacheHeight,
+            fadeInDuration: Duration.zero,
+            placeholder: (_, __) => Container(color: AppColors.surfaceVariant),
+            errorWidget: (_, __, ___) => Container(color: AppColors.surfaceVariant),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -729,6 +729,7 @@ class _BottomActionsState extends State<_BottomActions> {
               : Icons.repeat_rounded,
           highlighted: _loop != LoopMode.off,
           onTap: _cycleLoop,
+          shape: BoxShape.circle, // ← круглая кнопка
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -909,16 +910,15 @@ class _SquircleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(18);
+    final isCircle = shape == BoxShape.circle;
+    
     return Material(
       color: AppColors.elevated,
-      shape: shape == BoxShape.circle
-          ? const CircleBorder()
-          : RoundedRectangleBorder(borderRadius: radius),
+      shape: isCircle ? const CircleBorder() : null,
+      borderRadius: isCircle ? null : BorderRadius.circular(32),
       child: InkWell(
-        customBorder: shape == BoxShape.circle
-            ? const CircleBorder()
-            : RoundedRectangleBorder(borderRadius: radius),
+        customBorder: isCircle ? const CircleBorder() : null,
+        borderRadius: isCircle ? null : BorderRadius.circular(32),
         onTap: onTap,
         child: SizedBox(
           width: 56,
