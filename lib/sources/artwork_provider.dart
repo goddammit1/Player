@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+
 
 /// Поиск обложек для треков, у которых источник (например, Muzmo) их не
 /// отдаёт.
@@ -31,7 +35,13 @@ class ArtworkProvider {
   static const String _geniusToken =
       String.fromEnvironment('GENIUS_TOKEN', defaultValue: '');
 
-  static const String _prefsPrefix = 'artwork_v1:';
+  // Версия кэша входит в префикс. При смене токена негативные ('')
+  // результаты, накопленные БЕЗ Genius, не должны блокировать новый
+  // поиск — поэтому ключ зависит от наличия токена.
+  static const String _prefsPrefixBase = 'artwork_v3';
+
+  String get _prefsPrefix =>
+      '${_prefsPrefixBase}_${_geniusToken.isEmpty ? 'noauth' : 'auth'}:';
 
   final Dio _dio = Dio(
     BaseOptions(
@@ -54,7 +64,47 @@ class ArtworkProvider {
     return _prefsInit!;
   }
 
+  bool _tokenStatusLogged = false;
+  void _logTokenStatusOnce() {
+    if (_tokenStatusLogged) return;
+    _tokenStatusLogged = true;
+    if (_geniusToken.isEmpty) {
+      debugPrint(
+        '[ArtworkProvider] GENIUS_TOKEN ПУСТОЙ — Genius пропускается, '
+        'только iTunes. Пересобери с '
+        '--dart-define=GENIUS_TOKEN=<Client Access Token>.',
+      );
+    } else {
+      final masked = _geniusToken.length > 8
+          ? '${_geniusToken.substring(0, 4)}...${_geniusToken.substring(_geniusToken.length - 4)}'
+          : '***';
+      debugPrint(
+        '[ArtworkProvider] GENIUS_TOKEN присутствует (len='
+        '${_geniusToken.length}, $masked).',
+      );
+    }
+  }
+
+  /// Есть ли токен Genius в текущей сборке.
+  bool get hasGeniusToken => _geniusToken.isNotEmpty;
+
+  /// Приводит тело ответа к Map. Некоторые API (в частности iTunes)
+  /// отдают JSON с заголовком `text/javascript`, и Dio не парсит его
+  /// автоматически — приходит `String`. Декодируем вручную.
+  Map<String, dynamic>? _asMap(Object? data) {
+    if (data is Map<String, dynamic>) return data;
+    if (data is String && data.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is Map<String, dynamic>) return decoded;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+
   String _key(String artist, String title) {
+
     // Нормализуем: lowercase + collapse whitespace. Это важно, чтобы
     // «Imagine Dragons» и «imagine  dragons» давали один ключ кэша.
     final a = artist.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
@@ -79,16 +129,29 @@ class ArtworkProvider {
       return saved.isEmpty ? null : saved;
     }
 
+    _logTokenStatusOnce();
+
     // 3) Сеть. Сначала Genius, потом iTunes.
     String? url;
     try {
       url = await _fetchGenius(artist, title);
-    } catch (_) {}
-    if (url == null || url.isEmpty) {
+    } catch (e) {
+      debugPrint('[ArtworkProvider] Genius threw: $e');
+    }
+    final geniusFound = url != null && url.isNotEmpty;
+    if (!geniusFound) {
       try {
         url = await _fetchItunes(artist, title);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[ArtworkProvider] iTunes threw: $e');
+      }
     }
+    debugPrint(
+      '[ArtworkProvider] "$artist - $title" -> '
+      '${geniusFound ? 'GENIUS' : (url != null && url.isNotEmpty ? 'ITUNES' : 'NONE')}'
+      '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
+    );
+
 
     final toStore = url ?? '';
     _memCache[key] = toStore;
@@ -107,20 +170,33 @@ class ArtworkProvider {
     if (_geniusToken.isEmpty) return null;
 
     final q = '$artist $title';
-    final resp = await _dio.get<Map<String, dynamic>>(
+    final resp = await _dio.get<dynamic>(
       'https://api.genius.com/search',
       queryParameters: {'q': q},
       options: Options(
         headers: {'Authorization': 'Bearer $_geniusToken'},
-        responseType: ResponseType.json,
       ),
     );
-    if (resp.statusCode != 200) return null;
-    final data = resp.data;
+    if (resp.statusCode != 200) {
+
+      // 401/403 = неверный/протухший токен. Это самая частая причина
+      // «обложки не подтягиваются» — выводим в лог явно.
+      if (kDebugMode) {
+        debugPrint(
+          '[ArtworkProvider] Genius search HTTP ${resp.statusCode} '
+          'for "$q". '
+          '${resp.statusCode == 401 || resp.statusCode == 403 ? 'Проверь GENIUS_TOKEN (нужен Client Access Token).' : ''}',
+        );
+      }
+      return null;
+    }
+
+    final data = _asMap(resp.data);
     if (data == null) return null;
 
     final hits = (data['response']?['hits'] as List?) ?? const [];
     if (hits.isEmpty) return null;
+
 
     // Genius возвращает самый релевантный результат первым. Берём арт
     // песни (`song_art_image_url`), он почти всегда квадратный и
@@ -141,14 +217,14 @@ class ArtworkProvider {
 
   Future<String?> _fetchItunes(String artist, String title) async {
     final term = '$artist $title';
-    final resp = await _dio.get<Map<String, dynamic>>(
+    final resp = await _dio.get<dynamic>(
       'https://itunes.apple.com/search',
       queryParameters: {'term': term, 'entity': 'song', 'limit': 1},
-      options: Options(responseType: ResponseType.json),
     );
     if (resp.statusCode != 200) return null;
-    final data = resp.data;
+    final data = _asMap(resp.data);
     if (data == null) return null;
+
 
     final results = (data['results'] as List?) ?? const [];
     if (results.isEmpty) return null;

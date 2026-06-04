@@ -82,13 +82,27 @@ SourceRegistry.instance.register(SoundCloudSource());
 3. Результаты кэшируются в RAM и в `SharedPreferences`, поэтому
    повторные поиски не дёргают сеть.
 
-Токен Genius можно переопределить при сборке:
+Токен Genius задаётся при сборке через `--dart-define`. ВАЖНО: нужен
+именно **Client Access Token** (со страницы https://genius.com/api-clients),
+а НЕ Client Secret. Код шлёт его в заголовке `Authorization: Bearer <token>`.
 
 ```bash
-flutter run --dart-define=GENIUS_TOKEN=<твой_токен>
+# debug / запуск
+flutter run --dart-define=GENIUS_TOKEN=<твой_Client_Access_Token>
+
+# release APK — флаг ОБЯЗАТЕЛЬНО повторить, иначе токена не будет
+flutter build apk --release --dart-define=GENIUS_TOKEN=<твой_Client_Access_Token>
 ```
 
-В коде дефолтный токен лежит в `lib/sources/artwork_provider.dart`.
+Если токен не указан или неверный, Genius тихо пропускается и
+используется только iTunes-фолбэк. В debug-режиме при ошибке
+авторизации (401/403) в логи пишется предупреждение.
+
+Примечание про кэш: результаты («нашли»/«не нашли») кэшируются в
+`SharedPreferences`. Префикс ключа зависит от наличия токена, поэтому
+после добавления токена негативные результаты, накопленные без него,
+больше не блокируют повторный поиск через Genius.
+
 
 ## Запуск
 
@@ -97,6 +111,35 @@ flutter pub get
 flutter run                  # на подключённом устройстве / эмуляторе
 flutter build apk --release  # релизный APK
 ```
+
+## Подпись release-сборки
+
+Release APK подписывается постоянным ключом (а не debug-ключом), иначе
+Google Play Protect помечает установку как угрозу (ложное срабатывание
+вида `*.BulimiaTGen.*`). Конфигурация подписи читается из
+`android/key.properties` (этот файл и сам keystore в `.gitignore`).
+
+Создать keystore (один раз):
+
+```bash
+keytool -genkeypair -v -keystore android/app/player-release.jks ^
+  -keyalg RSA -keysize 2048 -validity 10000 -alias player
+```
+
+`android/key.properties`:
+
+```
+storePassword=<пароль>
+keyPassword=<пароль>
+keyAlias=player
+storeFile=player-release.jks
+```
+
+ВАЖНО: при первой установке APK с новой подписью сначала удалите старую
+версию приложения с устройства — Android не обновляет APK с другим
+сертификатом. И не теряйте keystore: с другим ключом обновления
+поверх установленной версии работать не будут.
+
 
 ## Что дальше (roadmap)
 
