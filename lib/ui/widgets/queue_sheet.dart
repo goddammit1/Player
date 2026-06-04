@@ -230,53 +230,65 @@ class _QueueBody extends StatelessWidget {
             .clamp(0.0, 1.0);
     final topPad = topInset * fullProgress;
 
+    // Видимая часть окна = maxHeight * t (окно сдвинуто вниз на (1-t)).
+    // Контенту даём высоту = видимая зона, но НЕ меньше высоты окна в
+    // позиции Part — иначе при сжатии к закрытию (t→0) шапка фиксированной
+    // высоты не влезает в крошечную высоту и Column даёт overflow.
+    // ClipRect (на Material) обрезает контент по фактической видимой зоне,
+    // а OverflowBox с выравниванием по верху позволяет контенту иметь эту
+    // «рабочую» высоту, выходя за пределы родителя без overflow-ошибки.
+    // Список (Expanded) получает остаток рабочей высоты и листается прямо
+    // в окошке Part queue.
+    final visibleHeight = (maxHeight * t).clamp(0.0, maxHeight);
+    final contentHeight =
+        visibleHeight.clamp(maxHeight * QueueSheetController.partPosition,
+            maxHeight);
+
     return Material(
       color: AppColors.surface,
       clipBehavior: Clip.antiAlias,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      // Окно физически на полную высоту экрана и сдвинуто вниз, поэтому
-      // ВИДИМАЯ часть окна = maxHeight * t. Ограничиваем высоту контента
-      // этой видимой частью (ConstrainedBox + mainAxisSize.min). Тогда
-      // шапка остаётся закреплённой на верхней кромке окна, а список
-      // (Flexible) занимает только остаток видимой зоны и листается прямо
-      // в окошке Part queue. Нижняя «невидимая» часть окна (за краем
-      // экрана) контентом не заполняется, поэтому overflow нет.
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: maxHeight * t),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Ручка сверху + шапка — за них тянем окно (Part <-> Full).
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onVerticalDragUpdate: (d) =>
-                    controller.drag(d.primaryDelta ?? 0, maxHeight),
-                onVerticalDragEnd: (d) => controller.settle(
-                  d.primaryVelocity ?? 0,
-                  fromButton: false,
+      child: ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topCenter,
+          minHeight: contentHeight,
+          maxHeight: contentHeight,
+          child: SizedBox(
+            height: contentHeight,
+            child: Column(
+
+              children: [
+                // Ручка сверху + шапка — за них тянем окно (Part <-> Full).
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onVerticalDragUpdate: (d) =>
+                      controller.drag(d.primaryDelta ?? 0, maxHeight),
+                  onVerticalDragEnd: (d) => controller.settle(
+                    d.primaryVelocity ?? 0,
+                    fromButton: false,
+                  ),
+                  child: Padding(
+                    padding: EdgeInsets.only(top: topPad),
+                    child: _Header(player: player, controller: controller),
+                  ),
                 ),
-                child: Padding(
-                  padding: EdgeInsets.only(top: topPad),
-                  child: _Header(player: player, controller: controller),
+                // Список очереди — листается; reorder за полоски справа.
+                // Expanded отдаёт списку остаток видимой высоты окна.
+                Expanded(
+                  child: _QueueList(
+                    player: player,
+                    bottomInset: bottomInset,
+                  ),
                 ),
-              ),
-              // Список очереди — листается; reorder за полоски справа.
-              // Flexible отдаёт списку остаток видимой высоты окна.
-              Flexible(
-                child: _QueueList(
-                  player: player,
-                  bottomInset: bottomInset,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 }
+
 
 class _Header extends StatelessWidget {
   const _Header({required this.player, required this.controller});
