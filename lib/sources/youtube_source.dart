@@ -31,7 +31,9 @@ class YoutubeSource implements TrackSource {
 
   @override
   Future<List<Track>> search(String query, {int limit = 20}) async {
-    final results = await _yt.search.search(query);
+    // Добавляем "music" в конец запроса — YouTube лучше ранжирует музыкальные видео
+    final musicQuery = '$query music';
+    final results = await _yt.search.search(musicQuery);
 
     // Не оставляем «только официальные релизы» — это режет почти всё.
     // Наоборот: пропускаем любую музыку и выкидываем лишь ЯВНО
@@ -42,10 +44,18 @@ class YoutubeSource implements TrackSource {
     // ВАЖНО: битрейт здесь НЕ резолвим — getManifest медленный (3–8 с
     // на трек) и заметно тормозит поиск. Битрейт получаем лениво в
     // «Деталях трека» через [resolveBitrate].
-    final music = <Track>[];
+    final scored = <_ScoredVideo>[];
     for (final v in results) {
       if (_isLikelyNonMusic(v)) continue;
-      music.add(_videoToTrack(v));
+      scored.add(_ScoredVideo(video: v, score: _musicQualityScore(v)));
+    }
+
+    // Сортируем: official/Topic выше, мусор ниже
+    scored.sort((a, b) => b.score.compareTo(a.score));
+
+    final music = <Track>[];
+    for (final s in scored) {
+      music.add(_videoToTrack(s.video));
       if (music.length >= limit) break;
     }
     return music;
@@ -64,8 +74,9 @@ class YoutubeSource implements TrackSource {
     }
   }
 
-
-
+  // ═══════════════════════════════════════════════════════════════════
+  //  ФИЛЬТРАЦИЯ И РАНЖИРОВАНИЕ
+  // ═══════════════════════════════════════════════════════════════════
 
   /// Стоп-слова в названии, характерные для НЕмузыкальных видео:
   /// обзоры, влоги, летсплеи, подкасты, интервью, туториалы и т.п.
@@ -75,7 +86,13 @@ class YoutubeSource implements TrackSource {
     r'прохождение|стрим|stream|podcast|подкаст|интервью|interview|'
     r'tutorial|туториал|урок|review|reaction|реакция|'
     r'трейлер|trailer|новости|news|разбор|лекция|lecture|'
-    r'how\s*to|unboxing'
+    r'how\s*to|unboxing|top\s*\d+|compilation|mixtape\s*review|'
+    r'album\s*review|track\s*by\s*track|listening\s*party|'
+    r'first\s*reaction|reacts\s*to|breakdown|analysis|'
+    r'news|новости|шоу|show|talk\s+show|ток\s+шоу|stand\s*up|'
+    r'comedy|комедия|prank|пранк|challenge|челлендж|'
+    r'asmr|mukbang|мукбанг|q&a|вопрос\s*ответ|'
+    r'behind\s*the\s*scenes|bts|making\s*of|documentary|документалка'
     r')\b',
     caseSensitive: false,
   );
@@ -84,22 +101,111 @@ class YoutubeSource implements TrackSource {
   ///
   /// Опираемся только на данные из результатов поиска (без описания):
   ///   • прямые трансляции (`isLive`) — не треки;
-  ///   • слишком длинные ролики (> 20 мин) — почти всегда подкасты,
-  ///     стримы, лекции, многочасовые сборники и т.п.;
+  ///   • слишком короткие (< 30 сек) — тизеры/реклама/shorts;
+  ///   • слишком длинные (> 20 мин) — подкасты, стримы, лекции;
+  ///   • 10-20 мин без official канала — скорее подкаст;
   ///   • немузыкальные стоп-слова в названии.
   /// Всё остальное считаем музыкой и пропускаем.
   bool _isLikelyNonMusic(Video v) {
     if (v.isLive) return true;
 
     final d = v.duration;
-    if (d != null && d > const Duration(minutes: 20)) return true;
+    if (d == null) return false;
+
+    // Слишком короткое — тизер/реклама/Shorts
+    if (d < const Duration(seconds: 30)) return true;
+
+    // Слишком длинное — подкасты, стримы, лекции
+    if (d > const Duration(minutes: 20)) return true;
+
+    // 10-20 мин без official канала — скорее подкаст
+    if (d > const Duration(minutes: 10) && !_isOfficialMusicChannel(v.author)) {
+      return true;
+    }
+
+    // Shorts — почти никогда не полноценные треки
+    if (_isShorts(v)) return true;
 
     if (_nonMusicTitle.hasMatch(v.title)) return true;
 
     return false;
   }
 
+  /// Проверяет, является ли видео YouTube Shorts
+  bool _isShorts(Video v) {
+    final d = v.duration;
+    if (d == null || d > const Duration(seconds: 60)) return false;
+    final title = v.title.toLowerCase();
+    return title.contains('#shorts') || title.contains('shorts');
+  }
 
+  /// Проверяет, является ли канал официальным музыкальным
+  bool _isOfficialMusicChannel(String author) {
+    final a = author.toLowerCase();
+    return a.contains('vevo') ||
+           a.contains('official') ||
+           a.contains(' - topic');
+  }
+
+  /// Score «музыкальности» — чем выше, тем более вероятно качественный трек
+  int _musicQualityScore(Video v) {
+    int score = 0;
+    final author = v.author.toLowerCase();
+    final title = v.title.toLowerCase();
+
+    // YouTube Music auto-generated = +3 (лучший источник)
+    if (author.contains(' - topic')) score += 3;
+
+    // VEVO = +2
+    if (author.contains('vevo')) score += 2;
+
+    // Official channel = +1
+    if (author.contains('official')) score += 1;
+
+    // Title содержит музыкальные маркеры = +1
+    if (title.contains('official') ||
+        title.contains('audio') ||
+        title.contains('lyrics') ||
+        title.contains('video')) {
+      score += 1;
+    }
+
+    // Длительность в «идеальном» диапазоне 2-6 мин = +1
+    final d = v.duration;
+    if (d != null && d >= const Duration(minutes: 2) && d <= const Duration(minutes: 6)) {
+      score += 1;
+    }
+
+    return score;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ОЧИСТКА МЕТАДАННЫХ
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Очищает title от типичных YouTube-суффиксов
+  String _cleanTitle(String title) {
+    return title
+      .replaceAll(RegExp(r'\s*\(official\s*(music\s*)?video\)', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\(official\s*audio\)', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\(lyric\s*video\)', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\(audio\)', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\(visualizer\)', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\[official\s*(music\s*)?video\]', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\[official\s*audio\]', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*-\s*audio\s*$', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*-\s*official\s*video\s*$', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*-\s*official\s*$', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*\|\s*official\s*video\s*$', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s*【[^】]*】'), '')
+      .replaceAll(RegExp(r'^\s*【[^】]*】\s*'), '')
+      .trim();
+  }
+
+  /// Убирает " - Topic" из названия канала
+  String _cleanArtist(String author) {
+    return author.replaceAll(RegExp(r'\s*-\s*Topic\s*$', caseSensitive: false), '').trim();
+  }
 
   Track _videoToTrack(Video v, {int? bitrateKbps}) {
     // Prefer mediumRes — it always exists. maxRes/highRes often return
@@ -113,8 +219,8 @@ class YoutubeSource implements TrackSource {
     return Track(
       id: v.id.value,
       sourceId: id,
-      title: v.title,
-      artist: v.author,
+      title: _cleanTitle(v.title),
+      artist: _cleanArtist(v.author),
       duration: v.duration,
       artworkUrl: thumb,
       // qualityScore — реальный битрейт в kbps (используется для
@@ -123,8 +229,6 @@ class YoutubeSource implements TrackSource {
       qualityLabel: bitrateKbps != null ? '$bitrateKbps kbps' : null,
     );
   }
-
-
 
   /// Returns a cached or freshly fetched audio-only stream info for the
   /// given YouTube video id.
@@ -214,6 +318,13 @@ class YoutubeSource implements TrackSource {
     _streamInfoCache.clear();
     _yt.close();
   }
+}
+
+/// Вспомогательный класс для ранжирования видео по качеству
+class _ScoredVideo {
+  final Video video;
+  final int score;
+  _ScoredVideo({required this.video, required this.score});
 }
 
 class _CachedStreamInfo {
