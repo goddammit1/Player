@@ -16,6 +16,13 @@ class Track {
   final Duration? duration;
   final String? artworkUrl;
 
+  /// Оценка качества аудио, 0..100. Используется для сортировки выдачи
+  /// и для метки качества в списке. null — если источник не оценивал.
+  final int? qualityScore;
+
+  /// Короткая метка качества для UI, например `HD`, `SD`, `LO`.
+  final String? qualityLabel;
+
   /// Дополнительные данные источника (на случай если нужно вернуть в API).
   final Map<String, dynamic> extra;
 
@@ -26,8 +33,11 @@ class Track {
     required this.artist,
     this.duration,
     this.artworkUrl,
+    this.qualityScore,
+    this.qualityLabel,
     this.extra = const {},
   });
+
 
   /// Глобальный ID для использования в БД / очереди.
   String get globalId => '$sourceId:$id';
@@ -37,6 +47,8 @@ class Track {
     String? artist,
     Duration? duration,
     String? artworkUrl,
+    int? qualityScore,
+    String? qualityLabel,
   }) {
     return Track(
       id: id,
@@ -45,9 +57,12 @@ class Track {
       artist: artist ?? this.artist,
       duration: duration ?? this.duration,
       artworkUrl: artworkUrl ?? this.artworkUrl,
+      qualityScore: qualityScore ?? this.qualityScore,
+      qualityLabel: qualityLabel ?? this.qualityLabel,
       extra: extra,
     );
   }
+
 
   Map<String, dynamic> toMap() => {
         'id': id,

@@ -10,7 +10,10 @@ import '../../main.dart' show AppColors;
 import '../../models/track.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
+import '../widgets/queue_sheet.dart';
 import '../widgets/snack.dart';
+import '../widgets/track_details_sheet.dart';
+
 
 /// Полноэкранный плеер.
 ///
@@ -41,13 +44,28 @@ class PlayerPage extends StatelessWidget {
 ///
 /// [onClose] — если задан, вызывается по нажатию кнопки «вниз»
 /// (используется оверлеем, чтобы свернуть плеер вместо `Navigator.pop`).
-class PlayerContent extends ConsumerWidget {
+class PlayerContent extends ConsumerStatefulWidget {
   const PlayerContent({super.key, this.onClose});
 
   final VoidCallback? onClose;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PlayerContent> createState() => _PlayerContentState();
+}
+
+class _PlayerContentState extends ConsumerState<PlayerContent>
+    with TickerProviderStateMixin {
+  late final QueueSheetController _queueCtrl =
+      QueueSheetController(vsync: this);
+
+  @override
+  void dispose() {
+    _queueCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final player = ref.watch(playerServiceProvider);
 
     return StreamBuilder<MediaItem?>(
@@ -63,53 +81,60 @@ class PlayerContent extends ConsumerWidget {
           );
         }
 
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-          child: Column(
-            children: [
-              // Пустое пространство сверху — толкает всё вниз к центру
-              Expanded(child: SizedBox.shrink()),
-              
-              // Обложка без Expanded — занимает ровно свой размер
-              LayoutBuilder(
-                builder: (_, c) {
-                  final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                  return Artwork(
-                    url: item.artUri?.toString(),
-                    size: size,
-                    borderRadius: 10,
-                    memCacheSize: 800,
-                  );
-                },
-              ),
-              
-              const SizedBox(height: 30),
-              _TitleScroller(text: item.title),
-              const SizedBox(height: 0),
-              Text(
-                item.artist ?? '',
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 30),
+        // Stack: содержимое плеера + поверх него выезжающее окно очереди.
+        return Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+              child: Column(
+                children: [
+                  // Пустое пространство сверху — толкает всё вниз к центру
+                  Expanded(child: SizedBox.shrink()),
 
+                  // Обложка без Expanded — занимает ровно свой размер
+                  LayoutBuilder(
+                    builder: (_, c) {
+                      final size = c.maxWidth.clamp(0, 420.0).toDouble();
+                      return Artwork(
+                        url: item.artUri?.toString(),
+                        size: size,
+                        borderRadius: 10,
+                        memCacheSize: 800,
+                      );
+                    },
+                  ),
 
-              _Controls(player: player),
-              const SizedBox(height: 15),
-              _ProgressBar(player: player, fallbackDuration: item.duration),
-              const SizedBox(height: 20),
-              _BottomActions(player: player, item: item),
-              
-              // Пустое пространство снизу — балансирует верхний Expanded
-              //Expanded(child: SizedBox.shrink()),
-            ],
-          ),
+                  const SizedBox(height: 30),
+                  _TitleScroller(text: item.title),
+                  const SizedBox(height: 0),
+                  Text(
+                    item.artist ?? '',
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+
+                  _Controls(player: player),
+                  const SizedBox(height: 15),
+                  _ProgressBar(player: player, fallbackDuration: item.duration),
+                  const SizedBox(height: 20),
+                  _BottomActions(
+                    player: player,
+                    item: item,
+                    queueCtrl: _queueCtrl,
+                  ),
+                ],
+              ),
+            ),
+            // Окно очереди — поверх всего содержимого плеера.
+            QueueSheet(controller: _queueCtrl, player: player),
+          ],
         );
       },
     );
@@ -187,19 +212,19 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
     duration: const Duration(milliseconds: 500),
     value: 0,
   );
-  
+
   late final AnimationController _prevAnim = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 200),
     value: 0,
   );
-  
+
   late final AnimationController _nextAnim = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 200),
     value: 0,
   );
-  
+
   bool _isPlayPressed = false;
   bool _isPrevPressed = false;
   bool _isNextPressed = false;
@@ -304,13 +329,13 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
             final playExpanded = _playAnim.value;
             final prevExpanded = _prevAnim.value;
             final nextExpanded = _nextAnim.value;
-            
-            // ИСПРАВЛЕНО: prev/next сужаются при нажатии на play
-            // prevWidth = base - shrink * playExpanded + expand * prevExpanded
+
+            // prev/next сужаются при нажатии на play
             final prevWidth = 56 - 20 * playExpanded + 24 * prevExpanded;
             final nextWidth = 56 - 20 * playExpanded + 24 * nextExpanded;
-            final playWidth = 170 + 40 * playExpanded - 30 * (prevExpanded + nextExpanded);
-            
+            final playWidth =
+                170 + 40 * playExpanded - 30 * (prevExpanded + nextExpanded);
+
             final isPlayPressed = _playAnim.value > 0 || _isPlayPressed;
             final isPrevPressed = _prevAnim.value > 0 || _isPrevPressed;
             final isNextPressed = _nextAnim.value > 0 || _isNextPressed;
@@ -327,7 +352,8 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                     onTap: widget.player.skipToPrevious,
                     child: Material(
                       color: AppColors.elevated,
-                      borderRadius: BorderRadius.circular(isPrevPressed ? 32 : 32),
+                      borderRadius:
+                          BorderRadius.circular(isPrevPressed ? 32 : 32),
                       child: SizedBox(
                         width: prevWidth,
                         height: 64,
@@ -347,13 +373,14 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   onPointerUp: _onPlayPointerUp,
                   onPointerCancel: _onPlayPointerCancel,
                   child: GestureDetector(
-                    onTap: () => playing ? widget.player.pause() : widget.player.play(),
+                    onTap: () =>
+                        playing ? widget.player.pause() : widget.player.play(),
                     child: Material(
                       color: AppColors.elevatedHi,
                       borderRadius: BorderRadius.circular(
-                        playing 
-                          ? (isPlayPressed ? 20 : 20)  // Pause: зажат=16, отпущен=20
-                          : (isPlayPressed ? 32 : 32), // Play: зажат=32, отпущен=62
+                        playing
+                            ? (isPlayPressed ? 20 : 20)
+                            : (isPlayPressed ? 32 : 32),
                       ),
                       child: SizedBox(
                         width: playWidth,
@@ -390,7 +417,8 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                     onTap: widget.player.skipToNext,
                     child: Material(
                       color: AppColors.elevated,
-                      borderRadius: BorderRadius.circular(isNextPressed ? 32 : 32),
+                      borderRadius:
+                          BorderRadius.circular(isNextPressed ? 32 : 32),
                       child: SizedBox(
                         width: nextWidth,
                         height: 64,
@@ -413,34 +441,6 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
   }
 }
 
-class _AnimatedSideButton extends StatelessWidget {
-  const _AnimatedSideButton({
-    required this.icon,
-    required this.onTap,
-    required this.width,
-  });
-  final IconData icon;
-  final VoidCallback onTap;
-  final double width;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.elevated,
-      borderRadius: BorderRadius.circular(32),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(32),
-        onTap: onTap,
-        child: SizedBox(
-          width: width,
-          height: 64,
-          child: Icon(icon, color: AppColors.textPrimary, size: 28),
-        ),
-      ),
-    );
-  }
-}
-
 // =====================================================================
 //  PROGRESS BAR
 // =====================================================================
@@ -454,11 +454,10 @@ class _ProgressBar extends StatefulWidget {
   State<_ProgressBar> createState() => _ProgressBarState();
 }
 
-class _ProgressBarState extends State<_ProgressBar> 
+class _ProgressBarState extends State<_ProgressBar>
     with SingleTickerProviderStateMixin {
   /// Когда пользователь тянет ползунок — показываем эту позицию вместо
   /// реальной из стрима, иначе UI «дёргается».
-
   double? _dragFraction;
 
   // Анимация thumb
@@ -474,13 +473,10 @@ class _ProgressBarState extends State<_ProgressBar>
     super.dispose();
   }
 
-
-
   @override
   Widget build(BuildContext context) {
-
     final pos = (widget.player.positionStream);
-        
+
     return StreamBuilder<Duration>(
       stream: pos,
       builder: (context, posSnap) {
@@ -496,28 +492,30 @@ class _ProgressBarState extends State<_ProgressBar>
                 : 0.0;
             final f = _dragFraction ?? realF;
 
-                        return Column(
+            return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 LayoutBuilder(
                   builder: (_, c) {
                     final width = c.maxWidth;
-                     return GestureDetector(
+                    return GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onHorizontalDragStart: (d) {
-                        _thumbAnim.forward(); // сжимаем
-                        // НЕ меняем _dragFraction здесь — thumb не двигается
+                        _thumbAnim.forward();
                       },
                       onHorizontalDragUpdate: (d) {
                         setState(() {
-                          _dragFraction = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                          _dragFraction =
+                              (d.localPosition.dx / width).clamp(0.0, 1.0);
                         });
                       },
                       onHorizontalDragEnd: (_) {
-                        _thumbAnim.reverse(); // возвращаем
+                        _thumbAnim.reverse();
                         if (_dragFraction != null && maxMs > 0) {
                           widget.player.seek(
-                            Duration(milliseconds: (_dragFraction! * maxMs).round()),
+                            Duration(
+                                milliseconds:
+                                    (_dragFraction! * maxMs).round()),
                           );
                         }
                         setState(() {
@@ -525,13 +523,12 @@ class _ProgressBarState extends State<_ProgressBar>
                         });
                       },
                       onTapDown: (d) {
-                        _thumbAnim.forward(); // сжимаем при касании
-                        // НЕ меняем _dragFraction — thumb остаётся на месте
+                        _thumbAnim.forward();
                       },
                       onTapUp: (d) {
-                        _thumbAnim.reverse(); // возвращаем
-                        // Перемещаем thumb к позиции отпускания
-                        final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                        _thumbAnim.reverse();
+                        final frac =
+                            (d.localPosition.dx / width).clamp(0.0, 1.0);
                         if (maxMs > 0) {
                           widget.player.seek(
                             Duration(milliseconds: (frac * maxMs).round()),
@@ -542,13 +539,12 @@ class _ProgressBarState extends State<_ProgressBar>
                         });
                       },
                       onTapCancel: () {
-                        _thumbAnim.reverse(); // возвращаем
+                        _thumbAnim.reverse();
                         setState(() {
                           _dragFraction = null;
                         });
                       },
                       child: Container(
-                        height: 80,
                         color: Colors.transparent,
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -564,21 +560,26 @@ class _ProgressBarState extends State<_ProgressBar>
                                 ),
                               ),
                             ),
-                            // Время внутри той же области, компактно
                             const SizedBox(height: 20),
                             Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
                                     _fmt(maxMs > 0
-                                        ? Duration(milliseconds: (f * maxMs).round())
+                                        ? Duration(
+                                            milliseconds:
+                                                (f * maxMs).round())
                                         : position),
                                     style: const TextStyle(
                                       color: AppColors.textPrimary,
                                       fontSize: 12,
-                                      fontFeatures: [FontFeature.tabularFigures()],
+                                      fontFeatures: [
+                                        FontFeature.tabularFigures()
+                                      ],
                                     ),
                                   ),
                                   Text(
@@ -586,7 +587,9 @@ class _ProgressBarState extends State<_ProgressBar>
                                     style: const TextStyle(
                                       color: AppColors.textSecondary,
                                       fontSize: 12,
-                                      fontFeatures: [FontFeature.tabularFigures()],
+                                      fontFeatures: [
+                                        FontFeature.tabularFigures()
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -598,7 +601,6 @@ class _ProgressBarState extends State<_ProgressBar>
                     );
                   },
                 ),
-                // УБРАНО: const SizedBox(height: 6) и Row с временем — они теперь внутри GestureDetector
               ],
             );
           },
@@ -620,62 +622,66 @@ class _ProgressPainter extends CustomPainter {
   _ProgressPainter({
     required this.fraction,
     required this.thumbAnim,
-  }) : super(repaint: thumbAnim); // <-- автоматическая перерисовка при анимации
-  
+  }) : super(repaint: thumbAnim);
+
   final double fraction;
   final Animation<double> thumbAnim;
 
-  static const _trackHeight = 10.0;        // толще трек
-  static const _thumbWidthNormal = 8.0;         // шире бегунок
-  static const _thumbHeightNormal = 48.0;       // выше бегунок (как на скриншоте)
+  static const _trackHeight = 10.0;
+  static const _thumbWidthNormal = 8.0;
+  static const _thumbHeightNormal = 48.0;
   static const _thumbHeightDragging = 48.0;
-  static const _thumbRadius = 4.0;        // скругление бегунка               
+  static const _thumbRadius = 4.0;
   static const _gapDragging = 6.0;
-  static const _gapNormal = 4.0;          // зазор между бегунком и полосками
+  static const _gapNormal = 4.0;
   static const _thumbWidthDragging = 4.0;
-  static const _margin = 16.0;            // отступ слева и справа
-  
+  static const _margin = 16.0;
+
   @override
   void paint(Canvas canvas, Size size) {
     final centerY = size.height / 2;
     final totalWidth = size.width - _margin * 2;
     final filledW = totalWidth * fraction.clamp(0.0, 1.0);
-    
-    // Плавная интерполяция через анимацию (0..1)
+
     final double t = thumbAnim.value;
-    
-    final double thumbWidth = _thumbWidthNormal + (_thumbWidthDragging - _thumbWidthNormal) * t;
-    final double thumbHeight = _thumbHeightNormal + (_thumbHeightDragging - _thumbHeightNormal) * t;
+
+    final double thumbWidth =
+        _thumbWidthNormal + (_thumbWidthDragging - _thumbWidthNormal) * t;
+    final double thumbHeight =
+        _thumbHeightNormal + (_thumbHeightDragging - _thumbHeightNormal) * t;
     final double gap = _gapNormal + (_gapDragging - _gapNormal) * t;
-    
-    // Скругление у thumb: от нормального (2) к сжатому (4)
+
     final double thumbCornerRadius = 2 + 2 * t;
-    
+
     final double thumbX = _margin + filledW - thumbWidth / 2;
-    final double clampedThumbX = thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
+    final double clampedThumbX =
+        thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
 
     // Фоновый трек
     if (clampedThumbX + thumbWidth + gap < _margin + totalWidth) {
       final double trackStart = clampedThumbX + thumbWidth + gap;
       final double trackWidth = (_margin + totalWidth) - trackStart;
-      
+
       final trackRect = RRect.fromRectAndCorners(
-        Rect.fromLTWH(trackStart, centerY - _trackHeight / 2, trackWidth, _trackHeight),
+        Rect.fromLTWH(
+            trackStart, centerY - _trackHeight / 2, trackWidth, _trackHeight),
         topLeft: Radius.circular(thumbCornerRadius),
         topRight: const Radius.circular(_trackHeight / 2),
         bottomLeft: Radius.circular(thumbCornerRadius),
         bottomRight: const Radius.circular(_trackHeight / 2),
       );
-      final trackPaint = Paint()..color = AppColors.elevated.withValues(alpha: 0.5);
+      final trackPaint = Paint()
+        ..color = AppColors.elevated.withValues(alpha: 0.5);
       canvas.drawRRect(trackRect, trackPaint);
     }
 
     // Заполненная часть
     if (clampedThumbX > _margin + gap) {
       final double filledWidth = clampedThumbX - gap - _margin;
-      
+
       final filledRect = RRect.fromRectAndCorners(
-        Rect.fromLTWH(_margin, centerY - _trackHeight / 2, filledWidth, _trackHeight),
+        Rect.fromLTWH(
+            _margin, centerY - _trackHeight / 2, filledWidth, _trackHeight),
         topLeft: const Radius.circular(_trackHeight / 2),
         topRight: Radius.circular(thumbCornerRadius),
         bottomLeft: const Radius.circular(_trackHeight / 2),
@@ -687,7 +693,8 @@ class _ProgressPainter extends CustomPainter {
 
     // Бегунок
     final thumbRect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
+      Rect.fromLTWH(
+          clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
       const Radius.circular(_thumbRadius),
     );
     final thumbPaint = Paint()..color = AppColors.elevatedHi;
@@ -705,46 +712,83 @@ class _ProgressPainter extends CustomPainter {
 // =====================================================================
 
 class _BottomActions extends StatefulWidget {
-  const _BottomActions({required this.player, required this.item});
+  const _BottomActions({
+    required this.player,
+    required this.item,
+    required this.queueCtrl,
+  });
   final PlayerService player;
   final MediaItem item;
+  final QueueSheetController queueCtrl;
 
   @override
   State<_BottomActions> createState() => _BottomActionsState();
 }
 
 class _BottomActionsState extends State<_BottomActions> {
-  // Локальный UI-стейт цикла повтора. На плеер он пока не передаётся —
-  // достаточно подсветки иконки, чтобы UI не выглядел мёртвым.
-  LoopMode _loop = LoopMode.off;
+  // Был ли текущий жест на Queue button именно перетаскиванием
+  // (drag), а не тапом. От этого зависит логика «доводки» окна.
+  bool _queueDragged = false;
+  double _maxHeight = 0;
 
   @override
   Widget build(BuildContext context) {
+    _maxHeight = MediaQuery.of(context).size.height;
     return Row(
       children: [
         const SizedBox(width: 5),
-        _SquircleButton(
-          icon: _loop == LoopMode.one
-              ? Icons.repeat_one_rounded
-              : Icons.repeat_rounded,
-          highlighted: _loop != LoopMode.off,
-          onTap: _cycleLoop,
-          shape: BoxShape.circle, // ← круглая кнопка
+        // Repeat — состояние берётся из сервиса (единое с окном очереди).
+        StreamBuilder<LoopMode>(
+          stream: widget.player.loopModeStream,
+          initialData: widget.player.loopMode,
+          builder: (context, snap) {
+            final loop = snap.data ?? LoopMode.off;
+            return _SquircleButton(
+              icon: loop == LoopMode.one
+                  ? Icons.repeat_one_rounded
+                  : Icons.repeat_rounded,
+              highlighted: loop != LoopMode.off,
+              onTap: widget.player.cycleLoopMode,
+              shape: BoxShape.circle, // ← круглая кнопка
+            );
+          },
         ),
         const SizedBox(width: 10),
+        // Queue button: тап → Part queue; drag вверх → тянем окно за
+        // пальцем (с правилом «выше 70% → сразу Full»).
         Expanded(
-          child: Material(
-            color: AppColors.elevated,
-            borderRadius: BorderRadius.circular(28),
-            child: InkWell(
+          child: GestureDetector(
+            onVerticalDragStart: (_) => _queueDragged = false,
+            onVerticalDragUpdate: (d) {
+              final dy = d.primaryDelta ?? 0;
+              // Реагируем только на движение вверх (открытие).
+              if (!_queueDragged && dy < 0) {
+                _queueDragged = true;
+              }
+              if (_queueDragged) {
+                widget.queueCtrl.drag(dy, _maxHeight);
+              }
+            },
+            onVerticalDragEnd: (d) {
+              if (_queueDragged) {
+                widget.queueCtrl
+                    .settle(d.primaryVelocity ?? 0, fromButton: true);
+                _queueDragged = false;
+              }
+            },
+            child: Material(
+              color: AppColors.elevated,
               borderRadius: BorderRadius.circular(28),
-              onTap: () => _showQueue(context),
-              child: const SizedBox(
-                height: 56,
-                child: Center(
-                  child: Icon(
-                    Icons.queue_music_rounded,
-                    color: AppColors.textPrimary,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(28),
+                onTap: widget.queueCtrl.openPart,
+                child: const SizedBox(
+                  height: 56,
+                  child: Center(
+                    child: Icon(
+                      Icons.queue_music_rounded,
+                      color: AppColors.textPrimary,
+                    ),
                   ),
                 ),
               ),
@@ -759,94 +803,6 @@ class _BottomActionsState extends State<_BottomActions> {
         ),
         const SizedBox(width: 5),
       ],
-    );
-  }
-
-  void _cycleLoop() {
-    final next = switch (_loop) {
-      LoopMode.off => LoopMode.all,
-      LoopMode.all => LoopMode.one,
-      LoopMode.one => LoopMode.off,
-    };
-    widget.player.rawPlayer.setLoopMode(next);
-    setState(() => _loop = next);
-  }
-
-  void _showQueue(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (_) {
-        return SafeArea(
-          top: false,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.7,
-            ),
-            child: StreamBuilder<List<MediaItem>>(
-              stream: widget.player.queue,
-              builder: (context, snap) {
-                final list = snap.data ?? const <MediaItem>[];
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(20, 4, 20, 12),
-                      child: Text(
-                        'Queue',
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    Flexible(
-                      child: ListView.builder(
-                        itemCount: list.length,
-                        itemBuilder: (_, i) {
-                          final m = list[i];
-                          return ListTile(
-                            leading: Artwork(
-                              url: m.artUri?.toString(),
-                              size: 44,
-                              borderRadius: 8,
-                            ),
-                            title: Text(
-                              m.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            subtitle: Text(
-                              m.artist ?? '',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
-                                fontSize: 12,
-                              ),
-                            ),
-                            onTap: () {
-                              widget.player.skipToQueueItem(i);
-                              Navigator.of(context).pop();
-                            },
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -870,6 +826,16 @@ class _BottomActionsState extends State<_BottomActions> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              ListTile(
+                leading: const Icon(Icons.info_outline_rounded),
+                title: const Text('Детали трека'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  if (track.sourceId.isNotEmpty) {
+                    showTrackDetailsSheet(context, track);
+                  }
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.playlist_add_rounded),
                 title: const Text('Add to playlist'),
@@ -911,7 +877,7 @@ class _SquircleButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isCircle = shape == BoxShape.circle;
-    
+
     return Material(
       color: AppColors.elevated,
       shape: isCircle ? const CircleBorder() : null,
@@ -925,7 +891,8 @@ class _SquircleButton extends StatelessWidget {
           height: 56,
           child: Icon(
             icon,
-            color: highlighted ? Colors.lightGreenAccent : AppColors.textPrimary,
+            color:
+                highlighted ? Colors.lightGreenAccent : AppColors.textPrimary,
           ),
         ),
       ),

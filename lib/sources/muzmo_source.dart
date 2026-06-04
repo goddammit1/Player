@@ -96,12 +96,62 @@ class MuzmoSource implements TrackSource {
 
     final tracks = _parseTracks(resp.data!).take(limit).toList();
 
-    // Обложки НЕ ждём здесь — иначе UI висит после Enter, пока 20
-    // параллельных запросов к Genius/iTunes отработают. Список треков
-    // возвращаем сразу; обогащение запускается вызывающей стороной
-    // через [enrichArtworksInBackground].
+    // Битрейт здесь НЕ считаем — Range-GET к каждому mp3 замедляет
+    // выдачу. Получаем его лениво в «Деталях трека» через
+    // [resolveBitrate]. Обложки тоже не ждём (см. ниже).
     return tracks;
   }
+
+  /// Ленивый битрейт для «Деталей трека»: считаем по размеру mp3 и
+  /// длительности. Размер узнаём GET-запросом с `Range: bytes=0-0`:
+  /// сервер отвечает `206` и заголовком `Content-Range: bytes 0-0/<total>`,
+  /// откуда берём полный размер (тело — 1 байт). Надёжнее HEAD, который
+  /// muzmo может не поддерживать. Фолбэк — Content-Length при статусе 200.
+  @override
+  Future<int?> resolveBitrate(Track t) async {
+    final url = t.extra['streamUrl'] as String?;
+    final dur = t.duration;
+    if (url == null || url.isEmpty) return null;
+    if (dur == null || dur.inSeconds <= 0) return null;
+
+    try {
+
+      final resp = await _dio.get<List<int>>(
+        url,
+        options: Options(
+          headers: {'Referer': '$_baseUrl/', 'Range': 'bytes=0-0'},
+          responseType: ResponseType.bytes,
+          validateStatus: (code) => code != null && code < 500,
+        ),
+      );
+
+      int? bytes;
+
+      // 1) Content-Range: bytes 0-0/123456 → число после '/'.
+      final contentRange = resp.headers.value('content-range');
+      if (contentRange != null) {
+        final slash = contentRange.lastIndexOf('/');
+        if (slash != -1) {
+          bytes = int.tryParse(contentRange.substring(slash + 1).trim());
+        }
+      }
+
+      // 2) Фолбэк: Content-Length при полном ответе (200).
+      if ((bytes == null || bytes <= 0) && resp.statusCode == 200) {
+        final lenStr = resp.headers.value('content-length');
+        final len = lenStr != null ? int.tryParse(lenStr) : null;
+        if (len != null && len > 1) bytes = len;
+      }
+
+      if (bytes == null || bytes <= 0) return null;
+
+      final kbps = (bytes * 8) / dur.inSeconds / 1000;
+      return kbps.round();
+    } catch (_) {
+      return null;
+    }
+  }
+
 
   /// Запускает асинхронное обогащение списка треков обложками. Каждый
   /// раз, когда обложка для какого-то трека найдена, вызывается

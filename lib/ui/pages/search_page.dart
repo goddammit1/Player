@@ -291,6 +291,8 @@ class _SearchPageState extends ConsumerState<SearchPage>
                                       startIndex: i,
                                     ),
                                   );
+
+
                                 },
                               );
                             },
@@ -531,6 +533,8 @@ class _TrackTile extends StatelessWidget {
   final VoidCallback onTap;
   final String? duration;
 
+
+
   @override
   Widget build(BuildContext context) {
     final accent = isPlaying
@@ -609,6 +613,7 @@ class _TrackTile extends StatelessWidget {
                   ),
                 ),
                 if (duration != null) ...[
+
                   const SizedBox(width: 8),
                   Text(
                     duration!,
@@ -621,6 +626,7 @@ class _TrackTile extends StatelessWidget {
                 ],
               ],
             ),
+
           ),
         ),
       ),
@@ -629,6 +635,8 @@ class _TrackTile extends StatelessWidget {
 }
 
 class _SearchBar extends StatelessWidget {
+
+
   const _SearchBar({
     required this.controller,
     required this.focus,

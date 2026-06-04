@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:rxdart/rxdart.dart';
 
 import '../models/track.dart';
 import '../sources/source_registry.dart';
@@ -30,6 +32,21 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   final List<Track> _queue = [];
   int _currentIndex = -1;
+
+  // ===== Очередь / repeat — состояние и стримы =====
+
+  /// Режим повтора (off / all / one). Вынесен из UI в сервис, чтобы
+  /// окно очереди и нижняя панель показывали единое состояние.
+  final BehaviorSubject<LoopMode> _loopMode =
+      BehaviorSubject<LoopMode>.seeded(LoopMode.off);
+  Stream<LoopMode> get loopModeStream => _loopMode.stream;
+  LoopMode get loopMode => _loopMode.value;
+
+  /// Индекс текущего трека в очереди (-1 если ничего не играет).
+  final BehaviorSubject<int> _currentIndexSubject =
+      BehaviorSubject<int>.seeded(-1);
+  Stream<int> get currentIndexStream => _currentIndexSubject.stream;
+  int get currentIndex => _currentIndex;
 
   // Поколение текущей загрузки. Старые завершаются молча.
   int _loadGeneration = 0;
@@ -93,6 +110,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     final myGen = ++_loadGeneration;
     _isLoading = true;
     _currentIndex = index;
+    _currentIndexSubject.add(index);
     final track = _queue[index];
     _log('[$myGen] Playing index=$index track="${track.title}" id=${track.id}');
 
@@ -236,6 +254,76 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> skipToQueueItem(int index) => _playIndex(index);
+
+  // ===== Reorder / shuffle / repeat =====
+
+  /// Перемещает трек в очереди с позиции [oldIndex] на [newIndex].
+  /// Корректирует [_currentIndex], чтобы текущий играющий трек не
+  /// «потерялся». Не прерывает воспроизведение.
+  Future<void> reorderQueueItem(int oldIndex, int newIndex) async {
+    if (oldIndex < 0 || oldIndex >= _queue.length) return;
+    if (newIndex < 0 || newIndex >= _queue.length) return;
+    if (oldIndex == newIndex) return;
+
+    final track = _queue.removeAt(oldIndex);
+    _queue.insert(newIndex, track);
+
+    // Пересчёт индекса текущего трека.
+    if (oldIndex == _currentIndex) {
+      _currentIndex = newIndex;
+    } else if (oldIndex < _currentIndex && newIndex >= _currentIndex) {
+      _currentIndex -= 1;
+    } else if (oldIndex > _currentIndex && newIndex <= _currentIndex) {
+      _currentIndex += 1;
+    }
+
+    _currentIndexSubject.add(_currentIndex);
+    queue.add(_queue.map(_toMediaItem).toList());
+  }
+
+  /// Разово перемешивает очередь. Текущий играющий трек остаётся на
+  /// своём месте (становится первым), остальные тасуются. Это не режим —
+  /// просто действие над очередью, поэтому никакого состояния не хранит.
+  Future<void> shuffleQueue() async {
+    if (_queue.length < 2) return;
+
+    final current = _currentIndex >= 0 ? _queue[_currentIndex] : null;
+    final rng = Random();
+    // Fisher–Yates.
+    for (var i = _queue.length - 1; i > 0; i--) {
+      final j = rng.nextInt(i + 1);
+      final tmp = _queue[i];
+      _queue[i] = _queue[j];
+      _queue[j] = tmp;
+    }
+    // Возвращаем текущий трек в начало.
+    if (current != null) {
+      final idx = _queue.indexOf(current);
+      if (idx > 0) {
+        _queue.removeAt(idx);
+        _queue.insert(0, current);
+      }
+      _currentIndex = 0;
+      _currentIndexSubject.add(_currentIndex);
+    }
+    queue.add(_queue.map(_toMediaItem).toList());
+  }
+
+  /// Устанавливает режим повтора и пробрасывает его в just_audio.
+  Future<void> setLoopMode(LoopMode mode) async {
+    _loopMode.add(mode);
+    await _player.setLoopMode(mode);
+  }
+
+  /// Циклически переключает режим повтора: off → all → one → off.
+  Future<void> cycleLoopMode() {
+    final next = switch (_loopMode.value) {
+      LoopMode.off => LoopMode.all,
+      LoopMode.all => LoopMode.one,
+      LoopMode.one => LoopMode.off,
+    };
+    return setLoopMode(next);
+  }
 
   // ===== Streams =====
 

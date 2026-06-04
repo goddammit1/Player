@@ -32,10 +32,76 @@ class YoutubeSource implements TrackSource {
   @override
   Future<List<Track>> search(String query, {int limit = 20}) async {
     final results = await _yt.search.search(query);
-    return results.take(limit).map(_videoToTrack).toList();
+
+    // Не оставляем «только официальные релизы» — это режет почти всё.
+    // Наоборот: пропускаем любую музыку и выкидываем лишь ЯВНО
+    // немузыкальные ролики по эвристикам (длительность, прямые эфиры,
+    // ключевые слова в названии). Описание не догружаем — это медленно
+    // и для отсева мусора не требуется.
+    //
+    // ВАЖНО: битрейт здесь НЕ резолвим — getManifest медленный (3–8 с
+    // на трек) и заметно тормозит поиск. Битрейт получаем лениво в
+    // «Деталях трека» через [resolveBitrate].
+    final music = <Track>[];
+    for (final v in results) {
+      if (_isLikelyNonMusic(v)) continue;
+      music.add(_videoToTrack(v));
+      if (music.length >= limit) break;
+    }
+    return music;
   }
 
-  Track _videoToTrack(Video v) {
+  /// Ленивый битрейт для «Деталей трека»: берём из манифеста выбранной
+  /// аудиодорожки. Результат кэшируется в [_streamInfoCache], так что
+  /// последующее воспроизведение не делает повторный getManifest.
+  @override
+  Future<int?> resolveBitrate(Track track) async {
+    try {
+      final info = await _getStreamInfo(track.id);
+      return info.bitrate.kiloBitsPerSecond.round();
+    } catch (_) {
+      return null;
+    }
+  }
+
+
+
+
+  /// Стоп-слова в названии, характерные для НЕмузыкальных видео:
+  /// обзоры, влоги, летсплеи, подкасты, интервью, туториалы и т.п.
+  static final RegExp _nonMusicTitle = RegExp(
+    r'\b('
+    r'обзор|распаковка|влог|vlog|летсплей|let.?s\s*play|gameplay|'
+    r'прохождение|стрим|stream|podcast|подкаст|интервью|interview|'
+    r'tutorial|туториал|урок|review|reaction|реакция|'
+    r'трейлер|trailer|новости|news|разбор|лекция|lecture|'
+    r'how\s*to|unboxing'
+    r')\b',
+    caseSensitive: false,
+  );
+
+  /// Возвращает true, если видео ЯВНО не музыка и его стоит исключить.
+  ///
+  /// Опираемся только на данные из результатов поиска (без описания):
+  ///   • прямые трансляции (`isLive`) — не треки;
+  ///   • слишком длинные ролики (> 20 мин) — почти всегда подкасты,
+  ///     стримы, лекции, многочасовые сборники и т.п.;
+  ///   • немузыкальные стоп-слова в названии.
+  /// Всё остальное считаем музыкой и пропускаем.
+  bool _isLikelyNonMusic(Video v) {
+    if (v.isLive) return true;
+
+    final d = v.duration;
+    if (d != null && d > const Duration(minutes: 20)) return true;
+
+    if (_nonMusicTitle.hasMatch(v.title)) return true;
+
+    return false;
+  }
+
+
+
+  Track _videoToTrack(Video v, {int? bitrateKbps}) {
     // Prefer mediumRes — it always exists. maxRes/highRes often return
     // HTTP 404 for older or non-HD videos and just spam the logs.
     final thumb = v.thumbnails.mediumResUrl.isNotEmpty
@@ -51,8 +117,14 @@ class YoutubeSource implements TrackSource {
       artist: v.author,
       duration: v.duration,
       artworkUrl: thumb,
+      // qualityScore — реальный битрейт в kbps (используется для
+      // сортировки), qualityLabel — он же для показа в UI.
+      qualityScore: bitrateKbps,
+      qualityLabel: bitrateKbps != null ? '$bitrateKbps kbps' : null,
     );
   }
+
+
 
   /// Returns a cached or freshly fetched audio-only stream info for the
   /// given YouTube video id.

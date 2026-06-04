@@ -6,6 +6,8 @@ import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
 import '../../models/track.dart';
 import 'artwork.dart';
+import 'track_details_sheet.dart';
+
 
 /// Bottom sheet выбора плейлиста для трека.
 ///
@@ -67,12 +69,39 @@ class _AddToPlaylistSheet extends ConsumerWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Icon(
+                  Icons.info_outline_rounded,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              title: const Text(
+                'Детали трека',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                showTrackDetailsSheet(context, track);
+              },
+            ),
+            const Divider(color: AppColors.outline, height: 1),
+            ListTile(
+              leading: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppColors.elevated,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
                   Icons.add_rounded,
                   color: AppColors.textPrimary,
                 ),
               ),
               title: const Text(
                 'New playlist',
+
                 style: TextStyle(
                   color: AppColors.textPrimary,
                   fontWeight: FontWeight.w600,
