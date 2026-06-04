@@ -1,14 +1,29 @@
 import 'package:audio_service/audio_service.dart';
-
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
-
+import '../../models/track.dart';
+import 'add_to_playlist_sheet.dart';
 import '../../core/player_service.dart';
 import '../../main.dart' show AppColors;
 import 'artwork.dart';
 
-/// Форматирует длительность трека в вид `m:ss` или `h:mm:ss`.
-/// Если длительность неизвестна — возвращает `--:--`.
+extension MediaItemToTrack on MediaItem {
+  Track toTrack() {
+    final extra = this.extras ?? {};
+    return Track(
+      id: id,
+      sourceId: extra['source_id'] as String? ?? 'local',
+      title: title,
+      artist: artist ?? '',
+      duration: duration,
+      artworkUrl: artUri?.toString(),
+      qualityScore: extra['quality_score'] as int?,
+      qualityLabel: extra['quality_label'] as String?,
+      extra: extra,
+    );
+  }
+}
+
 String _formatDuration(Duration? d) {
   if (d == null) return '--:--';
   final totalSeconds = d.inSeconds;
@@ -23,16 +38,6 @@ String _formatDuration(Duration? d) {
   return '$minutes:$ss';
 }
 
-
-/// Контроллер 2-позиционного окна очереди.
-///
-/// Окно имеет три «магнитные» позиции (значение [value] = доля высоты
-/// экрана, которую занимает окно):
-/// - 0.0  — закрыто (за нижним краем экрана);
-/// - [QueueSheetController.partPosition] (≈0.5) — Part queue (полэкрана);
-/// - 1.0  — Full queue (весь экран).
-///
-/// Part queue — это просто промежуточная позиция того же окна.
 class QueueSheetController extends ChangeNotifier {
   QueueSheetController({required this.vsync}) {
     _anim = AnimationController(
@@ -45,59 +50,45 @@ class QueueSheetController extends ChangeNotifier {
   final TickerProvider vsync;
   late final AnimationController _anim;
 
-  /// Доля экрана для позиции Part queue. Подобрана так, чтобы над
-  /// системной навигацией помещались шапка + 5 ближайших треков.
   static const double partPosition = 0.62;
-
-  /// Порог при drag с Queue button: если окно доведено выше этого
-  /// значения — сразу уезжаем в Full, минуя остановку на Part.
   static const double fullThreshold = 0.82;
 
   double get value => _anim.value;
   bool get isClosed => _anim.value <= 0.001;
   bool get isFull => _anim.value >= 0.999;
 
-  /// Открыть в Part queue (анимация выезда снизу ~0.5 сек).
   void openPart() => _anim.animateTo(
         partPosition,
-        duration: const Duration(milliseconds: 500),
+        duration: const Duration(milliseconds: 280),
         curve: Curves.easeOutCubic,
       );
 
   void openFull() => _anim.animateTo(
         1,
-        duration: const Duration(milliseconds: 420),
+        duration: const Duration(milliseconds: 240),
         curve: Curves.easeOutCubic,
       );
 
   void close() => _anim.animateTo(
         0,
-        duration: const Duration(milliseconds: 380),
+        duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
       );
 
-  /// Мгновенно сдвинуть окно (используется при drag — окно тянется
-  /// за пальцем в реальном времени). [delta] — пройденный по вертикали
-  /// путь в пикселях (положительный вниз), [maxHeight] — высота экрана.
   void drag(double delta, double maxHeight) {
     if (maxHeight <= 0) return;
     _anim.value = (_anim.value - delta / maxHeight).clamp(0.0, 1.0);
   }
 
-  /// Решает, к какой позиции «примагнититься» после отпускания.
-  /// [velocity] — вертикальная скорость в px/s (отрицательная вверх).
-  /// [fromButton] — drag начат с Queue button (тогда работает правило
-  /// «выше 70% → сразу Full»).
+  void setValue(double v) {
+    _anim.value = v.clamp(0.0, 1.0);
+  }
+
   void settle(double velocity, {required bool fromButton}) {
     const fling = 700;
     final v = value;
 
     if (fromButton) {
-      // Первичный drag с кнопки: окно всегда останавливается на Part.
-      // Единственное исключение — пользователь ЦЕЛЕНАПРАВЛЕННО дотянул
-      // окно выше порога (>70% высоты): тогда раскрываем на Full.
-      // Скорость броска тут НЕ учитывается — резкий флик вверх не должен
-      // сам по себе открывать Full, только фактическая протяжка.
       if (v >= fullThreshold) {
         openFull();
       } else if (velocity > fling && v < partPosition * 0.6) {
@@ -108,20 +99,14 @@ class QueueSheetController extends ChangeNotifier {
       return;
     }
 
-
-    // Drag уже внутри открытого окна — магнитимся к ближайшей из
-    // {0, part, 1} с учётом броска.
     if (velocity < -fling) {
-      // Резкий бросок вверх.
       v < partPosition ? openPart() : openFull();
       return;
     }
     if (velocity > fling) {
-      // Резкий бросок вниз.
       v > partPosition ? openPart() : close();
       return;
     }
-    // Спокойное отпускание — ближайшая позиция.
     final toClose = v;
     final toPart = (v - partPosition).abs();
     final toFull = (1 - v);
@@ -141,14 +126,6 @@ class QueueSheetController extends ChangeNotifier {
   }
 }
 
-/// Полноэкранный слой окна очереди, который кладётся в [Stack] поверх
-/// содержимого плеера. Сам по себе невидим, пока контроллер закрыт.
-///
-/// Структура (сверху вниз) при открытом окне:
-/// - ручка (drag handle) — тянем за неё от Part к Full и обратно;
-/// - шапка Part: инфо о текущем треке + Shuffle / Repeat;
-/// - список очереди (ReorderableListView) — перетаскивание за полоски
-///   справа, тап по треку — переход на него.
 class QueueSheet extends StatelessWidget {
   const QueueSheet({
     super.key,
@@ -170,63 +147,57 @@ class QueueSheet extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         final t = controller.value;
-        if (t <= 0.001) return const SizedBox.shrink();
+        final isClosed = t <= 0.001;
 
-        // Прозрачность контента: 100% достигается на ~половине пути Part.
-        final contentOpacity =
-            (t / (QueueSheetController.partPosition / 2)).clamp(0.0, 1.0);
-        // Затемнение фона за окном растёт вместе с t.
+        final contentOpacity = isClosed
+            ? 0.0
+            : (t / (QueueSheetController.partPosition / 2)).clamp(0.0, 1.0);
+        
         final scrimOpacity = (t / QueueSheetController.partPosition * 0.5)
             .clamp(0.0, 0.5);
 
-        // Окно ВСЕГДА отрисовано на полную высоту экрана: шапка (ручка +
-        // трек + shuffle/repeat) закреплена сверху, под ней — скроллящийся
-        // список. Само окно «выезжает» снизу через Transform.translate:
-        // при t=1 оно на месте, при t→0 уведено вниз за край экрана.
-        // Так шапка ВСЕГДА на верхней кромке окна и видна и в Part, и в
-        // Full, а скроллится только список под ней.
-        final slideOffset = (1 - t) * maxHeight;
+        const peekOffset = 0.16;
+        final closedOffset = maxHeight * (1 - peekOffset);
+        final slideOffset = (1 - t) * closedOffset;
 
         return Positioned.fill(
-          child: Stack(
-            children: [
-              // Затемнение — тап по нему закрывает окно. Вертикальный
-              // свайп по затемнению управляет ТОЛЬКО очередью (тянет/
-              // примагничивает её), а не пробрасывается на плеер под ним —
-              // пока очередь открыта, жест взаимодействует лишь с ней.
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: controller.close,
-                  onVerticalDragUpdate: (d) =>
-                      controller.drag(d.primaryDelta ?? 0, maxHeight),
-                  onVerticalDragEnd: (d) => controller.settle(
-                    d.primaryVelocity ?? 0,
-                    fromButton: false,
-                  ),
-                  child: ColoredBox(
-                    color: Colors.black.withValues(alpha: scrimOpacity),
-                  ),
-                ),
-              ),
-
-              // Окно на полную высоту, сдвинуто вниз на slideOffset.
-              Positioned.fill(
-                child: Transform.translate(
-                  offset: Offset(0, slideOffset),
-                  child: Opacity(
-                    opacity: contentOpacity,
-                    child: _QueueBody(
-                      controller: controller,
-                      player: player,
-                      maxHeight: maxHeight,
-                      topInset: topInset,
-                      bottomInset: bottomInset,
+          child: IgnorePointer(
+            ignoring: isClosed,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: controller.close,
+                    onVerticalDragUpdate: (d) =>
+                        controller.drag(d.primaryDelta ?? 0, maxHeight),
+                    onVerticalDragEnd: (d) => controller.settle(
+                      d.primaryVelocity ?? 0,
+                      fromButton: false,
+                    ),
+                    child: ColoredBox(
+                      color: Colors.black.withValues(alpha: scrimOpacity),
                     ),
                   ),
                 ),
-              ),
-            ],
+
+                Positioned.fill(
+                  child: Transform.translate(
+                    offset: Offset(0, slideOffset),
+                    child: Opacity(
+                      opacity: contentOpacity,
+                      child: _QueueBody(
+                        controller: controller,
+                        player: player,
+                        maxHeight: maxHeight,
+                        topInset: topInset,
+                        bottomInset: bottomInset,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -252,32 +223,19 @@ class _QueueBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = controller.value;
-    // По мере приближения к Full добавляем верхний отступ под статус-бар
-    // (и системную шторку уведомлений), чтобы шапка/ручка не уезжали под
-    // них. Отступ появляется только ближе к Full, чтобы в Part окно
-    // оставалось «вплотную».
     final fullProgress =
         ((t - QueueSheetController.partPosition) /
                 (1 - QueueSheetController.partPosition))
             .clamp(0.0, 1.0);
     final topPad = topInset * fullProgress;
 
-    // Видимая часть окна = maxHeight * t (окно сдвинуто вниз на (1-t)).
-    // Контенту даём высоту = видимая зона, но НЕ меньше высоты окна в
-    // позиции Part — иначе при сжатии к закрытию (t→0) шапка фиксированной
-    // высоты не влезает в крошечную высоту и Column даёт overflow.
-    // ClipRect (на Material) обрезает контент по фактической видимой зоне,
-    // а OverflowBox с выравниванием по верху позволяет контенту иметь эту
-    // «рабочую» высоту, выходя за пределы родителя без overflow-ошибки.
-    // Список (Expanded) получает остаток рабочей высоты и листается прямо
-    // в окошке Part queue.
     final visibleHeight = (maxHeight * t).clamp(0.0, maxHeight);
     final contentHeight =
         visibleHeight.clamp(maxHeight * QueueSheetController.partPosition,
             maxHeight);
 
     return Material(
-      color: AppColors.surface,
+      color: AppColors.background,
       clipBehavior: Clip.antiAlias,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       child: ClipRect(
@@ -288,9 +246,8 @@ class _QueueBody extends StatelessWidget {
           child: SizedBox(
             height: contentHeight,
             child: Column(
-
               children: [
-                // Ручка сверху + шапка — за них тянем окно (Part <-> Full).
+                // ═══ ШАПКА: ручка + текущий трек + кнопки + Queue/songs ═══
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onVerticalDragUpdate: (d) =>
@@ -301,15 +258,20 @@ class _QueueBody extends StatelessWidget {
                   ),
                   child: Padding(
                     padding: EdgeInsets.only(top: topPad),
-                    child: _Header(player: player, controller: controller),
+                    child: _Header(
+                      player: player,
+                      controller: controller,
+                      songCount: 0, // обновится внутри через StreamBuilder
+                    ),
                   ),
                 ),
-                // Список очереди — листается; reorder за полоски справа.
-                // Expanded отдаёт списку остаток видимой высоты окна.
+                // ═══ СПИСОК с кастомной физикой для закрытия вверху ═══
                 Expanded(
                   child: _QueueList(
+                    controller: controller,
                     player: player,
                     bottomInset: bottomInset,
+                    maxHeight: maxHeight,
                   ),
                 ),
               ],
@@ -321,11 +283,15 @@ class _QueueBody extends StatelessWidget {
   }
 }
 
-
 class _Header extends StatelessWidget {
-  const _Header({required this.player, required this.controller});
+  const _Header({
+    required this.player,
+    required this.controller,
+    required this.songCount,
+  });
   final PlayerService player;
   final QueueSheetController controller;
+  final int songCount;
 
   @override
   Widget build(BuildContext context) {
@@ -333,7 +299,7 @@ class _Header extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 10),
-        // Drag handle.
+        // Ручка
         Container(
           width: 40,
           height: 4,
@@ -342,70 +308,121 @@ class _Header extends StatelessWidget {
             borderRadius: BorderRadius.circular(2),
           ),
         ),
-        const SizedBox(height: 14),
-        // Инфо о текущем треке + быстрый доступ к shuffle/repeat.
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 12, 14),
-          child: StreamBuilder<MediaItem?>(
-            stream: player.mediaItem,
-            builder: (context, snap) {
-              final item = snap.data;
-              return Row(
+        const SizedBox(height: 12),
+
+        // Текущий трек + кнопки
+        StreamBuilder<MediaItem?>(
+          stream: player.mediaItem,
+          builder: (context, snap) {
+            final item = snap.data;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
                 children: [
-                  Artwork(
-                    url: item?.artUri?.toString(),
-                    size: 48,
-                    borderRadius: 10,
-                    memCacheSize: 112,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
+                  Container(
+                    child: Row(
                       children: [
-                        const Text(
-                          'Now playing',
-                          style: TextStyle(
-                            color: AppColors.textTertiary,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.3,
+                        Artwork(
+                          url: item?.artUri?.toString(),
+                          size: 56,
+                          borderRadius: 12,
+                          memCacheSize: 128,
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                item?.title ?? '',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              Text(
+                                item?.artist ?? '',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item?.title ?? '',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                        IconButton(
+                          onPressed: () {
+                            if (item == null) return;
+                            showAddToPlaylistSheet(context, item.toTrack());
+                          },
+                          icon: const Icon(
+                            Icons.more_vert_rounded,
                             color: AppColors.textPrimary,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        Text(
-                          item?.artist ?? '',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 12,
                           ),
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  _ShuffleButton(player: player),
-                  const SizedBox(width: 4),
-                  _RepeatButton(player: player),
+
+                  const SizedBox(height: 12),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _ShuffleButton(player: player),
+                      ),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: _RepeatButton(player: player),
+                      ),
+                    ],
+                  ),
                 ],
-              );
-            },
-          ),
+              ),
+            );
+          },
         ),
-        const Divider(height: 1, color: AppColors.outline),
+
+        const SizedBox(height: 8),
+
+        // ═══ Queue / X songs — в шапке, над списком ═══
+        StreamBuilder<List<MediaItem>>(
+          stream: player.queue,
+          builder: (context, snap) {
+            final count = snap.data?.length ?? 0;
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Queue',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    '$count songs',
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ],
     );
   }
@@ -417,13 +434,44 @@ class _ShuffleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Shuffle — разовое действие (перемешать очередь), а не режим:
-    // не подсвечивается, просто нажимается и выполняет функцию.
-    return IconButton(
-      onPressed: () => player.shuffleQueue(),
-      icon: const Icon(
-        Icons.shuffle_rounded,
-        color: AppColors.textSecondary,
+    return Material(
+      color: AppColors.elevated,
+      borderRadius: const BorderRadius.only(
+        topLeft: Radius.circular(32),
+        bottomLeft: Radius.circular(32),
+        topRight: Radius.circular(5),
+        bottomRight: Radius.circular(5),
+      ),
+      child: InkWell(
+        onTap: () => player.shuffleQueue(),
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(32),
+          bottomLeft: Radius.circular(32),
+          topRight: Radius.circular(5),
+          bottomRight: Radius.circular(5),
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.shuffle_rounded,
+                color: AppColors.textPrimary,
+                size: 24,
+              ),
+              SizedBox(width: 12),
+              Text(
+                'Shuffle',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -440,15 +488,51 @@ class _RepeatButton extends StatelessWidget {
       initialData: player.loopMode,
       builder: (context, snap) {
         final mode = snap.data ?? LoopMode.off;
-        return IconButton(
-          onPressed: player.cycleLoopMode,
-          icon: Icon(
-            mode == LoopMode.one
-                ? Icons.repeat_one_rounded
-                : Icons.repeat_rounded,
-            color: mode == LoopMode.off
-                ? AppColors.textSecondary
-                : Colors.lightGreenAccent,
+        final isActive = mode != LoopMode.off;
+
+        final borderRadius = isActive
+            ? BorderRadius.circular(32)
+            : const BorderRadius.only(
+                topLeft: Radius.circular(5),
+                bottomLeft: Radius.circular(5),
+                topRight: Radius.circular(32),
+                bottomRight: Radius.circular(32),
+              );
+
+        return Material(
+          color: AppColors.elevated,
+          borderRadius: borderRadius,
+          child: InkWell(
+            onTap: player.cycleLoopMode,
+            borderRadius: borderRadius,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    mode == LoopMode.one
+                        ? Icons.repeat_one_rounded
+                        : Icons.repeat_rounded,
+                    color: isActive
+                        ? AppColors.textPrimary
+                        : AppColors.textPrimary,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    'Repeat',
+                    style: TextStyle(
+                      color: isActive
+                          ? AppColors.textPrimary
+                          : AppColors.textPrimary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         );
       },
@@ -456,23 +540,33 @@ class _RepeatButton extends StatelessWidget {
   }
 }
 
-class _QueueList extends StatelessWidget {
+class _QueueList extends StatefulWidget {
   const _QueueList({
+    required this.controller,
     required this.player,
     required this.bottomInset,
+    required this.maxHeight,
   });
+
+  final QueueSheetController controller;
   final PlayerService player;
   final double bottomInset;
+  final double maxHeight;
 
+  @override
+  State<_QueueList> createState() => _QueueListState();
+}
+
+class _QueueListState extends State<_QueueList> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<MediaItem>>(
-      stream: player.queue,
+      stream: widget.player.queue,
       builder: (context, qSnap) {
         final all = qSnap.data ?? const <MediaItem>[];
         return StreamBuilder<int>(
-          stream: player.currentIndexStream,
-          initialData: player.currentIndex,
+          stream: widget.player.currentIndexStream,
+          initialData: widget.player.currentIndex,
           builder: (context, iSnap) {
             final current = iSnap.data ?? -1;
 
@@ -480,52 +574,58 @@ class _QueueList extends StatelessWidget {
               return const Center(
                 child: Text(
                   'Queue is empty',
-                  style: TextStyle(color: AppColors.textSecondary),
+                  style: TextStyle(color: Color(0xFF9E8E8E)),
                 ),
               );
             }
 
-            // Список всегда содержит все треки после текущего. В Part
-            // queue видны только те, что помещаются в видимую зону окна
-            // (≈5), остальные доступны прокруткой прямо в этом окошке. По
-            // мере растягивания окна к Full видимая зона растёт и треков
-            // видно больше равномерно, без пустой зоны после пятого.
-            final start = current >= 0 ? current + 1 : 0;
             final visible = <MapEntry<int, MediaItem>>[
-              for (var i = start; i < all.length; i++) MapEntry(i, all[i]),
+              for (var i = 0; i < all.length; i++) MapEntry(i, all[i]),
             ];
 
-            return Column(
-              children: [
-                // Небольшая надпись над треками — сколько в очереди.
-                _QueueCount(count: visible.length),
-                Expanded(
-                  child: ReorderableListView.builder(
-                    // Нижний отступ учитывает системную навигацию, чтобы
-                    // последний трек не прятался под неё.
-                    padding: EdgeInsets.only(top: 2, bottom: 24 + bottomInset),
-                    buildDefaultDragHandles: false,
-                    itemCount: visible.length,
-                    onReorder: (oldLocal, newLocal) {
-                      if (newLocal > oldLocal) newLocal -= 1;
-                      final from = visible[oldLocal].key;
-                      final to = visible[newLocal].key;
-                      player.reorderQueueItem(from, to);
-                    },
-                    itemBuilder: (context, localIndex) {
-                      final entry = visible[localIndex];
-                      final realIndex = entry.key;
-                      final m = entry.value;
-                      return _QueueTile(
-                        key: ValueKey('${m.id}_$realIndex'),
-                        index: localIndex,
-                        media: m,
-                        onTap: () => player.skipToQueueItem(realIndex),
+            return ClipRect(
+              child: ReorderableListView.builder(
+                padding: EdgeInsets.only(
+                  top: 2,
+                  bottom: 24 + widget.bottomInset,
+                ),
+                buildDefaultDragHandles: false,
+                itemCount: visible.length,
+                onReorder: (oldLocal, newLocal) {
+                  if (newLocal > oldLocal) newLocal -= 1;
+                  final from = visible[oldLocal].key;
+                  final to = visible[newLocal].key;
+                  widget.player.reorderQueueItem(from, to);
+                },
+                itemBuilder: (context, localIndex) {
+                  final entry = visible[localIndex];
+                  final realIndex = entry.key;
+                  final m = entry.value;
+                  final isCurrent = realIndex == current;
+                  return _QueueTile(
+                    key: ValueKey('${m.id}_$realIndex'),
+                    index: localIndex,
+                    media: m,
+                    isHighlighted: isCurrent,
+                    onTap: () => widget.player.skipToQueueItem(realIndex),
+                  );
+                },
+                proxyDecorator: (child, index, animation) {
+                  return AnimatedBuilder(
+                    animation: animation,
+                    builder: (context, child) {
+                      return ClipRect(
+                        child: Material(
+                          elevation: 6,
+                          color: Colors.transparent,
+                          child: child,
+                        ),
                       );
                     },
-                  ),
-                ),
-              ],
+                    child: child,
+                  );
+                },
+              ),
             );
           },
         );
@@ -534,69 +634,50 @@ class _QueueList extends StatelessWidget {
   }
 }
 
-/// Надпись над списком очереди: слева слово «Очередь», справа — число.
-class _QueueCount extends StatelessWidget {
-  const _QueueCount({required this.count});
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    const style = TextStyle(
-      color: AppColors.textTertiary,
-      fontSize: 11,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 0.3,
-    );
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const Text('Очередь', style: style),
-          Text(
-            '$count',
-            style: style.copyWith(
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-
-
-
 class _QueueTile extends StatelessWidget {
   const _QueueTile({
     super.key,
     required this.index,
     required this.media,
     required this.onTap,
+    this.isHighlighted = false,
   });
 
   final int index;
   final MediaItem media;
   final VoidCallback onTap;
+  final bool isHighlighted;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
+    return Container(
+      margin: isHighlighted
+          ? const EdgeInsets.symmetric(horizontal: 8)
+          : EdgeInsets.zero,
+      decoration: BoxDecoration(
+        color: isHighlighted ? AppColors.elevatedHi : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: InkWell(
         onTap: onTap,
+        onLongPress: () {
+          showAddToPlaylistSheet(context, media.toTrack());
+        },
+        borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: EdgeInsets.symmetric(
+            horizontal: isHighlighted ? 8 : 16,
+            vertical: 8,
+          ),
           child: Row(
             children: [
               Artwork(
                 url: media.artUri?.toString(),
-                size: 44,
+                size: 48,
                 borderRadius: 8,
-                memCacheSize: 100,
+                memCacheSize: 108,
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -608,7 +689,7 @@ class _QueueTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: FontWeight.w700,
                         fontSize: 14,
                       ),
                     ),
@@ -616,7 +697,7 @@ class _QueueTile extends StatelessWidget {
                       media.artist ?? '',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 12,
                       ),
@@ -625,8 +706,6 @@ class _QueueTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              // Справа: две полоски (за них перетаскиваем трек), а под
-              // ними — длительность трека.
               Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 mainAxisSize: MainAxisSize.min,
@@ -636,8 +715,9 @@ class _QueueTile extends StatelessWidget {
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       child: Icon(
-                        Icons.drag_handle_rounded,
+                        Icons.drag_handle,
                         color: AppColors.textSecondary,
+                        size: 20,
                       ),
                     ),
                   ),
@@ -645,7 +725,7 @@ class _QueueTile extends StatelessWidget {
                   Text(
                     _formatDuration(media.duration),
                     style: const TextStyle(
-                      color: AppColors.textTertiary,
+                      color: AppColors.textSecondary,
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
                       fontFeatures: [FontFeature.tabularFigures()],
@@ -654,7 +734,6 @@ class _QueueTile extends StatelessWidget {
                 ],
               ),
             ],
-
           ),
         ),
       ),

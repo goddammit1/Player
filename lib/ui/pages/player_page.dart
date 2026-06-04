@@ -58,6 +58,8 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
   late final QueueSheetController _queueCtrl =
       QueueSheetController(vsync: this);
 
+  
+
   @override
   void dispose() {
     _queueCtrl.dispose();
@@ -726,10 +728,10 @@ class _BottomActions extends StatefulWidget {
 }
 
 class _BottomActionsState extends State<_BottomActions> {
-  // Был ли текущий жест на Queue button именно перетаскиванием
-  // (drag), а не тапом. От этого зависит логика «доводки» окна.
   bool _queueDragged = false;
   double _maxHeight = 0;
+  double _startFingerY = 0;
+  double _startValue = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -737,7 +739,6 @@ class _BottomActionsState extends State<_BottomActions> {
     return Row(
       children: [
         const SizedBox(width: 5),
-        // Repeat — состояние берётся из сервиса (единое с окном очереди).
         StreamBuilder<LoopMode>(
           stream: widget.player.loopModeStream,
           initialData: widget.player.loopMode,
@@ -749,26 +750,37 @@ class _BottomActionsState extends State<_BottomActions> {
                   : Icons.repeat_rounded,
               highlighted: loop != LoopMode.off,
               onTap: widget.player.cycleLoopMode,
-              shape: BoxShape.circle, // ← круглая кнопка
+              shape: BoxShape.circle,
             );
           },
         ),
         const SizedBox(width: 10),
-        // Queue button: тап → Part queue; drag вверх → тянем окно за
-        // пальцем (с правилом «выше 70% → сразу Full»).
         Expanded(
           child: GestureDetector(
-            onVerticalDragStart: (_) => _queueDragged = false,
-            onVerticalDragUpdate: (d) {
-              final dy = d.primaryDelta ?? 0;
-              // Реагируем только на движение вверх (открытие).
-              if (!_queueDragged && dy < 0) {
-                _queueDragged = true;
-              }
-              if (_queueDragged) {
-                widget.queueCtrl.drag(dy, _maxHeight);
-              }
+            behavior: HitTestBehavior.translucent,
+            onVerticalDragStart: (d) {
+              _queueDragged = false;
+              _startFingerY = d.globalPosition.dy;
+              _startValue = widget.queueCtrl.value;
             },
+            onVerticalDragUpdate: (d) {
+            final currentFingerY = d.globalPosition.dy;
+            final rawDy = _startFingerY - currentFingerY;
+            
+            // Мертвая зона 10px
+            final dy = rawDy > 10 ? rawDy - 10 : (rawDy < -10 ? rawDy + 10 : 0);
+
+            if (!_queueDragged && rawDy > 5) {
+              _queueDragged = true;
+            }
+
+            if (_queueDragged && dy != 0) {
+              const dragDistanceForFullOpen = 690.0;
+              final valueShift = dy / dragDistanceForFullOpen;
+              final newValue = (_startValue + valueShift).clamp(0.0, 1.0);
+              widget.queueCtrl.setValue(newValue);
+            }
+          },
             onVerticalDragEnd: (d) {
               if (_queueDragged) {
                 widget.queueCtrl
@@ -805,6 +817,7 @@ class _BottomActionsState extends State<_BottomActions> {
       ],
     );
   }
+
 
   void _showExtra(BuildContext context) {
     final m = widget.item;
