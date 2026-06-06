@@ -6,6 +6,7 @@ import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
+import '../../core/artwork_helper.dart';
 
 
 /// Экран отдельного плейлиста: большая обложка-мозаика, имя, кнопка
@@ -175,6 +176,7 @@ class PlaylistPage extends ConsumerWidget {
                               url: t.artworkUrl,
                               size: 48,
                               borderRadius: 8,
+                              aspectRatio: artAspectRatio(t),  // ← добавьте
                             ),
                             title: Text(
                               t.title,

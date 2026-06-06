@@ -208,7 +208,24 @@ class ArtworkProvider {
         (result['song_art_image_url'] as String?) ??
         (result['header_image_url'] as String?);
     if (art == null || art.isEmpty) return null;
-    return art;
+
+    // Genius отдаёт оригинальное изображение — оно может быть любого
+    // размера. Для квадратной обложки подставляем параметры resize,
+    // чтобы получить ровно 600x600 (квадрат, центрированный crop).
+    return _geniusSquareUrl(art, size: 600);
+  }
+
+  /// Приводит URL Genius-изображения к квадратному тумбнейлу.
+  ///
+  /// Genius CDN (images.genius.com) поддерживает параметры:
+  ///   `?w=<width>&h=<height>&fit=crop&crop=faces,edges`
+  ///
+  /// Для квадратной обложки используем fit=crop + crop=faces,edges,
+  /// чтобы центрировать обрезку на лицах/краях.
+  String _geniusSquareUrl(String rawUrl, {required int size}) {
+    // Убираем уже существующие query-параметры, если есть.
+    final base = rawUrl.split('?').first;
+    return '$base?w=$size&h=$size&fit=crop&crop=faces,edges';
   }
 
   // ---------------------------------------------------------------------

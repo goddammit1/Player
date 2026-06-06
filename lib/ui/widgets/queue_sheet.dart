@@ -6,6 +6,7 @@ import 'add_to_playlist_sheet.dart';
 import '../../core/player_service.dart';
 import '../../main.dart' show AppColors;
 import 'artwork.dart';
+import '../../core/artwork_helper.dart';
 
 extension MediaItemToTrack on MediaItem {
   Track toTrack() {
@@ -321,12 +322,16 @@ class _Header extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      Artwork(
-                        url: item?.artUri?.toString(),
-                        size: 56,
-                        borderRadius: 12,
-                        memCacheSize: 128,
-                      ),
+                      if (item != null)
+                        Artwork(
+                          url: item.artUri?.toString(),
+                          size: 56,
+                          aspectRatio: artAspectRatio(item),
+                          borderRadius: 12,
+                          memCacheSize: 128,
+                        )
+                      else
+                        const SizedBox(width: 56, height: 56),
                       const SizedBox(width: 14),
                       Expanded(
                         child: Column(
@@ -589,7 +594,7 @@ class _QueueListState extends State<_QueueList> {
                 ),
                 buildDefaultDragHandles: false,
                 itemCount: visible.length,
-                onReorder: (oldLocal, newLocal) {
+                onReorderItem: (oldLocal, newLocal) {
                   if (newLocal > oldLocal) newLocal -= 1;
                   final from = visible[oldLocal].key;
                   final to = visible[newLocal].key;
@@ -672,6 +677,7 @@ class _QueueTile extends StatelessWidget {
               Artwork(
                 url: media.artUri?.toString(),
                 size: 48,
+                aspectRatio: artAspectRatio(media),
                 borderRadius: 8,
                 memCacheSize: 108,
               ),

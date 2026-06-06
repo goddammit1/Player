@@ -8,6 +8,7 @@ import '../../sources/source_registry.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
+import '../../core/artwork_helper.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
   const SearchPage({super.key});
@@ -126,6 +127,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
 
   @override
   Widget build(BuildContext context) {
+    
     final state = ref.watch(searchProvider);
     final player = ref.read(playerServiceProvider);
     final searchCtl = ref.read(searchProvider.notifier);
@@ -274,7 +276,6 @@ class _SearchPageState extends ConsumerState<SearchPage>
                               final currentId = mediaSnap.data?.id;
                               return ListView.builder(
                                 itemCount: state.results.length,
-                                cacheExtent: 200,
                                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 132),
                                 itemBuilder: (context, i) {
                                   final t = state.results[i];
@@ -538,7 +539,7 @@ class _TrackTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = isPlaying
-        ? const Color(0xFFF9F8F8)
+        ? AppColors.textPrimary
         : AppColors.textPrimary;
 
     return Container(
@@ -563,6 +564,7 @@ class _TrackTile extends StatelessWidget {
                     Artwork(
                       url: track.artworkUrl,
                       size: 54,
+                      aspectRatio: artAspectRatio(track),
                       borderRadius: 10,
                     ),
                     if (isPlaying)

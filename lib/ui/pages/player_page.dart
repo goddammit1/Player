@@ -13,6 +13,7 @@ import '../widgets/artwork.dart';
 import '../widgets/queue_sheet.dart';
 import '../widgets/snack.dart';
 import '../widgets/track_details_sheet.dart';
+import '../../core/artwork_helper.dart';
 
 
 /// Полноэкранный плеер.
@@ -35,6 +36,9 @@ class PlayerPage extends StatelessWidget {
     );
   }
 }
+
+
+
 
 /// Содержимое полноэкранного плеера без [Scaffold]/[SafeArea].
 ///
@@ -102,6 +106,7 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
                         size: size,
                         borderRadius: 10,
                         memCacheSize: 800,
+                        aspectRatio: artAspectRatio(item),
                       );
                     },
                   ),

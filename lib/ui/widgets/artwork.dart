@@ -3,6 +3,25 @@ import 'package:flutter/material.dart';
 
 import '../../main.dart' show AppColors;
 
+/// Квадратная обложка трека.
+///
+/// [aspectRatio] — соотношение сторон **исходного** изображения.
+/// Используется для правильной центрированной обрезки до квадрата.
+///
+/// - `1.0` (по умолчанию) — квадратные арты (Genius, iTunes, Muzmo).
+///   Изображение показывается без дополнительного масштабирования.
+/// - `16 / 9` — широкие арты (YouTube). Изображение растягивается
+///   до 16:9, затем `FittedBox` с `BoxFit.cover` центрированно
+///   обрезает до квадрата. Без полос.
+///
+/// Пример:
+/// ```dart
+/// // Genius / Muzmo — квадрат
+/// Artwork(url: geniusUrl, size: 54)
+///
+/// // YouTube — 16:9
+/// Artwork(url: youtubeUrl, size: 54, aspectRatio: 16 / 9)
+/// ```
 class Artwork extends StatelessWidget {
   const Artwork({
     super.key,
@@ -10,12 +29,14 @@ class Artwork extends StatelessWidget {
     required this.size,
     this.borderRadius = 8,
     this.memCacheSize,
+    this.aspectRatio = 1.0,
   });
 
   final String? url;
   final double size;
   final double borderRadius;
   final double? memCacheSize;
+  final double aspectRatio;
 
   @override
   Widget build(BuildContext context) {
@@ -32,6 +53,7 @@ class Artwork extends StatelessWidget {
                 url: url!,
                 size: size,
                 cacheSize: cacheSize,
+                aspectRatio: aspectRatio,
                 fadeInDuration: const Duration(milliseconds: 100),
                 placeholder: const _Placeholder(),
                 errorWidget: const _Placeholder(),
@@ -47,6 +69,7 @@ class _CroppedImage extends StatelessWidget {
     required this.url,
     required this.size,
     required this.cacheSize,
+    required this.aspectRatio,
     required this.fadeInDuration,
     required this.placeholder,
     required this.errorWidget,
@@ -55,15 +78,16 @@ class _CroppedImage extends StatelessWidget {
   final String url;
   final double size;
   final int cacheSize;
+  final double aspectRatio;
   final Duration fadeInDuration;
   final Widget placeholder;
   final Widget errorWidget;
 
   @override
   Widget build(BuildContext context) {
-    final imageWidth = size * 16 / 9;
+    final imageWidth = size * aspectRatio;
     final imageHeight = size;
-    final cacheWidth = (cacheSize * 16 / 9).round();
+    final cacheWidth = (cacheSize * aspectRatio).round();
     final cacheHeight = cacheSize;
 
     return ClipRect(
@@ -73,16 +97,20 @@ class _CroppedImage extends StatelessWidget {
         child: FittedBox(
           fit: BoxFit.cover,
           alignment: Alignment.center,
-          child: CachedNetworkImage(
-            imageUrl: url,
+          child: SizedBox(
             width: imageWidth,
             height: imageHeight,
-            fit: BoxFit.cover,
-            memCacheWidth: cacheWidth,
-            memCacheHeight: cacheHeight,
-            fadeInDuration: fadeInDuration,
-            placeholder: (_, _) => placeholder,
-            errorWidget: (_, _, _) => errorWidget,
+            child: CachedNetworkImage(
+              imageUrl: url,
+              width: imageWidth,
+              height: imageHeight,
+              fit: BoxFit.fill,
+              memCacheWidth: cacheWidth,
+              memCacheHeight: cacheHeight,
+              fadeInDuration: fadeInDuration,
+              placeholder: (_, _) => placeholder,
+              errorWidget: (_, _, _) => errorWidget,
+            ),
           ),
         ),
       ),
@@ -131,6 +159,7 @@ class ArtworkMosaic extends StatelessWidget {
         size: size,
         borderRadius: borderRadius,
         memCacheSize: size * 2,
+        aspectRatio: _detectAspectRatio(urls.first),
       );
     }
 
@@ -188,14 +217,15 @@ class _Tile extends StatelessWidget {
   Widget build(BuildContext context) {
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final cache = (size * dpr).round();
-    
+
     if (url == null || url!.isEmpty) {
       return Container(color: AppColors.surfaceVariant);
     }
-    
-    final imageWidth = size * 16 / 9;
+
+    final aspectRatio = _detectAspectRatio(url!);
+    final imageWidth = size * aspectRatio;
     final imageHeight = size;
-    final cacheWidth = (cache * 16 / 9).round();
+    final cacheWidth = (cache * aspectRatio).round();
     final cacheHeight = cache;
 
     return ClipRect(
@@ -205,19 +235,37 @@ class _Tile extends StatelessWidget {
         child: FittedBox(
           fit: BoxFit.cover,
           alignment: Alignment.center,
-          child: CachedNetworkImage(
-            imageUrl: url!,
+          child: SizedBox(
             width: imageWidth,
             height: imageHeight,
-            fit: BoxFit.cover,
-            memCacheWidth: cacheWidth,
-            memCacheHeight: cacheHeight,
-            fadeInDuration: Duration.zero,
-            placeholder: (_, _) => Container(color: AppColors.surfaceVariant),
-            errorWidget: (_, _, _) => Container(color: AppColors.surfaceVariant),
+            child: CachedNetworkImage(
+              imageUrl: url!,
+              width: imageWidth,
+              height: imageHeight,
+              fit: BoxFit.fill,
+              memCacheWidth: cacheWidth,
+              memCacheHeight: cacheHeight,
+              fadeInDuration: Duration.zero,
+              placeholder: (_, _) => Container(color: AppColors.surfaceVariant),
+              errorWidget: (_, _, _) => Container(color: AppColors.surfaceVariant),
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Определяет aspectRatio по URL обложки.
+///
+/// YouTube-арты (ytimg.com) — 16:9, всё остальное — 1:0 (квадрат).
+double _detectAspectRatio(String? url) {
+  if (url == null || url.isEmpty) return 1.0;
+  final lower = url.toLowerCase();
+  if (lower.contains('ytimg.com') ||
+      lower.contains('youtube.com') ||
+      lower.contains('googlevideo.com')) {
+    return 16 / 9;
+  }
+  return 1.0;
 }

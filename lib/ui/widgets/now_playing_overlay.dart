@@ -7,6 +7,7 @@ import '../../core/providers.dart';
 import '../../main.dart' show AppColors;
 import '../pages/player_page.dart';
 import 'artwork.dart';
+import '../../core/artwork_helper.dart';
 
 /// Выезжающий снизу плеер «Now playing».
 ///
@@ -21,6 +22,11 @@ import 'artwork.dart';
 /// - При отпускании панель «доезжает» до ближайшего состояния (вверх или
 ///   вниз) с учётом скорости броска (fling).
 /// - Тап по свёрнутой плашке разворачивает её на весь экран.
+///
+/// Фильтрация системных жестов:
+/// - Мёртвая зона 40px от нижнего края экрана — drag оттуда игнорируется.
+/// - Слишком быстрые короткие свайпы (>2500 px/s при дистанции <60 px)
+///   интерпретируются как системный жест «назад/домой» и игнорируются.
 ///
 /// Виден только когда есть активный трек (mediaItem != null).
 class NowPlayingOverlay extends ConsumerStatefulWidget {
@@ -45,23 +51,62 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
   /// Полная высота экрана — кэшируем в `build` для расчёта drag-дельты.
   double _maxHeight = 0;
 
+  // ===== Фильтрация системных жестов =====
+  /// Y-координата начала drag (глобальная).
+  double _dragStartY = 0;
+  /// Пройденная дистанция drag (аккумулируется).
+  double _dragDistance = 0;
+  /// Флаг: drag начался в мёртвой зоне — полностью игнорируем.
+  bool _dragFromDeadZone = false;
+
+  static const double _bottomDeadZone = 40;      // px от низа экрана
+  static const double _maxSystemVelocity = 2500; // px/s — порог системного свайпа
+  static const double _minUserDistance = 60;       // px — минимальная дистанция пользовательского drag
+
   @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
-
-  void _expand() => _ctrl.animateTo(1, curve: Curves.easeOutCubic);
+  void _expand() {
+  FocusManager.instance.primaryFocus?.unfocus();  // ← убираем фокус со всех полей
+  _ctrl.animateTo(1, curve: Curves.easeOutCubic);
+  }
   void _collapse() => _ctrl.animateTo(0, curve: Curves.easeOutCubic);
+
+  void _onDragStart(DragStartDetails d) {
+    _dragStartY = d.globalPosition.dy;
+    _dragDistance = 0;
+    _dragFromDeadZone = _dragStartY > _maxHeight - _bottomDeadZone;
+  }
 
   void _onDragUpdate(DragUpdateDetails d) {
     if (_maxHeight <= 0) return;
+
+    // Полностью игнорируем drag, начатый из мёртвой зоны снизу.
+    if (_dragFromDeadZone) return;
+
+    final delta = d.primaryDelta!;
+    _dragDistance += delta.abs();
     // Тянем вверх -> t увеличивается. dy<0 при движении вверх.
-    _ctrl.value -= d.primaryDelta! / _maxHeight;
+    _ctrl.value -= delta / _maxHeight;
   }
 
   void _onDragEnd(DragEndDetails d) {
     final v = d.primaryVelocity ?? 0; // px/s: <0 вверх, >0 вниз.
+
+    // Если drag начался из мёртвой зоны — полностью игнорируем.
+    if (_dragFromDeadZone) {
+      _dragFromDeadZone = false;
+      return;
+    }
+
+    // Если свайп слишком быстрый и короткий — скорее всего системный
+    // жест (сворачивание приложения / назад). Игнорируем.
+    final isSystemGesture =
+        v.abs() > _maxSystemVelocity && _dragDistance < _minUserDistance;
+    if (isSystemGesture) return;
+
     const flingThreshold = 600;
     if (v < -flingThreshold) {
       _expand();
@@ -81,8 +126,6 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
     final bottomInset = media.padding.bottom;
 
     return StreamBuilder<MediaItem?>(
-
-
       stream: player.mediaItem,
       builder: (context, snap) {
         final item = snap.data;
@@ -93,41 +136,18 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
           builder: (context, _) {
             final t = _ctrl.value.clamp(0.0, 1.0);
 
-            // Эффект «вытаскивания из-под экрана».
-            //
-            // Большой плеер ВСЕГДА отрисован в полный рост экрана и
-            // целиком (не обрезается). Он просто едет по вертикали:
-            // при t=0 полностью под экраном (сдвиг = высота экрана),
-            // при t=1 — на своём месте. Это и даёт ощущение, что мы
-            // вытягиваем готовый плеер снизу, а не «раздуваем» его.
-            // Параллельно он слегка проявляется по прозрачности.
-            //
-            // Мини-плашка стоит у нижнего края экрана и растворяется
-            // по мере вытягивания (исчезает примерно к 55% пути).
-            // Анимация закрытия — естественная инверсия (t -> 0).
             final miniOpacity = (1 - t / 0.55).clamp(0.0, 1.0);
             final fullOpacity = ((t - 0.15) / 0.5).clamp(0.0, 1.0);
-            // Высота свёрнутой мини-плашки с учётом системного отступа.
             final collapsedBottom =
                 NowPlayingOverlay.miniHeight + bottomInset;
-            // Сдвиг всего блока вниз. При t=0 блок уведён вниз так,
-            // что наверху остаётся ровно мини-плашка у нижнего края
-            // экрана (а не весь блок за экраном — иначе мини не видно).
-            // При t=1 сдвиг = 0, плеер на своём месте.
             final slideOffset = (1 - t) * (_maxHeight - collapsedBottom);
 
-
-            // Весь блок (большой плеер + мини-плашка) — единый, сдвигается
-            // одним Transform.translate. Мини-плашка лежит на самой
-            // верхней кромке блока (top: 0), поэтому она ВСЕГДА точно
-            // совпадает с верхней границей большого плеера и едет вместе
-            // с ним. Контент большого плеера и мини оба прижаты к верху
-            // блока, разница лишь в прозрачности (кроссфейд).
             return Positioned.fill(
               child: Transform.translate(
                 offset: Offset(0, slideOffset),
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
+                  onVerticalDragStart: _onDragStart,
                   onVerticalDragUpdate: _onDragUpdate,
                   onVerticalDragEnd: _onDragEnd,
                   child: Stack(
@@ -150,13 +170,10 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                       ),
 
                       // Мини-плашка — верхняя полоса этого же блока.
-                      // Тает при разворачивании.
                       Positioned(
                         left: 0,
                         right: 0,
                         top: 0,
-                        // +8 — нижний отступ карточки мини-плеера (см.
-                        // _MiniBar padding), иначе плашку обрежет снизу.
                         height: NowPlayingOverlay.miniHeight + 8,
                         child: IgnorePointer(
                           ignoring: t > 0.1,
@@ -175,15 +192,12 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                 ),
               ),
             );
-
-
           },
         );
       },
     );
   }
 }
-
 
 /// Свёрнутая мини-плашка: обложка, название/исполнитель, play/pause, next.
 /// Поверх фона рисуется тонкая прогресс-заливка слева направо.
@@ -200,16 +214,9 @@ class _MiniBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Мини-плеер — прямоугольник со скруглёнными углами, не во всю ширину:
-    // по бокам и снизу оставлен отступ, чтобы плашка «висела» над контентом
-    // как карточка (единый стиль с поисковой строкой и тайлами).
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       child: Material(
-        // Собственный непрозрачный фон мини-плашки. Раньше фон давала
-        // панель целиком, но теперь она прозрачна (чтобы при drag не
-        // мелькала серая подложка), поэтому фон нужен здесь. Он тает
-        // вместе с самой плашкой (она обёрнута в Opacity снаружи).
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
         clipBehavior: Clip.antiAlias,
@@ -229,6 +236,7 @@ class _MiniBar extends StatelessWidget {
                         size: 54,
                         borderRadius: 11,
                         memCacheSize: 112,
+                        aspectRatio: artAspectRatio(item),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -279,7 +287,6 @@ class _MiniBar extends StatelessWidget {
     );
   }
 }
-
 
 class _ProgressFill extends StatelessWidget {
   const _ProgressFill({required this.player, required this.item});
