@@ -1,4 +1,3 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -262,14 +261,6 @@ class PlaylistPage extends ConsumerWidget {
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.file_download_outlined),
-                title: const Text('Import playlist'),
-                onTap: () async {
-                  Navigator.of(sheetCtx).pop();
-                  await _importPlaylist(context);
-                },
-              ),
-              ListTile(
                 leading: const Icon(
                   Icons.delete_outline_rounded,
                   color: Colors.redAccent,
@@ -298,84 +289,6 @@ class PlaylistPage extends ConsumerWidget {
       if (!context.mounted) return;
       _showInfo(context, title: 'Export failed', body: e.toString());
     }
-  }
-
-  Future<void> _importPlaylist(BuildContext context) async {
-    FilePickerResult? picked;
-    try {
-      picked = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['json'],
-        withData: false,
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      _showInfo(context, title: 'Import failed', body: e.toString());
-      return;
-    }
-
-    final path = picked?.files.single.path;
-    if (path == null) return; // отмена
-
-    if (!context.mounted) return;
-    final strategy = await _askImportStrategy(context);
-    if (strategy == null) return; // отмена
-
-    try {
-      final result = await PlaylistBackup.importFromFile(
-        path,
-        strategy: strategy,
-      );
-      if (!context.mounted) return;
-      _showInfo(
-        context,
-        title: 'Import complete',
-        body: 'Added: ${result.added}\n'
-            'Replaced: ${result.replaced}\n'
-            'Skipped: ${result.skipped}',
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      _showInfo(
-        context,
-        title: 'Import failed',
-        body: e is FormatException ? e.message : e.toString(),
-      );
-    }
-  }
-
-  /// Спрашивает, что делать с плейлистами, у которых `id` уже есть.
-  Future<ImportStrategy?> _askImportStrategy(BuildContext context) {
-    return showDialog<ImportStrategy>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: AppColors.surface,
-          title: const Text(
-            'Import playlist',
-            style: TextStyle(color: AppColors.textPrimary),
-          ),
-          content: const Text(
-            'If a playlist already exists, what should happen?',
-            style: TextStyle(color: AppColors.textSecondary),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.keepBoth),
-              child: const Text('Keep both'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.skip),
-              child: const Text('Skip existing'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.replace),
-              child: const Text('Replace'),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   void _showInfo(

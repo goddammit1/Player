@@ -1,6 +1,8 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/playlist_backup.dart';
 import '../../core/providers.dart';
 import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
@@ -320,7 +322,7 @@ class _AddNewCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return InkWell(
       borderRadius: BorderRadius.circular(20),
-      onTap: () => _showCreateDialog(context, ref),
+      onTap: () => _showAddOptions(context, ref),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -359,6 +361,160 @@ class _AddNewCard extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+
+  /// Показывает выбор: создать пустой плейлист или импортировать из файла.
+  Future<void> _showAddOptions(BuildContext context, WidgetRef ref) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      showDragHandle: true,
+      builder: (sheetCtx) {
+        return SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(
+                  Icons.add_rounded,
+                  color: AppColors.textPrimary,
+                ),
+                title: const Text(
+                  'Create empty playlist',
+                  style: TextStyle(color: AppColors.textPrimary),
+                ),
+                onTap: () async {
+                  Navigator.of(sheetCtx).pop();
+                  await _showCreateDialog(context, ref);
+                },
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.file_download_outlined,
+                  color: AppColors.textPrimary,
+                ),
+                title: const Text(
+                  'Import from file',
+                  style: TextStyle(color: AppColors.textPrimary),
+                ),
+                onTap: () async {
+                  Navigator.of(sheetCtx).pop();
+                  await _importPlaylist(context, ref);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _importPlaylist(BuildContext context, WidgetRef ref) async {
+    FilePickerResult? picked;
+    try {
+      picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+        withData: false,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      _showInfo(context, title: 'Import failed', body: e.toString());
+      return;
+    }
+
+    final path = picked?.files.single.path;
+    if (path == null) return; // отмена
+
+    if (!context.mounted) return;
+    final strategy = await _askImportStrategy(context);
+    if (strategy == null) return; // отмена
+
+    try {
+      final result = await PlaylistBackup.importFromFile(
+        path,
+        strategy: strategy,
+      );
+      if (!context.mounted) return;
+      _showInfo(
+        context,
+        title: 'Import complete',
+        body: 'Added: ${result.added}\n'
+            'Replaced: ${result.replaced}\n'
+            'Skipped: ${result.skipped}',
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      _showInfo(
+        context,
+        title: 'Import failed',
+        body: e is FormatException ? e.message : e.toString(),
+      );
+    }
+  }
+
+  /// Спрашивает, что делать с плейлистами, у которых `id` уже есть.
+  Future<ImportStrategy?> _askImportStrategy(BuildContext context) {
+    return showDialog<ImportStrategy>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: const Text(
+            'Import playlist',
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+          content: const Text(
+            'If a playlist already exists, what should happen?',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.keepBoth),
+              child: const Text('Keep both'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.skip),
+              child: const Text('Skip existing'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.replace),
+              child: const Text('Replace'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showInfo(
+    BuildContext context, {
+    required String title,
+    required String body,
+  }) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Text(
+            title,
+            style: const TextStyle(color: AppColors.textPrimary),
+          ),
+          content: Text(
+            body,
+            style: const TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
     );
   }
 
