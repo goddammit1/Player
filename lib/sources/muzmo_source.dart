@@ -323,10 +323,60 @@ class MuzmoSource implements TrackSource {
     final fromExtra = track.extra['streamUrl'] as String?;
     if (fromExtra != null && fromExtra.isNotEmpty) return fromExtra;
 
-    // На случай если трек пришёл не из текущей сессии (например,
-    // восстановлен из БД) — заново тащим страницу /info, она содержит
-    // тот же data-file. Но для MVP достаточно extra['streamUrl'].
-    throw StateError('Muzmo track has no stream URL in extra');
+    // Трек пришёл не из текущей сессии: восстановлен из плейлиста/БД,
+    // где extra (а значит и streamUrl) не сохраняется — см.
+    // Track.toMap(). Заново ищем mp3 повторным запросом /search по
+    // "artist title" и сопоставляем по id (например `song79770649`).
+    final reResolved = await _reResolveStreamUrl(track);
+    if (reResolved != null && reResolved.isNotEmpty) return reResolved;
+
+    throw StateError('Muzmo: не удалось переразрешить stream URL для '
+        '"${track.artist} - ${track.title}"');
+  }
+
+  /// Повторно находит прямую ссылку на mp3 для трека без extra['streamUrl'].
+  ///
+  /// Делает обычный поиск по "artist title" и ищет совпадение сначала
+  /// по точному id трека (надёжно — id muzmo стабилен), затем как фолбэк
+  /// по совпадению artist+title. Возвращает null, если ничего не нашли.
+  Future<String?> _reResolveStreamUrl(Track track) async {
+    final query = '${track.artist} ${track.title}'.trim();
+    if (query.isEmpty) return null;
+
+    try {
+      await _ensureSession();
+      final resp =
+          await _dio.get<String>('/search', queryParameters: {'q': query});
+      if (resp.statusCode != 200 || resp.data == null) return null;
+
+      final found = _parseTracks(resp.data!);
+      if (found.isEmpty) return null;
+
+      // 1) Точное совпадение по id.
+      for (final t in found) {
+        if (t.id == track.id) {
+          final url = t.extra['streamUrl'] as String?;
+          if (url != null && url.isNotEmpty) return url;
+        }
+      }
+
+      // 2) Фолбэк: совпадение по artist+title (без учёта регистра).
+      final wantTitle = track.title.toLowerCase().trim();
+      final wantArtist = track.artist.toLowerCase().trim();
+      for (final t in found) {
+        if (t.title.toLowerCase().trim() == wantTitle &&
+            t.artist.toLowerCase().trim() == wantArtist) {
+          final url = t.extra['streamUrl'] as String?;
+          if (url != null && url.isNotEmpty) return url;
+        }
+      }
+
+      // 3) Совсем мягкий фолбэк: первый результат.
+      final first = found.first.extra['streamUrl'] as String?;
+      return (first != null && first.isNotEmpty) ? first : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Резолвит финальную (CDN) ссылку на mp3, проходя 302-редирект.

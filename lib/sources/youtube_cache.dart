@@ -132,6 +132,18 @@ class YoutubeCache {
       if (now.difference(e.value) < _protectWindow) continue;
 
       final id = e.key;
+
+      // КРИТИЧНО: не удаляем файл, который прямо сейчас скачивается.
+      // LockCachingAudioSource пишет в `<file>.part` и в конце делает
+      // rename .part -> финальный файл. Если за это время мы удалим
+      // (или удалим директорию у) этого файла, rename падает с
+      // PathNotFoundException и трек не проигрывается. Это и есть
+      // причина «muzmo после youtube не играет» при смешанной очереди:
+      // переключение источников триггерит эвикцию ровно в момент,
+      // когда сосед ещё дозагружается. Поэтому если рядом есть .part —
+      // считаем загрузку активной и НЕ трогаем этот id.
+      if (await _hasActiveDownload(dir, id)) continue;
+
       _lastAccess.remove(id);
       for (final ext in const ['m4a', 'webm', 'mp3']) {
         final f = File(p.join(dir.path, '$id.$ext'));
@@ -145,6 +157,16 @@ class YoutubeCache {
       }
       overflow--;
     }
+  }
+
+  /// True, если для [id] существует `.part`-файл — признак того, что
+  /// [LockCachingAudioSource] ещё качает этот трек и его нельзя трогать.
+  Future<bool> _hasActiveDownload(Directory dir, String id) async {
+    for (final ext in const ['m4a', 'webm', 'mp3']) {
+      final part = File(p.join(dir.path, '$id.$ext.part'));
+      if (await part.exists()) return true;
+    }
+    return false;
   }
 
   /// Forget a specific track. Useful when the cached file is broken

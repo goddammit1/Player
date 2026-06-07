@@ -470,6 +470,8 @@ class _FilterChipsState extends State<_FilterChips>
         return Icons.play_circle_fill_rounded;
       case 'muzmo':
         return Icons.music_note_rounded;
+      case 'soundcloud':
+        return Icons.cloud_rounded;
       default:
         return Icons.library_music_rounded;
     }

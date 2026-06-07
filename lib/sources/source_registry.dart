@@ -1,4 +1,5 @@
 import 'muzmo_source.dart';
+import 'soundcloud_source.dart';
 import 'track_source.dart';
 import 'youtube_source.dart';
 
@@ -16,7 +17,7 @@ class SourceRegistry {
   void registerDefaults() {
     register(YoutubeSource());
     register(MuzmoSource());
-    // register(SoundCloudSource());
+    register(SoundCloudSource());
   }
 
   void register(TrackSource source) {

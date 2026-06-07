@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/playlist.dart';
 import '../models/track.dart';
 import '../sources/muzmo_source.dart';
+import '../sources/soundcloud_source.dart';
 import '../sources/source_registry.dart';
 import 'player_service.dart';
 import 'playlist_repository.dart';
@@ -107,7 +108,7 @@ class SearchController extends StateNotifier<SearchState> {
     final results = await source.search(query);
     if (isStale()) return;
     state = state.copyWith(results: results, loading: false);
-    _enrichMuzmo(source, results, query);
+    _enrichArtworks(source, results, query);
   }
 
   /// Поиск во всех зарегистрированных источниках сразу. Результаты
@@ -131,9 +132,10 @@ class SearchController extends StateNotifier<SearchState> {
     final merged = _interleave(lists);
     state = state.copyWith(results: merged, loading: false);
 
-    // Обогащаем обложками те источники, что это поддерживают (Muzmo).
+    // Обогащаем обложками те источники, что это поддерживают
+    // (Muzmo — всегда, SoundCloud — только треки без обложки).
     for (final source in sources) {
-      _enrichMuzmo(source, merged, query);
+      _enrichArtworks(source, merged, query);
     }
   }
 
@@ -155,17 +157,27 @@ class SearchController extends StateNotifier<SearchState> {
     return merged;
   }
 
-  /// Запускает фоновое обогащение обложками для треков Muzmo внутри
-  /// [results]. Для не-Muzmo источников — no-op.
-  void _enrichMuzmo(dynamic source, List<Track> results, String query) {
-    if (source is! MuzmoSource) return;
+  /// Запускает фоновое обогащение обложками для треков источников,
+  /// которые это поддерживают (Muzmo, SoundCloud). Для остальных —
+  /// no-op.
+  void _enrichArtworks(dynamic source, List<Track> results, String query) {
     // Обогащаем только треки этого источника (важно для режима «all»,
     // где в списке намешаны треки разных источников).
-    final muzmoTracks =
+    final sourceTracks =
         results.where((t) => t.sourceId == source.id).toList();
-    if (muzmoTracks.isEmpty) return;
+    if (sourceTracks.isEmpty) return;
 
-    source.enrichArtworksInBackground(muzmoTracks, (updated) {
+    if (source is MuzmoSource) {
+      source.enrichArtworksInBackground(sourceTracks, _patchResults(query));
+    } else if (source is SoundCloudSource) {
+      source.enrichArtworksInBackground(sourceTracks, _patchResults(query));
+    }
+  }
+
+  /// Возвращает колбэк, который вклеивает обновлённые треки обратно в
+  /// общий список результатов по globalId, игнорируя устаревший поиск.
+  void Function(List<Track>) _patchResults(String query) {
+    return (updated) {
       // Игнорируем колбэки от устаревшего поиска.
       if (state.query != query) return;
       // Вклеиваем обновлённые треки обратно в общий список по globalId,
@@ -175,7 +187,7 @@ class SearchController extends StateNotifier<SearchState> {
         for (final t in state.results) byId[t.globalId] ?? t,
       ];
       state = state.copyWith(results: patched);
-    });
+    };
   }
 }
 

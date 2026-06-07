@@ -112,7 +112,8 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     _currentIndex = index;
     _currentIndexSubject.add(index);
     final track = _queue[index];
-    _log('[$myGen] Playing index=$index track="${track.title}" id=${track.id}');
+    _log('[$myGen] Playing index=$index track="${track.title}" '
+        'id=${track.id} src=${track.sourceId}');
 
     mediaItem.add(_toMediaItem(track));
 
