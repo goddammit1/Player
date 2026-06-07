@@ -329,22 +329,63 @@ class MuzmoSource implements TrackSource {
     throw StateError('Muzmo track has no stream URL in extra');
   }
 
+  /// Резолвит финальную (CDN) ссылку на mp3, проходя 302-редирект.
+  ///
+  /// `rmr.muzmo.cc/get/...` отвечает `302 Found` и `Location:
+  /// https://dsN.mzmdl.com/...`. Сам CDN отдаёт mp3 уже без куки и
+  /// Referer (проверено curl'ом: `206 Partial Content`, `audio/mpeg`).
+  ///
+  /// Зачем это нужно: [LockCachingAudioSource] обслуживает Range-запросы
+  /// через собственный прокси и НЕ умеет надёжно следовать кросс-доменному
+  /// 302 (особенно с проброшенными заголовками Referer/User-Agent). Из-за
+  /// этого muzmo-треки в плейлисте/очереди не воспроизводились. Решение —
+  /// отдать ему сразу финальный URL CDN, как для YouTube (там URL
+  /// googlevideo уже финальный).
+  ///
+  /// Делаем GET с `Range: bytes=0-0` и `followRedirects: false`, чтобы
+  /// прочитать только заголовок `Location`, не качая тело.
+
+  Future<String> _resolveCdnUrl(String muzmoUrl) async {
+    try {
+      final resp = await _dio.get<List<int>>(
+        muzmoUrl,
+        options: Options(
+          headers: {'Referer': '$_baseUrl/', 'Range': 'bytes=0-0'},
+          responseType: ResponseType.bytes,
+          followRedirects: false,
+          validateStatus: (code) => code != null && code < 400,
+        ),
+      );
+
+      // 3xx — берём Location (абсолютный CDN-URL).
+      final location = resp.headers.value('location');
+      if (location != null && location.isNotEmpty) {
+        return location.startsWith('http') ? location : '$_baseUrl$location';
+      }
+    } catch (_) {
+      // Не вышло разрезолвить — отдадим исходный URL, just_audio
+      // попробует сам (хуже не будет).
+    }
+    return muzmoUrl;
+  }
+
   @override
   Future<AudioSource> createAudioSource(Track track) async {
     final url = await resolveStreamUrl(track);
+    // Заранее проходим 302 до прямой CDN-ссылки — см. [_resolveCdnUrl].
+    final directUrl = await _resolveCdnUrl(url);
+
     // Файл muzmo всегда mp3.
     final cacheFile = await YoutubeCache.instance.fileFor(
       'muzmo_${track.id}',
       extension: 'mp3',
     );
 
+    // Без headers: CDN ds*.mzmdl.com отдаёт mp3 напрямую, а лишний
+    // Referer/User-Agent на CDN только мешает кэширующему прокси
+    // just_audio корректно отрабатывать Range-запросы.
     return LockCachingAudioSource(
-      Uri.parse(url),
-      headers: {
-        // Сервер muzmo иногда требует Referer для отдачи mp3.
-        'Referer': '$_baseUrl/',
-        'User-Agent': _userAgent,
-      },
+      Uri.parse(directUrl),
       cacheFile: cacheFile,
       tag: track.globalId,
     );

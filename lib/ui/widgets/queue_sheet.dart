@@ -594,7 +594,7 @@ class _QueueListState extends State<_QueueList> {
                 ),
                 buildDefaultDragHandles: false,
                 itemCount: visible.length,
-                onReorderItem: (oldLocal, newLocal) {
+                onReorder: (oldLocal, newLocal) {
                   if (newLocal > oldLocal) newLocal -= 1;
                   final from = visible[oldLocal].key;
                   final to = visible[newLocal].key;

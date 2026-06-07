@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
 import '../models/track.dart';
+import 'playlist_backup.dart';
 
 /// Persistence + state-store для пользовательских плейлистов.
 ///
@@ -162,6 +163,65 @@ class PlaylistRepository {
       if (p.id == id) return p;
     }
     return null;
+  }
+
+  /// Импортирует плейлисты из бэкапа с выбранной стратегией разрешения
+  /// коллизий по `id`. Возвращает статистику для UI.
+  ///
+  /// - [ImportStrategy.replace] — существующий плейлист с тем же `id`
+  ///   полностью заменяется импортируемым.
+  /// - [ImportStrategy.keepBoth] — импортируемому выдаётся новый `id`,
+  ///   так что оба плейлиста остаются (удобно, когда хочешь смержить
+  ///   две библиотеки).
+  /// - [ImportStrategy.skip] — плейлист с конфликтующим `id`
+  ///   пропускается, существующий остаётся нетронутым.
+  ImportResult importPlaylists(
+    List<Playlist> incoming, {
+    required ImportStrategy strategy,
+  }) {
+    var added = 0;
+    var replaced = 0;
+    var skipped = 0;
+
+    final byId = {for (final p in _list) p.id: p};
+    var working = List<Playlist>.of(_list);
+
+    for (final src in incoming) {
+      final exists = byId.containsKey(src.id);
+      if (!exists) {
+        working = [src, ...working];
+        byId[src.id] = src;
+        added++;
+        continue;
+      }
+      switch (strategy) {
+        case ImportStrategy.replace:
+          working = working.map((p) => p.id == src.id ? src : p).toList();
+          byId[src.id] = src;
+          replaced++;
+        case ImportStrategy.keepBoth:
+          final clone = Playlist(
+            id: _uuid.v4(),
+            name: src.name,
+            tracks: src.tracks,
+            coverCustomUrl: src.coverCustomUrl,
+            createdAt: DateTime.now(),
+          );
+          working = [clone, ...working];
+          byId[clone.id] = clone;
+          added++;
+        case ImportStrategy.skip:
+          skipped++;
+      }
+    }
+
+    if (added > 0 || replaced > 0) {
+      working.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      _list = working;
+      _notifyAndSchedulePersist();
+    }
+
+    return ImportResult(added: added, replaced: replaced, skipped: skipped);
   }
 
   /// Принудительный flush на диск (например, перед закрытием app).
