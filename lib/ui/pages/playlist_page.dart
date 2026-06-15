@@ -5,6 +5,8 @@ import '../../core/playlist_backup.dart';
 import '../../core/providers.dart';
 import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
+import '../../models/track.dart';
+import '../../sources/source_registry.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../../core/artwork_helper.dart';
@@ -128,7 +130,15 @@ class PlaylistPage extends ConsumerWidget {
                             ),
                             onPressed: p.tracks.isEmpty
                                 ? null
-                                : () => player.setQueue(p.tracks),
+                                : () {
+                                    // Фильтруем недоступные (YouTube) треки
+                                    final playable = p.tracks
+                                        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
+                                        .toList();
+                                    if (playable.isNotEmpty) {
+                                      player.setQueue(playable);
+                                    }
+                                  },
                           ),
                         ),
                       ],
@@ -158,6 +168,7 @@ class PlaylistPage extends ConsumerWidget {
                       itemCount: p.tracks.length,
                       itemBuilder: (context, i) {
                         final t = p.tracks[i];
+                        final isDisabled = SourceRegistry.instance.isDisabled(t.sourceId);
                         return Dismissible(
                           key: ValueKey(t.globalId),
                           direction: DismissDirection.endToStart,
@@ -173,40 +184,94 @@ class PlaylistPage extends ConsumerWidget {
                           onDismissed: (_) =>
                               repo.removeTrack(p.id, t.globalId),
                           child: ListTile(
-                            leading: Artwork(
-                              url: t.artworkUrl,
-                              size: 48,
-                              borderRadius: 8,
-                              aspectRatio: artAspectRatio(t),  // ← добавьте
+                            leading: Stack(
+                              children: [
+                                Opacity(
+                                  opacity: isDisabled ? 0.4 : 1.0,
+                                  child: Artwork(
+                                    url: t.artworkUrl,
+                                    size: 48,
+                                    borderRadius: 8,
+                                    aspectRatio: artAspectRatio(t),
+                                  ),
+                                ),
+                                if (isDisabled)
+                                  Positioned(
+                                    right: 0,
+                                    bottom: 0,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.orange,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.warning_rounded,
+                                        size: 12,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                             title: Text(
                               t.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textPrimary,
+                              style: TextStyle(
+                                color: isDisabled
+                                    ? AppColors.textSecondary
+                                    : AppColors.textPrimary,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                             subtitle: Text(
-                              t.artist,
+                              isDisabled
+                                  ? '${t.artist} · YouTube unavailable'
+                                  : t.artist,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
+                              style: TextStyle(
+                                color: isDisabled
+                                    ? Colors.orange
+                                    : AppColors.textSecondary,
                                 fontSize: 12,
                               ),
                             ),
-                            trailing: t.duration != null
-                                ? Text(
-                                    _fmt(t.duration!),
-                                    style: const TextStyle(
-                                      color: AppColors.textSecondary,
+                            trailing: isDisabled
+                                ? IconButton(
+                                    icon: const Icon(
+                                      Icons.find_replace_rounded,
+                                      color: Colors.orange,
+                                      size: 22,
+                                    ),
+                                    tooltip: 'Find replacement',
+                                    onPressed: () => _showReplacementSheet(
+                                      context, ref, p, t,
                                     ),
                                   )
-                                : null,
-                            onTap: () =>
-                                player.setQueue(p.tracks, startIndex: i),
+                                : (t.duration != null
+                                    ? Text(
+                                        _fmt(t.duration!),
+                                        style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      )
+                                    : null),
+                            onTap: isDisabled
+                                ? () => _showReplacementSheet(
+                                      context, ref, p, t)
+                                : () {
+                                    final playable = p.tracks
+                                        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
+                                        .toList();
+                                    final idx = playable.indexWhere(
+                                        (pt) => pt.globalId == t.globalId);
+                                    player.setQueue(
+                                      playable,
+                                      startIndex: idx >= 0 ? idx : 0,
+                                    );
+                                  },
                           ),
                         );
                       },
@@ -320,6 +385,53 @@ class PlaylistPage extends ConsumerWidget {
     );
   }
 
+  /// Показывает bottom sheet с результатами поиска замены для
+  /// недоступного YouTube-трека. Ищет по "artist - title" в Muzmo и
+  /// SoundCloud, пользователь выбирает подходящий вариант.
+  Future<void> _showReplacementSheet(
+    BuildContext context,
+    WidgetRef ref,
+    Playlist playlist,
+    Track unavailableTrack,
+  ) async {
+    final query = '${unavailableTrack.artist} ${unavailableTrack.title}';
+    final repo = ref.read(playlistRepositoryProvider);
+    final player = ref.read(playerServiceProvider);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetCtx) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.65,
+          minChildSize: 0.4,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (_, scrollController) {
+            return _ReplacementSheetBody(
+              query: query,
+              unavailableTrack: unavailableTrack,
+              scrollController: scrollController,
+              onReplace: (Track replacement) {
+                repo.replaceTrack(
+                  playlist.id,
+                  unavailableTrack.globalId,
+                  replacement,
+                );
+                Navigator.of(sheetCtx).pop();
+              },
+              onPreview: (Track track) {
+                player.setQueue([track]);
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _askRename(
     BuildContext context,
     WidgetRef ref,
@@ -362,5 +474,196 @@ class PlaylistPage extends ConsumerWidget {
     if (name != null && name.isNotEmpty) {
       ref.read(playlistRepositoryProvider).rename(p.id, name);
     }
+  }
+}
+
+/// Тело bottom sheet для поиска замены недоступного YouTube-трека.
+/// Автоматически ищет по "artist title" во всех работающих источниках
+/// и показывает результаты. Пользователь может послушать превью и
+/// выбрать замену.
+class _ReplacementSheetBody extends StatefulWidget {
+  const _ReplacementSheetBody({
+    required this.query,
+    required this.unavailableTrack,
+    required this.scrollController,
+    required this.onReplace,
+    required this.onPreview,
+  });
+
+  final String query;
+  final Track unavailableTrack;
+  final ScrollController scrollController;
+  final ValueChanged<Track> onReplace;
+  final ValueChanged<Track> onPreview;
+
+  @override
+  State<_ReplacementSheetBody> createState() => _ReplacementSheetBodyState();
+}
+
+class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
+  List<Track> _results = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _search();
+  }
+
+  Future<void> _search() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final sources = SourceRegistry.instance.searchable;
+      final lists = await Future.wait(
+        sources.map((s) async {
+          try {
+            return await s.search(widget.query, limit: 10);
+          } catch (_) {
+            return <Track>[];
+          }
+        }),
+      );
+
+      // Round-robin слияние
+      final merged = <Track>[];
+      var i = 0;
+      var added = true;
+      while (added) {
+        added = false;
+        for (final list in lists) {
+          if (i < list.length) {
+            merged.add(list[i]);
+            added = true;
+          }
+        }
+        i++;
+      }
+
+      if (mounted) {
+        setState(() {
+          _results = merged;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = e.toString();
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+          child: Text(
+            'Replace "${widget.unavailableTrack.title}"',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+          child: Text(
+            'Tap to preview · Long press to replace',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+            ),
+          ),
+        ),
+        if (_loading)
+          const Expanded(
+            child: Center(
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else if (_error != null)
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Search failed: $_error',
+                  style: const TextStyle(color: Colors.redAccent),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          )
+        else if (_results.isEmpty)
+          const Expanded(
+            child: Center(
+              child: Text(
+                'No results found',
+                style: TextStyle(color: AppColors.textSecondary),
+              ),
+            ),
+          )
+        else
+          Expanded(
+            child: ListView.builder(
+              controller: widget.scrollController,
+              itemCount: _results.length,
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 24),
+              itemBuilder: (context, i) {
+                final t = _results[i];
+                return ListTile(
+                  leading: Artwork(
+                    url: t.artworkUrl,
+                    size: 44,
+                    borderRadius: 8,
+                    aspectRatio: artAspectRatio(t),
+                  ),
+                  title: Text(
+                    t.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  subtitle: Text(
+                    '${t.artist} · ${t.sourceId}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 11,
+                    ),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(
+                      Icons.swap_horiz_rounded,
+                      color: Colors.green,
+                    ),
+                    tooltip: 'Use this track',
+                    onPressed: () => widget.onReplace(t),
+                  ),
+                  onTap: () => widget.onPreview(t),
+                );
+              },
+            ),
+          ),
+      ],
+    );
   }
 }

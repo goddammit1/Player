@@ -1,7 +1,7 @@
 name: player
 description: "Music player with multi-source parsing"
 publish_to: 'none'
-version: 1.5.0+7
+version: 1.6.0+8
 
 environment:
   sdk: ^3.11.4
@@ -17,7 +17,9 @@ dependencies:
   audio_session: ^0.1.21
 
   # --- Source parsers ---
-  youtube_explode_dart: ^3.1.0
+  youtube_explode_dart:
+    git:
+      url: https://github.com/Hexer10/youtube_explode_dart.git
   dio: ^5.7.0
   dio_cookie_manager: ^3.1.1
   cookie_jar: ^4.0.8

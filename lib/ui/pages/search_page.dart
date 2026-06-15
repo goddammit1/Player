@@ -131,7 +131,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
     final state = ref.watch(searchProvider);
     final player = ref.read(playerServiceProvider);
     final searchCtl = ref.read(searchProvider.notifier);
-    final sources = SourceRegistry.instance.all;
+    final sources = SourceRegistry.instance.searchable;
     final currentSourceId = state.sourceId;
 
     return Scaffold(

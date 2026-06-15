@@ -123,6 +123,21 @@ class PlaylistRepository {
     if (changed) _notifyAndSchedulePersist();
   }
 
+  /// Заменяет трек в плейлисте по `globalId` старого трека на новый.
+  void replaceTrack(String playlistId, String oldGlobalId, Track newTrack) {
+    var changed = false;
+    _list = _list.map((p) {
+      if (p.id != playlistId) return p;
+      final newTracks = List<Track>.of(p.tracks);
+      final idx = newTracks.indexWhere((t) => t.globalId == oldGlobalId);
+      if (idx == -1) return p;
+      newTracks[idx] = newTrack;
+      changed = true;
+      return p.copyWith(tracks: newTracks);
+    }).toList();
+    if (changed) _notifyAndSchedulePersist();
+  }
+
   /// Удаляет первое вхождение трека по `globalId`.
   void removeTrack(String playlistId, String trackGlobalId) {
     var changed = false;

@@ -1,9 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/track.dart';
 import 'track_source.dart';
 import 'youtube_cache.dart';
+
+// ignore: avoid_print
+void _ytLog(String msg) => print('[YoutubeSource] $msg');
 
 /// YouTube-based track source.
 ///
@@ -238,13 +242,49 @@ class YoutubeSource implements TrackSource {
       return cached.info;
     }
 
-    // androidVr client returns URLs that ordinary HTTP clients can fetch
-    // without YouTube responding with 403. If a particular video ever
-    // starts failing — add `YoutubeApiClient.ios` / `mediaConnect` here.
-    final manifest = await _yt.videos.streamsClient.getManifest(
-      videoId,
-      ytClients: [YoutubeApiClient.androidVr],
-    );
+    // Пробуем несколько стратегий по порядку. YouTube периодически
+    // блокирует отдельные client-ы, поэтому фолбэк критически важен.
+    // Сначала пробуем дефолт библиотеки (без указания клиентов),
+    // затем конкретные клиенты по одному.
+    final strategies = <List<YoutubeApiClient>?>[
+      null, // дефолт библиотеки
+      [YoutubeApiClient.ios],
+      [YoutubeApiClient.mediaConnect],
+      [YoutubeApiClient.androidVr],
+      [YoutubeApiClient.safari],
+      [YoutubeApiClient.tv],
+    ];
+
+    StreamManifest? manifest;
+    for (final clients in strategies) {
+      try {
+        final label = clients?.map((c) => c.toString()).join(',') ?? 'default';
+        _ytLog('Trying client=$label for $videoId');
+        if (clients != null) {
+          manifest = await _yt.videos.streamsClient.getManifest(
+            videoId,
+            ytClients: clients,
+          );
+        } else {
+          manifest = await _yt.videos.streamsClient.getManifest(videoId);
+        }
+        if (manifest.audioOnly.isNotEmpty) {
+          _ytLog('Got ${manifest.audioOnly.length} audio streams '
+              'via $label for $videoId');
+          break;
+        }
+        _ytLog('$label returned 0 audio streams for $videoId');
+      } catch (e) {
+        final label = clients?.map((c) => c.toString()).join(',') ?? 'default';
+        _ytLog('$label failed for $videoId: $e');
+        continue;
+      }
+    }
+
+    if (manifest == null || manifest.audioOnly.isEmpty) {
+      throw Exception('No audio streams found for video $videoId '
+          'after trying all YouTube API clients');
+    }
 
     final audios = manifest.audioOnly.sortByBitrate();
     // Target the ~96–160 kbps band: solid quality, small initial chunk,

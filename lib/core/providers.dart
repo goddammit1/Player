@@ -115,7 +115,7 @@ class SearchController extends StateNotifier<SearchState> {
   /// объединяются «вперемешку»: по одному треку из каждого источника по
   /// кругу — так выдача не оказывается забита одним источником сверху.
   Future<void> _searchAll(String query, bool Function() isStale) async {
-    final sources = SourceRegistry.instance.all;
+    final sources = SourceRegistry.instance.searchable;
     // Запускаем поиск во всех источниках параллельно. Падение одного не
     // должно ронять остальные — ошибки гасим в пустой список.
     final lists = await Future.wait(

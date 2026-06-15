@@ -13,9 +13,20 @@ class SourceRegistry {
 
   final Map<String, TrackSource> _sources = {};
 
+  /// Источники, отключённые для поиска (но зарегистрированные для
+  /// обратной совместимости — треки из плейлистов всё ещё ссылаются
+  /// на них по sourceId).
+  final Set<String> _disabledForSearch = {};
+
   /// Зарегистрировать все известные источники.
   void registerDefaults() {
+    // YouTube временно отключён для поиска: библиотека
+    // youtube_explode_dart сломана (YouTube требует PoToken).
+    // Источник остаётся зарегистрированным, чтобы плейлисты с
+    // youtube-треками не крашились при попытке resolve.
     register(YoutubeSource());
+    _disabledForSearch.add('youtube');
+
     register(MuzmoSource());
     register(SoundCloudSource());
   }
@@ -35,6 +46,14 @@ class SourceRegistry {
   }
 
   List<TrackSource> get all => _sources.values.toList(growable: false);
+
+  /// Источники, доступные для поиска (исключая временно отключённые).
+  List<TrackSource> get searchable => _sources.values
+      .where((s) => !_disabledForSearch.contains(s.id))
+      .toList(growable: false);
+
+  /// Проверяет, отключён ли источник для поиска/воспроизведения.
+  bool isDisabled(String sourceId) => _disabledForSearch.contains(sourceId);
 
   Future<void> disposeAll() async {
     for (final s in _sources.values) {
