@@ -594,7 +594,9 @@ class _QueueListState extends State<_QueueList> {
                 ),
                 buildDefaultDragHandles: false,
                 itemCount: visible.length,
+                // ignore: deprecated_member_use
                 onReorder: (oldLocal, newLocal) {
+                  if (!widget.controller.isFull) return;
                   if (newLocal > oldLocal) newLocal -= 1;
                   final from = visible[oldLocal].key;
                   final to = visible[newLocal].key;
