@@ -1,10 +1,12 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
+
+import '../../core/providers.dart';
 import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
 import '../../core/player_service.dart';
-import '../../main.dart' show AppColors;
 import 'artwork.dart';
 import '../../core/artwork_helper.dart';
 
@@ -127,7 +129,7 @@ class QueueSheetController extends ChangeNotifier {
   }
 }
 
-class QueueSheet extends StatelessWidget {
+class QueueSheet extends ConsumerWidget {
   const QueueSheet({
     super.key,
     required this.controller,
@@ -138,7 +140,8 @@ class QueueSheet extends StatelessWidget {
   final PlayerService player;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
     final media = MediaQuery.of(context);
     final maxHeight = media.size.height;
     final topInset = media.padding.top;
@@ -193,6 +196,7 @@ class QueueSheet extends StatelessWidget {
                         maxHeight: maxHeight,
                         topInset: topInset,
                         bottomInset: bottomInset,
+                        colors: colors,
                       ),
                     ),
                   ),
@@ -213,6 +217,7 @@ class _QueueBody extends StatelessWidget {
     required this.maxHeight,
     required this.topInset,
     required this.bottomInset,
+    required this.colors,
   });
 
   final QueueSheetController controller;
@@ -220,6 +225,7 @@ class _QueueBody extends StatelessWidget {
   final double maxHeight;
   final double topInset;
   final double bottomInset;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -236,7 +242,7 @@ class _QueueBody extends StatelessWidget {
             maxHeight);
 
     return Material(
-      color: AppColors.background,
+      color: colors.background,
       clipBehavior: Clip.antiAlias,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       child: ClipRect(
@@ -248,7 +254,6 @@ class _QueueBody extends StatelessWidget {
             height: contentHeight,
             child: Column(
               children: [
-                // ═══ ШАПКА: ручка + текущий трек + кнопки + Queue/songs ═══
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onVerticalDragUpdate: (d) =>
@@ -262,17 +267,17 @@ class _QueueBody extends StatelessWidget {
                     child: _Header(
                       player: player,
                       controller: controller,
-                      songCount: 0, // обновится внутри через StreamBuilder
+                      colors: colors,
                     ),
                   ),
                 ),
-                // ═══ СПИСОК с кастомной физикой для закрытия вверху ═══
                 Expanded(
                   child: _QueueList(
                     controller: controller,
                     player: player,
                     bottomInset: bottomInset,
                     maxHeight: maxHeight,
+                    colors: colors,
                   ),
                 ),
               ],
@@ -288,11 +293,11 @@ class _Header extends StatelessWidget {
   const _Header({
     required this.player,
     required this.controller,
-    required this.songCount,
+    required this.colors,
   });
   final PlayerService player;
   final QueueSheetController controller;
-  final int songCount;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -300,18 +305,16 @@ class _Header extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 10),
-        // Ручка
         Container(
           width: 40,
           height: 4,
           decoration: BoxDecoration(
-            color: AppColors.elevatedHi,
+            color: colors.elevatedHi,
             borderRadius: BorderRadius.circular(2),
           ),
         ),
         const SizedBox(height: 12),
 
-        // Текущий трек + кнопки
         StreamBuilder<MediaItem?>(
           stream: player.mediaItem,
           builder: (context, snap) {
@@ -342,18 +345,19 @@ class _Header extends StatelessWidget {
                               item?.title ?? '',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textPrimary,
+                              style: TextStyle(
+                                color: colors.textPrimary,
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
+                                letterSpacing: 0,
                               ),
                             ),
                             Text(
                               item?.artist ?? '',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
+                              style: TextStyle(
+                                color: colors.textSecondary,
                                 fontSize: 13,
                               ),
                             ),
@@ -365,9 +369,9 @@ class _Header extends StatelessWidget {
                           if (item == null) return;
                           showAddToPlaylistSheet(context, item.toTrack());
                         },
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.more_vert_rounded,
-                          color: AppColors.textPrimary,
+                          color: colors.textPrimary,
                         ),
                       ),
                     ],
@@ -378,11 +382,11 @@ class _Header extends StatelessWidget {
                   Row(
                     children: [
                       Expanded(
-                        child: _ShuffleButton(player: player),
+                        child: _ShuffleButton(player: player, colors: colors),
                       ),
                       const SizedBox(width: 5),
                       Expanded(
-                        child: _RepeatButton(player: player),
+                        child: _RepeatButton(player: player, colors: colors),
                       ),
                     ],
                   ),
@@ -394,7 +398,6 @@ class _Header extends StatelessWidget {
 
         const SizedBox(height: 8),
 
-        // ═══ Queue / X songs — в шапке, над списком ═══
         StreamBuilder<List<MediaItem>>(
           stream: player.queue,
           builder: (context, snap) {
@@ -404,21 +407,21 @@ class _Header extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
+                  Text(
                     'Queue',
                     style: TextStyle(
-                      color: AppColors.textPrimary,
+                      color: colors.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
                   Text(
                     '$count songs',
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
+                    style: TextStyle(
+                      color: colors.textPrimary,
                       fontSize: 14,
                       fontWeight: FontWeight.w500,
-                      fontFeatures: [FontFeature.tabularFigures()],
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 ],
@@ -432,13 +435,14 @@ class _Header extends StatelessWidget {
 }
 
 class _ShuffleButton extends StatelessWidget {
-  const _ShuffleButton({required this.player});
+  const _ShuffleButton({required this.player, required this.colors});
   final PlayerService player;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.elevated,
+      color: colors.elevated,
       borderRadius: const BorderRadius.only(
         topLeft: Radius.circular(32),
         bottomLeft: Radius.circular(32),
@@ -455,19 +459,19 @@ class _ShuffleButton extends StatelessWidget {
         ),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 15),
-          child: const Row(
+          child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
                 Icons.shuffle_rounded,
-                color: AppColors.textPrimary,
+                color: colors.textPrimary,
                 size: 24,
               ),
-              SizedBox(width: 12),
+              const SizedBox(width: 12),
               Text(
                 'Shuffle',
                 style: TextStyle(
-                  color: AppColors.textPrimary,
+                  color: colors.textPrimary,
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
                 ),
@@ -481,8 +485,9 @@ class _ShuffleButton extends StatelessWidget {
 }
 
 class _RepeatButton extends StatelessWidget {
-  const _RepeatButton({required this.player});
+  const _RepeatButton({required this.player, required this.colors});
   final PlayerService player;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -503,7 +508,7 @@ class _RepeatButton extends StatelessWidget {
               );
 
         return Material(
-          color: AppColors.elevated,
+          color: colors.elevated,
           borderRadius: borderRadius,
           child: InkWell(
             onTap: player.cycleLoopMode,
@@ -517,18 +522,14 @@ class _RepeatButton extends StatelessWidget {
                     mode == LoopMode.one
                         ? Icons.repeat_one_rounded
                         : Icons.repeat_rounded,
-                    color: isActive
-                        ? AppColors.textPrimary
-                        : AppColors.textPrimary,
+                    color: isActive ? colors.textPrimary : colors.textPrimary,
                     size: 24,
                   ),
                   const SizedBox(width: 12),
                   Text(
                     'Repeat',
                     style: TextStyle(
-                      color: isActive
-                          ? AppColors.textPrimary
-                          : AppColors.textPrimary,
+                      color: isActive ? colors.textPrimary : colors.textPrimary,
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
@@ -549,12 +550,14 @@ class _QueueList extends StatefulWidget {
     required this.player,
     required this.bottomInset,
     required this.maxHeight,
+    required this.colors,
   });
 
   final QueueSheetController controller;
   final PlayerService player;
   final double bottomInset;
   final double maxHeight;
+  final dynamic colors;
 
   @override
   State<_QueueList> createState() => _QueueListState();
@@ -574,10 +577,10 @@ class _QueueListState extends State<_QueueList> {
             final current = iSnap.data ?? -1;
 
             if (all.isEmpty) {
-              return const Center(
+              return Center(
                 child: Text(
                   'Queue is empty',
-                  style: TextStyle(color: Color(0xFF9E8E8E)),
+                  style: TextStyle(color: widget.colors.textSecondary),
                 ),
               );
             }
@@ -594,8 +597,7 @@ class _QueueListState extends State<_QueueList> {
                 ),
                 buildDefaultDragHandles: false,
                 itemCount: visible.length,
-                // ignore: deprecated_member_use
-                onReorder: (oldLocal, newLocal) {
+                onReorderItem: (oldLocal, newLocal) {
                   if (!widget.controller.isFull) return;
                   if (newLocal > oldLocal) newLocal -= 1;
                   final from = visible[oldLocal].key;
@@ -613,6 +615,7 @@ class _QueueListState extends State<_QueueList> {
                     media: m,
                     isHighlighted: isCurrent,
                     onTap: () => widget.player.skipToQueueItem(realIndex),
+                    colors: widget.colors,
                   );
                 },
                 proxyDecorator: (child, index, animation) {
@@ -646,12 +649,14 @@ class _QueueTile extends StatelessWidget {
     required this.media,
     required this.onTap,
     this.isHighlighted = false,
+    required this.colors,
   });
 
   final int index;
   final MediaItem media;
   final VoidCallback onTap;
   final bool isHighlighted;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -660,7 +665,7 @@ class _QueueTile extends StatelessWidget {
           ? const EdgeInsets.symmetric(horizontal: 8)
           : EdgeInsets.zero,
       decoration: BoxDecoration(
-        color: isHighlighted ? AppColors.elevatedHi : Colors.transparent,
+        color: isHighlighted ? colors.elevatedHi : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
       ),
       child: InkWell(
@@ -693,10 +698,11 @@ class _QueueTile extends StatelessWidget {
                       media.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
+                      style: TextStyle(
+                        color: colors.textPrimary,
                         fontWeight: FontWeight.w700,
                         fontSize: 14,
+                        letterSpacing: 0,
                       ),
                     ),
                     Text(
@@ -704,7 +710,7 @@ class _QueueTile extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: AppColors.textSecondary,
+                        color: colors.textSecondary,
                         fontSize: 12,
                       ),
                     ),
@@ -718,11 +724,11 @@ class _QueueTile extends StatelessWidget {
                 children: [
                   ReorderableDragStartListener(
                     index: index,
-                    child: const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       child: Icon(
                         Icons.drag_handle,
-                        color: AppColors.textSecondary,
+                        color: colors.textSecondary,
                         size: 20,
                       ),
                     ),
@@ -730,11 +736,11 @@ class _QueueTile extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     _formatDuration(media.duration),
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
+                    style: TextStyle(
+                      color: colors.textSecondary,
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
-                      fontFeatures: [FontFeature.tabularFigures()],
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 ],

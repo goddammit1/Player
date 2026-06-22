@@ -1,38 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../main.dart' show AppColors;
+import '../../core/providers.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
 
-/// Bottom sheet «Детали трека».
-///
-/// Показывает обложку, название, исполнителя, источник, длительность и
-/// битрейт аудио. Битрейт резолвится лениво (он НЕ запрашивается при
-/// поиске, чтобы не тормозить выдачу): при открытии шита вызывается
-/// [TrackSource.resolveBitrate] — для YouTube это запрос манифеста
-/// (несколько секунд), для Muzmo — Range-GET к mp3. Пока идёт загрузка,
-/// показываем индикатор.
 Future<void> showTrackDetailsSheet(BuildContext context, Track track) {
   return showModalBottomSheet<void>(
     context: context,
-    backgroundColor: AppColors.surface,
+    backgroundColor: Colors.transparent,
     isScrollControlled: true,
-    showDragHandle: true,
-    builder: (_) => _TrackDetailsSheet(track: track),
+    showDragHandle: false,
+    builder: (sheetCtx) => _TrackDetailsSheet(track: track),
   );
 }
 
-class _TrackDetailsSheet extends StatefulWidget {
+class _TrackDetailsSheet extends ConsumerStatefulWidget {
   const _TrackDetailsSheet({required this.track});
   final Track track;
 
   @override
-  State<_TrackDetailsSheet> createState() => _TrackDetailsSheetState();
+  ConsumerState<_TrackDetailsSheet> createState() => _TrackDetailsSheetState();
 }
 
-class _TrackDetailsSheetState extends State<_TrackDetailsSheet> {
-  /// null — ещё грузим; -1 — не удалось определить; иначе — kbps.
+class _TrackDetailsSheetState extends ConsumerState<_TrackDetailsSheet> {
   int? _bitrate;
   bool _loading = true;
 
@@ -43,7 +35,6 @@ class _TrackDetailsSheetState extends State<_TrackDetailsSheet> {
   }
 
   Future<void> _loadBitrate() async {
-    // Если битрейт уже известен из трека — берём его сразу.
     if (widget.track.qualityScore != null) {
       setState(() {
         _bitrate = widget.track.qualityScore;
@@ -68,69 +59,89 @@ class _TrackDetailsSheetState extends State<_TrackDetailsSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = ref.watch(animatedPaletteProvider);
     final t = widget.track;
     final sourceName =
         SourceRegistry.instance.get(t.sourceId)?.displayName ?? t.sourceId;
 
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Шапка: обложка + название/исполнитель.
-            Row(
-              children: [
-                Artwork(
-                  url: t.artworkUrl,
-                  size: 64,
-                  borderRadius: 12,
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        t.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        t.artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+      child: Container(
+        decoration: BoxDecoration(
+          color: colors.elevated,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Drag handle
+              Center(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 12, bottom: 16),
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: colors.elevatedHi,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            const Divider(color: AppColors.outline, height: 1),
-            const SizedBox(height: 8),
+              ),
+              Row(
+                children: [
+                  Artwork(
+                    url: t.artworkUrl,
+                    size: 64,
+                    borderRadius: 12,
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          t.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textPrimary,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          t.artist,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Divider(color: colors.outline, height: 1),
+              const SizedBox(height: 8),
 
-            _DetailRow(label: 'Источник', value: sourceName),
-            _DetailRow(
-              label: 'Длительность',
-              value: t.duration != null ? _fmt(t.duration!) : '—',
-            ),
-            _BitrateRow(loading: _loading, bitrate: _bitrate),
-          ],
+              _DetailRow(label: 'Source', value: sourceName, colors: colors),
+              _DetailRow(
+                label: 'Duration',
+                value: t.duration != null ? _fmt(t.duration!) : '—',
+                colors: colors,
+              ),
+              _BitrateRow(loading: _loading, bitrate: _bitrate, colors: colors),
+            ],
+          ),
         ),
       ),
     );
@@ -145,9 +156,10 @@ class _TrackDetailsSheetState extends State<_TrackDetailsSheet> {
 }
 
 class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value});
+  const _DetailRow({required this.label, required this.value, required this.colors});
   final String label;
   final String value;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -157,16 +169,16 @@ class _DetailRow extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
+            style: TextStyle(
+              color: colors.textSecondary,
               fontSize: 14,
             ),
           ),
           const Spacer(),
           Text(
             value,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
+            style: TextStyle(
+              color: colors.textPrimary,
               fontSize: 14,
               fontWeight: FontWeight.w600,
             ),
@@ -177,27 +189,26 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-/// Отдельная строка для битрейта: пока грузится — крутилка, потом
-/// значение либо «недоступно».
 class _BitrateRow extends StatelessWidget {
-  const _BitrateRow({required this.loading, required this.bitrate});
+  const _BitrateRow({required this.loading, required this.bitrate, required this.colors});
   final bool loading;
   final int? bitrate;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     Widget trailing;
     if (loading) {
-      trailing = const SizedBox(
+      trailing = SizedBox(
         width: 16,
         height: 16,
-        child: CircularProgressIndicator(strokeWidth: 2),
+        child: CircularProgressIndicator(strokeWidth: 2, color: colors.textPrimary),
       );
     } else if (bitrate == null || bitrate! <= 0) {
-      trailing = const Text(
-        'недоступно',
+      trailing = Text(
+        'unavailable',
         style: TextStyle(
-          color: AppColors.textTertiary,
+          color: colors.textTertiary,
           fontSize: 14,
           fontWeight: FontWeight.w600,
         ),
@@ -205,8 +216,8 @@ class _BitrateRow extends StatelessWidget {
     } else {
       trailing = Text(
         '$bitrate kbps',
-        style: const TextStyle(
-          color: AppColors.textPrimary,
+        style: TextStyle(
+          color: colors.textPrimary,
           fontSize: 14,
           fontWeight: FontWeight.w600,
         ),
@@ -217,9 +228,9 @@ class _BitrateRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
         children: [
-          const Text(
-            'Битрейт',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+          Text(
+            'Bitrate',
+            style: TextStyle(color: colors.textSecondary, fontSize: 14),
           ),
           const Spacer(),
           trailing,

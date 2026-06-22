@@ -1,28 +1,10 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../main.dart' show AppColors;
+import '../../core/providers.dart';
 
-/// Квадратная обложка трека.
-///
-/// [aspectRatio] — соотношение сторон **исходного** изображения.
-/// Используется для правильной центрированной обрезки до квадрата.
-///
-/// - `1.0` (по умолчанию) — квадратные арты (Genius, iTunes, Muzmo).
-///   Изображение показывается без дополнительного масштабирования.
-/// - `16 / 9` — широкие арты (YouTube). Изображение растягивается
-///   до 16:9, затем `FittedBox` с `BoxFit.cover` центрированно
-///   обрезает до квадрата. Без полос.
-///
-/// Пример:
-/// ```dart
-/// // Genius / Muzmo — квадрат
-/// Artwork(url: geniusUrl, size: 54)
-///
-/// // YouTube — 16:9
-/// Artwork(url: youtubeUrl, size: 54, aspectRatio: 16 / 9)
-/// ```
-class Artwork extends StatelessWidget {
+class Artwork extends ConsumerWidget {
   const Artwork({
     super.key,
     required this.url,
@@ -39,7 +21,8 @@ class Artwork extends StatelessWidget {
   final double aspectRatio;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final cacheSize = (memCacheSize ?? size * dpr).round();
 
@@ -55,10 +38,10 @@ class Artwork extends StatelessWidget {
                 cacheSize: cacheSize,
                 aspectRatio: aspectRatio,
                 fadeInDuration: const Duration(milliseconds: 100),
-                placeholder: const _Placeholder(),
-                errorWidget: const _Placeholder(),
+                placeholder: _Placeholder(colors: colors),
+                errorWidget: _Placeholder(colors: colors),
               )
-            : const _Placeholder(),
+            : _Placeholder(colors: colors),
       ),
     );
   }
@@ -119,23 +102,24 @@ class _CroppedImage extends StatelessWidget {
 }
 
 class _Placeholder extends StatelessWidget {
-  const _Placeholder();
+  const _Placeholder({required this.colors});
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: AppColors.surfaceVariant,
+      color: colors.elevatedVariant,
       alignment: Alignment.center,
       child: Icon(
         Icons.music_note_rounded,
-        color: AppColors.textTertiary,
+        color: colors.textTertiary,
         size: 28,
       ),
     );
   }
 }
 
-class ArtworkMosaic extends StatelessWidget {
+class ArtworkMosaic extends ConsumerWidget {
   const ArtworkMosaic({
     super.key,
     required this.urls,
@@ -148,7 +132,9 @@ class ArtworkMosaic extends StatelessWidget {
   final double borderRadius;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+
     if (urls.isEmpty) {
       return Artwork(url: null, size: size, borderRadius: borderRadius);
     }
@@ -178,28 +164,28 @@ class ArtworkMosaic extends StatelessWidget {
               left: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[0], size: cell),
+              child: _Tile(url: cells[0], size: cell, colors: colors),
             ),
             Positioned(
               top: 0,
               right: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[1], size: cell),
+              child: _Tile(url: cells[1], size: cell, colors: colors),
             ),
             Positioned(
               bottom: 0,
               left: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[2], size: cell),
+              child: _Tile(url: cells[2], size: cell, colors: colors),
             ),
             Positioned(
               bottom: 0,
               right: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[3], size: cell),
+              child: _Tile(url: cells[3], size: cell, colors: colors),
             ),
           ],
         ),
@@ -209,9 +195,10 @@ class ArtworkMosaic extends StatelessWidget {
 }
 
 class _Tile extends StatelessWidget {
-  const _Tile({required this.url, required this.size});
+  const _Tile({required this.url, required this.size, required this.colors});
   final String? url;
   final double size;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -219,7 +206,7 @@ class _Tile extends StatelessWidget {
     final cache = (size * dpr).round();
 
     if (url == null || url!.isEmpty) {
-      return Container(color: AppColors.surfaceVariant);
+      return Container(color: colors.elevatedVariant);
     }
 
     final aspectRatio = _detectAspectRatio(url!);
@@ -246,8 +233,8 @@ class _Tile extends StatelessWidget {
               memCacheWidth: cacheWidth,
               memCacheHeight: cacheHeight,
               fadeInDuration: Duration.zero,
-              placeholder: (_, _) => Container(color: AppColors.surfaceVariant),
-              errorWidget: (_, _, _) => Container(color: AppColors.surfaceVariant),
+              placeholder: (_, _) => Container(color: colors.elevatedVariant),
+              errorWidget: (_, _, _) => Container(color: colors.elevatedVariant),
             ),
           ),
         ),
@@ -256,9 +243,6 @@ class _Tile extends StatelessWidget {
   }
 }
 
-/// Определяет aspectRatio по URL обложки.
-///
-/// YouTube-арты (ytimg.com) — 16:9, всё остальное — 1:0 (квадрат).
 double _detectAspectRatio(String? url) {
   if (url == null || url.isEmpty) return 1.0;
   final lower = url.toLowerCase();

@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/playlist_backup.dart';
 import '../../core/providers.dart';
-import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
@@ -11,10 +10,8 @@ import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../../core/artwork_helper.dart';
 
-
 /// Экран отдельного плейлиста: большая обложка-мозаика, имя, кнопка
-/// Play, список треков. Используется и для пустого («только что
-/// создан»), и для заполненного состояний.
+/// Play, список треков. Используется и для пустого, и для заполненного.
 class PlaylistPage extends ConsumerWidget {
   const PlaylistPage({super.key, required this.playlistId});
   final String playlistId;
@@ -23,6 +20,8 @@ class PlaylistPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(playlistsProvider);
     final list = async.value ?? const <Playlist>[];
+    final colors = ref.watch(animatedPaletteProvider);
+
     Playlist? playlist;
     for (final p in list) {
       if (p.id == playlistId) {
@@ -32,13 +31,23 @@ class PlaylistPage extends ConsumerWidget {
     }
 
     if (playlist == null) {
-      return Scaffold(
-        backgroundColor: AppColors.background,
-        appBar: AppBar(),
-        body: const Center(
-          child: Text(
-            'Playlist deleted',
-            style: TextStyle(color: AppColors.textSecondary),
+      return _PageAnimator(
+        child: Scaffold(
+          backgroundColor: colors.background,
+          appBar: AppBar(
+            backgroundColor: colors.background,
+            surfaceTintColor: Colors.transparent,
+            elevation: 0,
+            leading: IconButton(
+              icon: Icon(Icons.chevron_left_rounded, size: 28, color: colors.textPrimary),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          body: Center(
+            child: Text(
+              'Playlist deleted',
+              style: TextStyle(color: colors.textSecondary),
+            ),
           ),
         ),
       );
@@ -48,241 +57,244 @@ class PlaylistPage extends ConsumerWidget {
     final player = ref.read(playerServiceProvider);
     final repo = ref.read(playlistRepositoryProvider);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Stack(
-        children: [
-          SafeArea(
-            bottom: false,
-            child: CustomScrollView(
-              physics: const BouncingScrollPhysics(),
-              slivers: [
-                SliverAppBar(
-                  pinned: true,
-                  backgroundColor: AppColors.background,
-                  surfaceTintColor: Colors.transparent,
-                  elevation: 0,
-                  leading: IconButton(
-                    icon: const Icon(Icons.chevron_left_rounded, size: 28),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                  actions: [
-                    IconButton(
-                      icon: const Icon(Icons.more_horiz_rounded),
-                      onPressed: () =>
-                          _showPlaylistMenu(context, ref, repo, p),
+    return _PageAnimator(
+      child: Scaffold(
+        backgroundColor: colors.background,
+        body: Stack(
+          children: [
+            SafeArea(
+              bottom: false,
+              child: CustomScrollView(
+                physics: const BouncingScrollPhysics(),
+                slivers: [
+                  SliverAppBar(
+                    pinned: true,
+                    backgroundColor: colors.background,
+                    surfaceTintColor: Colors.transparent,
+                    elevation: 0,
+                    leading: IconButton(
+                      icon: Icon(Icons.chevron_left_rounded, size: 28, color: colors.textPrimary),
+                      onPressed: () => Navigator.of(context).pop(),
                     ),
-                    const SizedBox(width: 4),
-                  ],
-                ),
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                    child: Column(
-                      children: [
-                        AspectRatio(
-                          aspectRatio: 1,
-                          child: LayoutBuilder(
-                            builder: (_, c) => ArtworkMosaic(
-                              urls: p.coverThumbnails,
-                              size: c.maxWidth,
-                              borderRadius: 24,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        Text(
-                          p.name,
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '${p.tracks.length} tracks',
-                          style: const TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 13,
-                          ),
-                        ),
-                        const SizedBox(height: 18),
-                        SizedBox(
-                          height: 52,
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.play_arrow_rounded),
-                            label: const Text(
-                              'Play',
-                              style: TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.textPrimary,
-                              foregroundColor: Colors.black,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(26),
-                              ),
-                              minimumSize: const Size(160, 52),
-                              elevation: 0,
-                            ),
-                            onPressed: p.tracks.isEmpty
-                                ? null
-                                : () {
-                                    // Фильтруем недоступные (YouTube) треки
-                                    final playable = p.tracks
-                                        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
-                                        .toList();
-                                    if (playable.isNotEmpty) {
-                                      player.setQueue(playable);
-                                    }
-                                  },
-                          ),
-                        ),
-                      ],
-                    ),
+                    actions: [
+                      IconButton(
+                        icon: Icon(Icons.more_horiz_rounded, color: colors.textPrimary),
+                        onPressed: () => _showPlaylistMenu(context, ref, repo, p),
+                      ),
+                      const SizedBox(width: 4),
+                    ],
                   ),
-                ),
-                if (p.tracks.isEmpty)
-                  const SliverToBoxAdapter(
+                  SliverToBoxAdapter(
                     child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 48),
-                      child: Center(
-                        child: Text(
-                          'No tracks yet.\nFind some via Search 🔍',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: AppColors.textSecondary,
-                            height: 1.5,
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                      child: Column(
+                        children: [
+                          AspectRatio(
+                            aspectRatio: 1,
+                            child: LayoutBuilder(
+                              builder: (_, c) => ArtworkMosaic(
+                                urls: p.coverThumbnails,
+                                size: c.maxWidth,
+                                borderRadius: 24,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Text(
+                            p.name,
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: colors.textPrimary,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '${p.tracks.length} tracks',
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          SizedBox(
+                            height: 52,
+                            child: ElevatedButton.icon(
+                              icon: Icon(Icons.play_arrow_rounded, color: Colors.black),
+                              label: const Text(
+                                'Play',
+                                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: colors.textPrimary,
+                                foregroundColor: Colors.black,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(26),
+                                ),
+                                minimumSize: const Size(160, 52),
+                                elevation: 0,
+                              ),
+                              onPressed: p.tracks.isEmpty
+                                  ? null
+                                  : () {
+                                      final playable = p.tracks
+                                          .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
+                                          .toList();
+                                      if (playable.isNotEmpty) {
+                                        player.setQueue(playable);
+                                      }
+                                    },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (p.tracks.isEmpty)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 48),
+                        child: Center(
+                          child: Text(
+                            'No tracks yet.\nFind some via Search 🔍',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              height: 1.5,
+                              fontSize: 14,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 120),
-                    sliver: SliverList.builder(
-                      itemCount: p.tracks.length,
-                      itemBuilder: (context, i) {
-                        final t = p.tracks[i];
-                        final isDisabled = SourceRegistry.instance.isDisabled(t.sourceId);
-                        return Dismissible(
-                          key: ValueKey(t.globalId),
-                          direction: DismissDirection.endToStart,
-                          background: Container(
-                            alignment: Alignment.centerRight,
-                            padding: const EdgeInsets.only(right: 24),
-                            color: Colors.red.withValues(alpha: 0.2),
-                            child: const Icon(
-                              Icons.delete_outline_rounded,
-                              color: Colors.redAccent,
-                            ),
-                          ),
-                          onDismissed: (_) =>
-                              repo.removeTrack(p.id, t.globalId),
-                          child: ListTile(
-                            leading: Stack(
-                              children: [
-                                Opacity(
-                                  opacity: isDisabled ? 0.4 : 1.0,
-                                  child: Artwork(
-                                    url: t.artworkUrl,
-                                    size: 48,
-                                    borderRadius: 8,
-                                    aspectRatio: artAspectRatio(t),
-                                  ),
-                                ),
-                                if (isDisabled)
-                                  Positioned(
-                                    right: 0,
-                                    bottom: 0,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(2),
-                                      decoration: const BoxDecoration(
-                                        color: Colors.orange,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.warning_rounded,
-                                        size: 12,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            title: Text(
-                              t.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: isDisabled
-                                    ? AppColors.textSecondary
-                                    : AppColors.textPrimary,
-                                fontWeight: FontWeight.w600,
+                    )
+                  else
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(8, 0, 8, 120),
+                      sliver: SliverList.builder(
+                        itemCount: p.tracks.length,
+                        itemBuilder: (context, i) {
+                          final t = p.tracks[i];
+                          final isDisabled = SourceRegistry.instance.isDisabled(t.sourceId);
+                          return Dismissible(
+                            key: ValueKey(t.globalId),
+                            direction: DismissDirection.endToStart,
+                            background: Container(
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 24),
+                              color: Colors.red.withValues(alpha: 0.2),
+                              child: const Icon(
+                                Icons.delete_outline_rounded,
+                                color: Colors.redAccent,
                               ),
                             ),
-                            subtitle: Text(
-                              isDisabled
-                                  ? '${t.artist} · YouTube unavailable'
-                                  : t.artist,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: isDisabled
-                                    ? Colors.orange
-                                    : AppColors.textSecondary,
-                                fontSize: 12,
-                              ),
-                            ),
-                            trailing: isDisabled
-                                ? IconButton(
-                                    icon: const Icon(
-                                      Icons.find_replace_rounded,
-                                      color: Colors.orange,
-                                      size: 22,
+                            onDismissed: (_) => repo.removeTrack(p.id, t.globalId),
+                            child: ListTile(
+                              leading: Stack(
+                                children: [
+                                  Opacity(
+                                    opacity: isDisabled ? 0.4 : 1.0,
+                                    child: Artwork(
+                                      url: t.artworkUrl,
+                                      size: 48,
+                                      borderRadius: 8,
+                                      aspectRatio: artAspectRatio(t),
                                     ),
-                                    tooltip: 'Find replacement',
-                                    onPressed: () => _showReplacementSheet(
-                                      context, ref, p, t,
-                                    ),
-                                  )
-                                : (t.duration != null
-                                    ? Text(
-                                        _fmt(t.duration!),
-                                        style: const TextStyle(
-                                          color: AppColors.textSecondary,
+                                  ),
+                                  if (isDisabled)
+                                    Positioned(
+                                      right: 0,
+                                      bottom: 0,
+                                      child: Container(
+                                        padding: const EdgeInsets.all(2),
+                                        decoration: const BoxDecoration(
+                                          color: Colors.orange,
+                                          shape: BoxShape.circle,
                                         ),
-                                      )
-                                    : null),
-                            onTap: isDisabled
-                                ? () => _showReplacementSheet(
-                                      context, ref, p, t)
-                                : () {
-                                    final playable = p.tracks
-                                        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
-                                        .toList();
-                                    final idx = playable.indexWhere(
-                                        (pt) => pt.globalId == t.globalId);
-                                    player.setQueue(
-                                      playable,
-                                      startIndex: idx >= 0 ? idx : 0,
-                                    );
-                                  },
-                          ),
-                        );
-                      },
+                                        child: const Icon(
+                                          Icons.warning_rounded,
+                                          size: 12,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              title: Text(
+                                t.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: isDisabled
+                                      ? colors.textSecondary
+                                      : colors.textPrimary,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              subtitle: Text(
+                                isDisabled
+                                    ? '${t.artist} · YouTube unavailable'
+                                    : t.artist,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: isDisabled
+                                      ? Colors.orange
+                                      : colors.textSecondary,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              trailing: isDisabled
+                                  ? IconButton(
+                                      icon: const Icon(
+                                        Icons.find_replace_rounded,
+                                        color: Colors.orange,
+                                        size: 22,
+                                      ),
+                                      tooltip: 'Find replacement',
+                                      onPressed: () => _showReplacementSheet(
+                                        context, ref, p, t,
+                                      ),
+                                    )
+                                  : (t.duration != null
+                                      ? Text(
+                                          _fmt(t.duration!),
+                                          style: TextStyle(
+                                            color: colors.textSecondary,
+                                            fontSize: 12,
+                                          ),
+                                        )
+                                      : null),
+                              onTap: isDisabled
+                                  ? () => _showReplacementSheet(
+                                        context, ref, p, t)
+                                  : () {
+                                      final playable = p.tracks
+                                          .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
+                                          .toList();
+                                      final idx = playable.indexWhere(
+                                          (pt) => pt.globalId == t.globalId);
+                                      player.setQueue(
+                                        playable,
+                                        startIndex: idx >= 0 ? idx : 0,
+                                      );
+                                    },
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const NowPlayingOverlay(),
-
-        ],
+            const NowPlayingOverlay(),
+          ],
+        ),
       ),
     );
   }
@@ -299,9 +311,11 @@ class PlaylistPage extends ConsumerWidget {
     repo,
     Playlist p,
   ) async {
+    final colors = ref.read(currentPaletteProvider);
+
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: colors.elevated,
       showDragHandle: true,
       builder: (sheetCtx) {
         return SafeArea(
@@ -310,27 +324,27 @@ class PlaylistPage extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(Icons.edit_rounded),
-                title: const Text('Rename'),
+                leading: Icon(Icons.edit_rounded, color: colors.textPrimary),
+                title: Text('Rename', style: TextStyle(color: colors.textPrimary)),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
                   await _askRename(context, ref, p);
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.ios_share_rounded),
-                title: const Text('Export playlist'),
+                leading: Icon(Icons.ios_share_rounded, color: colors.textPrimary),
+                title: Text('Export playlist', style: TextStyle(color: colors.textPrimary)),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
                   await _exportPlaylist(context, p);
                 },
               ),
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.delete_outline_rounded,
                   color: Colors.redAccent,
                 ),
-                title: const Text(
+                title: Text(
                   'Delete playlist',
                   style: TextStyle(color: Colors.redAccent),
                 ),
@@ -352,7 +366,7 @@ class PlaylistPage extends ConsumerWidget {
       await PlaylistBackup.exportAndShare([p]);
     } catch (e) {
       if (!context.mounted) return;
-      _showInfo(context, title: 'Export failed', body: e.toString());
+      _showInfo(context, ref: null, title: 'Export failed', body: e.toString());
     }
   }
 
@@ -360,19 +374,22 @@ class PlaylistPage extends ConsumerWidget {
     BuildContext context, {
     required String title,
     required String body,
+    WidgetRef? ref,
   }) {
+    final colors = ref?.read(currentPaletteProvider);
+
     showDialog<void>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: AppColors.surface,
+          backgroundColor: colors?.elevated ?? Colors.grey[900],
           title: Text(
             title,
-            style: const TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: colors?.textPrimary ?? Colors.white),
           ),
           content: Text(
             body,
-            style: const TextStyle(color: AppColors.textSecondary),
+            style: TextStyle(color: colors?.textSecondary ?? Colors.grey),
           ),
           actions: [
             TextButton(
@@ -385,9 +402,6 @@ class PlaylistPage extends ConsumerWidget {
     );
   }
 
-  /// Показывает bottom sheet с результатами поиска замены для
-  /// недоступного YouTube-трека. Ищет по "artist - title" в Muzmo и
-  /// SoundCloud, пользователь выбирает подходящий вариант.
   Future<void> _showReplacementSheet(
     BuildContext context,
     WidgetRef ref,
@@ -397,10 +411,11 @@ class PlaylistPage extends ConsumerWidget {
     final query = '${unavailableTrack.artist} ${unavailableTrack.title}';
     final repo = ref.read(playlistRepositoryProvider);
     final player = ref.read(playerServiceProvider);
+    final colors = ref.read(currentPaletteProvider);
 
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: colors.elevated,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetCtx) {
@@ -437,23 +452,25 @@ class PlaylistPage extends ConsumerWidget {
     WidgetRef ref,
     Playlist p,
   ) async {
+    final colors = ref.read(currentPaletteProvider);
     final controller = TextEditingController(text: p.name);
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: AppColors.surface,
-          title: const Text(
+          backgroundColor: colors.elevated,
+          title: Text(
             'Rename playlist',
-            style: TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: colors.textPrimary),
           ),
           content: TextField(
             controller: controller,
             autofocus: true,
-            style: const TextStyle(color: AppColors.textPrimary),
-            decoration: const InputDecoration(
+            style: TextStyle(color: colors.textPrimary),
+            decoration: InputDecoration(
               hintText: 'Name',
-              hintStyle: TextStyle(color: AppColors.textTertiary),
+              hintStyle: TextStyle(color: colors.textTertiary),
+              border: InputBorder.none,
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),
@@ -477,11 +494,69 @@ class PlaylistPage extends ConsumerWidget {
   }
 }
 
-/// Тело bottom sheet для поиска замены недоступного YouTube-трека.
-/// Автоматически ищет по "artist title" во всех работающих источниках
-/// и показывает результаты. Пользователь может послушать превью и
-/// выбрать замену.
-class _ReplacementSheetBody extends StatefulWidget {
+/// ═══════════════════════════════════════════════════════════════════
+///  SHARED ANIMATOR (как в HomePage)
+/// ═══════════════════════════════════════════════════════════════════
+
+class _PageAnimator extends StatefulWidget {
+  const _PageAnimator({required this.child});
+  final Widget child;
+
+  @override
+  State<_PageAnimator> createState() => _PageAnimatorState();
+}
+
+class _PageAnimatorState extends State<_PageAnimator>
+    with SingleTickerProviderStateMixin {
+
+  late final AnimationController _anim;
+  late final Animation<double> _slide;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _slide = Tween<double>(begin: 10, end: 0).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic),
+    );
+    _fade = Tween<double>(begin: 0.7, end: 1).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeOut),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _anim.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (context, _) => Transform.translate(
+        offset: Offset(0, _slide.value),
+        child: Opacity(
+          opacity: _fade.value,
+          child: widget.child,
+        ),
+      ),
+    );
+  }
+}
+
+/// ═══════════════════════════════════════════════════════════════════
+///  REPLACEMENT SHEET BODY (с динамическими цветами)
+/// ═══════════════════════════════════════════════════════════════════
+
+class _ReplacementSheetBody extends ConsumerStatefulWidget {
   const _ReplacementSheetBody({
     required this.query,
     required this.unavailableTrack,
@@ -497,10 +572,10 @@ class _ReplacementSheetBody extends StatefulWidget {
   final ValueChanged<Track> onPreview;
 
   @override
-  State<_ReplacementSheetBody> createState() => _ReplacementSheetBodyState();
+  ConsumerState<_ReplacementSheetBody> createState() => _ReplacementSheetBodyState();
 }
 
-class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
+class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
   List<Track> _results = [];
   bool _loading = true;
   String? _error;
@@ -529,7 +604,6 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
         }),
       );
 
-      // Round-robin слияние
       final merged = <Track>[];
       var i = 0;
       var added = true;
@@ -562,6 +636,8 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = ref.watch(animatedPaletteProvider);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -571,10 +647,11 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
             'Replace "${widget.unavailableTrack.title}"',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
+            style: TextStyle(
+              color: colors.textPrimary,
               fontSize: 18,
               fontWeight: FontWeight.w700,
+              letterSpacing: 0,
             ),
           ),
         ),
@@ -583,7 +660,7 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
           child: Text(
             'Tap to preview · Long press to replace',
             style: TextStyle(
-              color: AppColors.textSecondary,
+              color: colors.textSecondary,
               fontSize: 12,
             ),
           ),
@@ -608,11 +685,11 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
             ),
           )
         else if (_results.isEmpty)
-          const Expanded(
+          Expanded(
             child: Center(
               child: Text(
                 'No results found',
-                style: TextStyle(color: AppColors.textSecondary),
+                style: TextStyle(color: colors.textSecondary),
               ),
             ),
           )
@@ -635,8 +712,8 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
                     t.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
+                    style: TextStyle(
+                      color: colors.textPrimary,
                       fontWeight: FontWeight.w600,
                       fontSize: 14,
                     ),
@@ -645,8 +722,8 @@ class _ReplacementSheetBodyState extends State<_ReplacementSheetBody> {
                     '${t.artist} · ${t.sourceId}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
+                    style: TextStyle(
+                      color: colors.textSecondary,
                       fontSize: 11,
                     ),
                   ),

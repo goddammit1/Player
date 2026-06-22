@@ -4,35 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rxdart/rxdart.dart';
 
 import '../../core/providers.dart';
-import '../../main.dart' show AppColors;
 import '../pages/player_page.dart';
 import 'artwork.dart';
 import '../../core/artwork_helper.dart';
 
-/// Выезжающий снизу плеер «Now playing».
-///
-/// Идея: единая панель, прижатая к низу экрана, которую можно тянуть
-/// пальцем вверх. По мере вытягивания она плавно превращается из узкой
-/// мини-плашки в полноэкранный плеер — высота, отступы и непрозрачность
-/// контента интерполируются по значению [_t] (0 = мини, 1 = развёрнуто).
-///
-/// Жесты:
-/// - Вертикальный drag по панели тянет её **за пальцем** в реальном
-///   времени (свойство `t` меняется на каждый `onVerticalDragUpdate`).
-/// - При отпускании панель «доезжает» до ближайшего состояния (вверх или
-///   вниз) с учётом скорости броска (fling).
-/// - Тап по свёрнутой плашке разворачивает её на весь экран.
-///
-/// Фильтрация системных жестов:
-/// - Мёртвая зона 40px от нижнего края экрана — drag оттуда игнорируется.
-/// - Слишком быстрые короткие свайпы (>2500 px/s при дистанции <60 px)
-///   интерпретируются как системный жест «назад/домой» и игнорируются.
-///
-/// Виден только когда есть активный трек (mediaItem != null).
 class NowPlayingOverlay extends ConsumerStatefulWidget {
   const NowPlayingOverlay({super.key});
 
-  /// Высота свёрнутой мини-плашки (без учёта системного отступа снизу).
   static const double miniHeight = 80;
 
   @override
@@ -41,37 +19,32 @@ class NowPlayingOverlay extends ConsumerStatefulWidget {
 
 class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
     with SingleTickerProviderStateMixin {
-  /// 0.0 — свёрнут (мини), 1.0 — развёрнут (полный экран).
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 320),
     value: 0,
   );
 
-  /// Полная высота экрана — кэшируем в `build` для расчёта drag-дельты.
   double _maxHeight = 0;
-
-  // ===== Фильтрация системных жестов =====
-  /// Y-координата начала drag (глобальная).
   double _dragStartY = 0;
-  /// Пройденная дистанция drag (аккумулируется).
   double _dragDistance = 0;
-  /// Флаг: drag начался в мёртвой зоне — полностью игнорируем.
   bool _dragFromDeadZone = false;
 
-  static const double _bottomDeadZone = 40;      // px от низа экрана
-  static const double _maxSystemVelocity = 2500; // px/s — порог системного свайпа
-  static const double _minUserDistance = 60;       // px — минимальная дистанция пользовательского drag
+  static const double _bottomDeadZone = 40;
+  static const double _maxSystemVelocity = 2500;
+  static const double _minUserDistance = 60;
 
   @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
+
   void _expand() {
-  FocusManager.instance.primaryFocus?.unfocus();  // ← убираем фокус со всех полей
-  _ctrl.animateTo(1, curve: Curves.easeOutCubic);
+    FocusManager.instance.primaryFocus?.unfocus();
+    _ctrl.animateTo(1, curve: Curves.easeOutCubic);
   }
+
   void _collapse() => _ctrl.animateTo(0, curve: Curves.easeOutCubic);
 
   void _onDragStart(DragStartDetails d) {
@@ -82,27 +55,21 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
 
   void _onDragUpdate(DragUpdateDetails d) {
     if (_maxHeight <= 0) return;
-
-    // Полностью игнорируем drag, начатый из мёртвой зоны снизу.
     if (_dragFromDeadZone) return;
 
     final delta = d.primaryDelta!;
     _dragDistance += delta.abs();
-    // Тянем вверх -> t увеличивается. dy<0 при движении вверх.
     _ctrl.value -= delta / _maxHeight;
   }
 
   void _onDragEnd(DragEndDetails d) {
-    final v = d.primaryVelocity ?? 0; // px/s: <0 вверх, >0 вниз.
+    final v = d.primaryVelocity ?? 0;
 
-    // Если drag начался из мёртвой зоны — полностью игнорируем.
     if (_dragFromDeadZone) {
       _dragFromDeadZone = false;
       return;
     }
 
-    // Если свайп слишком быстрый и короткий — скорее всего системный
-    // жест (сворачивание приложения / назад). Игнорируем.
     final isSystemGesture =
         v.abs() > _maxSystemVelocity && _dragDistance < _minUserDistance;
     if (isSystemGesture) return;
@@ -113,7 +80,6 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
     } else if (v > flingThreshold) {
       _collapse();
     } else {
-      // Решаем по тому, ближе ли панель к развёрнутому состоянию.
       _ctrl.value > 0.5 ? _expand() : _collapse();
     }
   }
@@ -121,6 +87,7 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerServiceProvider);
+    final colors = ref.watch(animatedPaletteProvider);
     final media = MediaQuery.of(context);
     _maxHeight = media.size.height;
     final bottomInset = media.padding.bottom;
@@ -153,14 +120,13 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      // Большой плеер — фон + контент, на весь экран.
                       Positioned.fill(
                         child: IgnorePointer(
                           ignoring: t < 0.9,
                           child: Opacity(
                             opacity: fullOpacity,
                             child: ColoredBox(
-                              color: AppColors.background,
+                              color: colors.background,
                               child: SafeArea(
                                 child: PlayerContent(onClose: _collapse),
                               ),
@@ -169,7 +135,6 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                         ),
                       ),
 
-                      // Мини-плашка — верхняя полоса этого же блока.
                       Positioned(
                         left: 0,
                         right: 0,
@@ -183,6 +148,7 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                               player: player,
                               item: item,
                               onTap: _expand,
+                              colors: colors,
                             ),
                           ),
                         ),
@@ -199,25 +165,25 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
   }
 }
 
-/// Свёрнутая мини-плашка: обложка, название/исполнитель, play/pause, next.
-/// Поверх фона рисуется тонкая прогресс-заливка слева направо.
 class _MiniBar extends StatelessWidget {
   const _MiniBar({
     required this.player,
     required this.item,
     required this.onTap,
+    required this.colors,
   });
 
   final dynamic player;
   final MediaItem item;
   final VoidCallback onTap;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       child: Material(
-        color: AppColors.surface,
+        color: colors.elevated,
         borderRadius: BorderRadius.circular(14),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
@@ -226,7 +192,7 @@ class _MiniBar extends StatelessWidget {
             height: NowPlayingOverlay.miniHeight,
             child: Stack(
               children: [
-                _ProgressFill(player: player, item: item),
+                _ProgressFill(player: player, item: item, colors: colors),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(5, 0, 10, 0),
                   child: Row(
@@ -248,10 +214,11 @@ class _MiniBar extends StatelessWidget {
                               item.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textPrimary,
+                              style: TextStyle(
+                                color: colors.textPrimary,
                                 fontWeight: FontWeight.w700,
                                 fontSize: 14,
+                                letterSpacing: 0,
                               ),
                             ),
                             const SizedBox(height: 2),
@@ -259,8 +226,8 @@ class _MiniBar extends StatelessWidget {
                               item.artist ?? '',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
+                              style: TextStyle(
+                                color: colors.textSecondary,
                                 fontWeight: FontWeight.w600,
                                 fontSize: 10,
                               ),
@@ -268,11 +235,11 @@ class _MiniBar extends StatelessWidget {
                           ],
                         ),
                       ),
-                      _PlayPauseButton(player: player),
+                      _PlayPauseButton(player: player, colors: colors),
                       IconButton(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.skip_next_rounded,
-                          color: AppColors.textPrimary,
+                          color: colors.textPrimary,
                         ),
                         onPressed: player.skipToNext,
                       ),
@@ -289,9 +256,10 @@ class _MiniBar extends StatelessWidget {
 }
 
 class _ProgressFill extends StatelessWidget {
-  const _ProgressFill({required this.player, required this.item});
+  const _ProgressFill({required this.player, required this.item, required this.colors});
   final dynamic player;
   final MediaItem item;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -315,7 +283,7 @@ class _ProgressFill extends StatelessWidget {
                 widthFactor: f,
                 heightFactor: 1,
                 child: Container(
-                  color: AppColors.surfaceProgressBar,
+                  color: colors.elevatedProgressBar,
                 ),
               ),
             );
@@ -327,8 +295,9 @@ class _ProgressFill extends StatelessWidget {
 }
 
 class _PlayPauseButton extends StatelessWidget {
-  const _PlayPauseButton({required this.player});
+  const _PlayPauseButton({required this.player, required this.colors});
   final dynamic player;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -340,12 +309,12 @@ class _PlayPauseButton extends StatelessWidget {
             (st.processingState == AudioProcessingState.loading ||
                 st.processingState == AudioProcessingState.buffering);
         if (loading) {
-          return const Padding(
-            padding: EdgeInsets.all(14),
+          return Padding(
+            padding: const EdgeInsets.all(14),
             child: SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              child: CircularProgressIndicator(strokeWidth: 2, color: colors.textPrimary),
             ),
           );
         }
@@ -353,7 +322,7 @@ class _PlayPauseButton extends StatelessWidget {
         return IconButton(
           icon: Icon(
             playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-            color: AppColors.textPrimary,
+            color: colors.textPrimary,
           ),
           onPressed: () => playing ? player.pause() : player.play(),
         );

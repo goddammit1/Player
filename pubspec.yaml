@@ -6,10 +6,13 @@ version: 1.6.0+8
 environment:
   sdk: ^3.11.4
 
+
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  palette_generator: ^0.3.3+3
+  shared_preferences: ^2.5.3
 
   # --- Audio / background playback ---
   just_audio: ^0.9.40
@@ -32,7 +35,6 @@ dependencies:
   sqflite: ^2.4.1
   path_provider: ^2.1.5
   path: ^1.9.0
-  shared_preferences: ^2.3.3
 
   # --- UI ---
   cached_network_image: ^3.4.1

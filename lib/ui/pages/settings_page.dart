@@ -1,94 +1,257 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import '../../main.dart' show AppColors;
+import '../../core/providers.dart';
 
-/// Экран настроек.
-///
-/// Пока тут только «Check for updates» — он лезет в GitHub Releases
-/// репозитория проекта и сравнивает `tag_name` с текущей версией из
-/// `package_info_plus`. Если у нас не самая свежая — показывает
-/// диалог со ссылкой на релиз.
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
 
   static const _repo = 'goddammit1/Player';
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.chevron_left_rounded, size: 28),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: const Text(
-          'Settings',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 20,
-            fontWeight: FontWeight.w700,
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+
+    return _PageAnimator(
+      child: Scaffold(
+        backgroundColor: colors.background,
+        appBar: AppBar(
+          backgroundColor: colors.background,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(Icons.chevron_left_rounded, size: 28, color: colors.textPrimary),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+          title: Text(
+            'Settings',
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0,
+            ),
           ),
         ),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        children: [
-          _Section(
-            title: 'About',
-            children: [
-              FutureBuilder<PackageInfo>(
-                future: PackageInfo.fromPlatform(),
-                builder: (context, snap) {
-                  final v = snap.data?.version ?? '...';
-                  final build = snap.data?.buildNumber ?? '';
-                  return ListTile(
-                    leading: const Icon(
-                      Icons.info_outline_rounded,
-                      color: AppColors.textPrimary,
-                    ),
-                    title: const Text(
-                      'Version',
-                      style: TextStyle(color: AppColors.textPrimary),
-                    ),
-                    subtitle: Text(
-                      build.isEmpty ? v : '$v ($build)',
-                      style: const TextStyle(color: AppColors.textSecondary),
-                    ),
-                  );
-                },
-              ),
-              ListTile(
-                leading: const Icon(
-                  Icons.system_update_alt_rounded,
-                  color: AppColors.textPrimary,
-                ),
-                title: const Text(
-                  'Check for updates',
-                  style: TextStyle(color: AppColors.textPrimary),
-                ),
-                subtitle: const Text(
-                  'Latest release on GitHub',
-                  style: TextStyle(color: AppColors.textSecondary),
-                ),
-                onTap: () => _checkForUpdates(context),
-              ),
-            ],
-          ),
-        ],
+        body: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          children: [
+            _AppearanceSection(colors: colors),
+            _AboutSection(repo: _repo, colors: colors),
+          ],
+        ),
       ),
     );
   }
+}
 
-  Future<void> _checkForUpdates(BuildContext context) async {
-    // Показываем модал «checking...» сразу, чтобы дать визуальный фидбек.
+// =====================================================================
+//  APPEARANCE SECTION
+// =====================================================================
+
+class _AppearanceSection extends ConsumerWidget {
+  const _AppearanceSection({required this.colors});
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(appThemeModeProvider);
+
+    return _Section(
+      title: 'Appearance',
+      colors: colors,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Theme',
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colors.elevated,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: colors.outline, width: 1),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _ThemeOption(
+                        label: 'Fixed',
+                        icon: Icons.palette_outlined,
+                        isSelected: mode == AppThemeMode.fixed,
+                        onTap: () => ref
+                            .read(appThemeModeProvider.notifier)
+                            .setMode(AppThemeMode.fixed),
+                        colors: colors,
+                      ),
+                    ),
+                    VerticalDivider(
+                      width: 1,
+                      thickness: 1,
+                      color: colors.outline,
+                      indent: 8,
+                      endIndent: 8,
+                    ),
+                    Expanded(
+                      child: _ThemeOption(
+                        label: 'Dynamic',
+                        icon: Icons.auto_awesome_outlined,
+                        isSelected: mode == AppThemeMode.dynamic,
+                        onTap: () => ref
+                            .read(appThemeModeProvider.notifier)
+                            .setMode(AppThemeMode.dynamic),
+                        colors: colors,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                mode == AppThemeMode.dynamic
+                    ? 'Colors adapt to the current track artwork.'
+                    : 'Use the default dark grey palette.',
+                style: TextStyle(
+                  color: colors.textTertiary,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+class _ThemeOption extends StatelessWidget {
+  const _ThemeOption({
+    required this.label,
+    required this.icon,
+    required this.isSelected,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool isSelected;
+  final VoidCallback onTap;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: isSelected
+                    ? colors.textPrimary
+                    : colors.textTertiary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: isSelected
+                      ? colors.textPrimary
+                      : colors.textTertiary,
+                  fontSize: 14,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =====================================================================
+//  ABOUT SECTION
+// =====================================================================
+
+class _AboutSection extends StatelessWidget {
+  const _AboutSection({required this.repo, required this.colors});
+  final String repo;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Section(
+      title: 'About',
+      colors: colors,
+      children: [
+        FutureBuilder<PackageInfo>(
+          future: PackageInfo.fromPlatform(),
+          builder: (context, snap) {
+            final v = snap.data?.version ?? '...';
+            final build = snap.data?.buildNumber ?? '';
+            return ListTile(
+              leading: Icon(
+                Icons.info_outline_rounded,
+                color: colors.textPrimary,
+              ),
+              title: Text(
+                'Version',
+                style: TextStyle(color: colors.textPrimary),
+              ),
+              subtitle: Text(
+                build.isEmpty ? v : '$v ($build)',
+                style: TextStyle(color: colors.textSecondary),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading: Icon(
+            Icons.system_update_alt_rounded,
+            color: colors.textPrimary,
+          ),
+          title: Text(
+            'Check for updates',
+            style: TextStyle(color: colors.textPrimary),
+          ),
+          subtitle: Text(
+            'Latest release on GitHub',
+            style: TextStyle(color: colors.textSecondary),
+          ),
+          onTap: () => _checkForUpdates(context, repo, colors),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _checkForUpdates(BuildContext context, String repo, dynamic colors) async {
     showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const _CheckingDialog(),
+      builder: (_) => _CheckingDialog(colors: colors),
     );
 
     String currentVersion = '0.0.0';
@@ -107,7 +270,7 @@ class SettingsPage extends StatelessWidget {
         validateStatus: (_) => true,
       ));
       final resp = await dio.get<Map<String, dynamic>>(
-        'https://api.github.com/repos/$_repo/releases/latest',
+        'https://api.github.com/repos/$repo/releases/latest',
         options: Options(
           headers: {'Accept': 'application/vnd.github+json'},
           responseType: ResponseType.json,
@@ -125,11 +288,12 @@ class SettingsPage extends StatelessWidget {
     }
 
     if (!context.mounted) return;
-    Navigator.of(context).pop(); // закрываем «checking...»
+    Navigator.of(context).pop();
 
     if (error != null) {
       _showResultDialog(
         context,
+        colors: colors,
         title: 'Update check failed',
         body: error,
       );
@@ -140,6 +304,7 @@ class SettingsPage extends StatelessWidget {
     if (isNewer) {
       _showResultDialog(
         context,
+        colors: colors,
         title: 'Update available',
         body:
             'You are on $currentVersion. Latest is ${latestTag ?? '?'}'
@@ -150,6 +315,7 @@ class SettingsPage extends StatelessWidget {
     } else {
       _showResultDialog(
         context,
+        colors: colors,
         title: 'You are up to date',
         body: 'Current version: $currentVersion'
             '${latestTag != null ? ' (latest: $latestTag)' : ''}.',
@@ -157,8 +323,6 @@ class SettingsPage extends StatelessWidget {
     }
   }
 
-  /// Сравниваем «семвероподобные» теги: `v1.2.3` vs `1.2`. Очищаем от
-  /// `v`-префикса, режем на части, добиваем нулями до длины 3.
   bool _isNewer(String tag, String current) {
     List<int> parse(String s) {
       final clean = s.replaceFirst(RegExp('^v', caseSensitive: false), '');
@@ -186,6 +350,7 @@ class SettingsPage extends StatelessWidget {
     BuildContext context, {
     required String title,
     required String body,
+    required dynamic colors,
     String? actionLabel,
     VoidCallback? action,
   }) {
@@ -193,14 +358,14 @@ class SettingsPage extends StatelessWidget {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: AppColors.surface,
+          backgroundColor: colors.elevated,
           title: Text(
             title,
-            style: const TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: colors.textPrimary),
           ),
           content: Text(
             body,
-            style: const TextStyle(color: AppColors.textSecondary),
+            style: TextStyle(color: colors.textSecondary),
           ),
           actions: [
             if (actionLabel != null && action != null)
@@ -232,28 +397,33 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
+// =====================================================================
+//  SHARED WIDGETS
+// =====================================================================
+
 class _CheckingDialog extends StatelessWidget {
-  const _CheckingDialog();
+  const _CheckingDialog({required this.colors});
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     return Dialog(
-      backgroundColor: AppColors.surface,
+      backgroundColor: colors.elevated,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              child: CircularProgressIndicator(strokeWidth: 2, color: colors.textPrimary),
             ),
-            SizedBox(width: 16),
+            const SizedBox(width: 16),
             Text(
               'Checking for updates...',
-              style: TextStyle(color: AppColors.textPrimary),
+              style: TextStyle(color: colors.textPrimary),
             ),
           ],
         ),
@@ -263,9 +433,10 @@ class _CheckingDialog extends StatelessWidget {
 }
 
 class _Section extends StatelessWidget {
-  const _Section({required this.title, required this.children});
+  const _Section({required this.title, required this.children, required this.colors});
   final String title;
   final List<Widget> children;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
@@ -276,8 +447,8 @@ class _Section extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Text(
             title.toUpperCase(),
-            style: const TextStyle(
-              color: AppColors.textTertiary,
+            style: TextStyle(
+              color: colors.textTertiary,
               fontSize: 12,
               fontWeight: FontWeight.w700,
               letterSpacing: 1,
@@ -286,6 +457,64 @@ class _Section extends StatelessWidget {
         ),
         ...children,
       ],
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SHARED ANIMATOR (как в HomePage)
+// ═══════════════════════════════════════════════════════════════════
+
+class _PageAnimator extends StatefulWidget {
+  const _PageAnimator({required this.child});
+  final Widget child;
+
+  @override
+  State<_PageAnimator> createState() => _PageAnimatorState();
+}
+
+class _PageAnimatorState extends State<_PageAnimator>
+    with SingleTickerProviderStateMixin {
+
+  late final AnimationController _anim;
+  late final Animation<double> _slide;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _slide = Tween<double>(begin: 10, end: 0).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic),
+    );
+    _fade = Tween<double>(begin: 0.7, end: 1).animate(
+      CurvedAnimation(parent: _anim, curve: Curves.easeOut),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _anim.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (context, _) => Transform.translate(
+        offset: Offset(0, _slide.value),
+        child: Opacity(
+          opacity: _fade.value,
+          child: widget.child,
+        ),
+      ),
     );
   }
 }

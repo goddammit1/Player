@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
-import '../../main.dart' show AppColors;
 import '../../sources/source_registry.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
@@ -37,11 +36,10 @@ class _SearchPageState extends ConsumerState<SearchPage>
   void initState() {
     super.initState();
     
-    // === SEARCHBAR: быстрое закрытие ===
     _barAnim = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 350),
-      reverseDuration: const Duration(milliseconds: 180),  // ← быстрее
+      reverseDuration: const Duration(milliseconds: 180),
     );
     
     _barExpand = Tween<double>(begin: 0.0, end: 1.0).animate(
@@ -52,11 +50,10 @@ class _SearchPageState extends ConsumerState<SearchPage>
       ),
     );
 
-    // === КОНТЕНТ ===
     _contentAnim = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 400),
-      reverseDuration: const Duration(milliseconds: 120),  // ← мгновенный fade out
+      reverseDuration: const Duration(milliseconds: 120),
     );
 
     _chipsSlide = Tween<double>(begin: -12, end: 0).animate(
@@ -107,17 +104,12 @@ class _SearchPageState extends ConsumerState<SearchPage>
     super.dispose();
   }
 
-  /// Выход: контент быстро fade out, строка сжимается
   Future<void> _popWithAnimation() async {
     if (_isPopping) return;
     _isPopping = true;
     
     _focus.unfocus();
-    
-    // Контент мгновенно fade out (120ms)
     _contentAnim.reverse();
-    
-    // Строка сжимается чуть дольше (180ms)
     await _barAnim.reverse();
     
     if (mounted) {
@@ -127,15 +119,15 @@ class _SearchPageState extends ConsumerState<SearchPage>
 
   @override
   Widget build(BuildContext context) {
-    
     final state = ref.watch(searchProvider);
     final player = ref.read(playerServiceProvider);
     final searchCtl = ref.read(searchProvider.notifier);
     final sources = SourceRegistry.instance.searchable;
     final currentSourceId = state.sourceId;
+    final colors = ref.watch(animatedPaletteProvider);
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: colors.background,
       body: Stack(
         children: [
           SafeArea(
@@ -156,7 +148,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                         height: 60,
                         width: startWidth + (maxWidth - startWidth) * expand,
                         decoration: BoxDecoration(
-                          color: AppColors.surface,
+                          color: colors.elevated,
                           borderRadius: BorderRadius.circular(32 - 20 * expand),
                         ),
                         child: child,
@@ -166,8 +158,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                   child: Row(
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.arrow_back_rounded, size: 24),
-                        color: AppColors.textPrimary,
+                        icon: Icon(Icons.arrow_back_rounded, size: 24, color: colors.textPrimary),
                         onPressed: _popWithAnimation,
                       ),
                       Expanded(
@@ -175,13 +166,13 @@ class _SearchPageState extends ConsumerState<SearchPage>
                           controller: _controller,
                           focusNode: _focus,
                           textInputAction: TextInputAction.search,
-                          style: const TextStyle(
-                            color: AppColors.textPrimary,
+                          style: TextStyle(
+                            color: colors.textPrimary,
                             fontSize: 16,
                           ),
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             hintText: 'Search...',
-                            hintStyle: TextStyle(color: AppColors.textSecondary),
+                            hintStyle: TextStyle(color: colors.textSecondary),
                             border: InputBorder.none,
                             isCollapsed: true,
                             contentPadding: EdgeInsets.symmetric(vertical: 14),
@@ -191,18 +182,17 @@ class _SearchPageState extends ConsumerState<SearchPage>
                         ),
                       ),
                       if (state.loading)
-                        const Padding(
-                          padding: EdgeInsets.only(right: 16),
+                        Padding(
+                          padding: const EdgeInsets.only(right: 16),
                           child: SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2, color: colors.textPrimary),
                           ),
                         )
                       else if (_controller.text.isNotEmpty)
                         IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 22),
-                          color: AppColors.textPrimary,
+                          icon: Icon(Icons.close_rounded, size: 22, color: colors.textPrimary),
                           onPressed: () {
                             _controller.clear();
                             searchCtl.search('');
@@ -215,7 +205,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                   ),
                 ),
 
-                // === ФИЛЬТРЫ ===
+                // === FILTERS ===
                 AnimatedBuilder(
                   animation: _contentAnim,
                   builder: (context, child) {
@@ -227,15 +217,16 @@ class _SearchPageState extends ConsumerState<SearchPage>
                       ),
                     );
                   },
-                  child: Column(  // ← оборачиваем в Column
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _FilterChips(
                         sources: sources,
                         currentSourceId: currentSourceId,
                         onSelected: searchCtl.setSourceId,
+                        colors: colors,
                       ),
-                      const SizedBox(height: 16),  // ← отступ 16px
+                      const SizedBox(height: 16),
                     ],
                   ),
                 ),
@@ -255,7 +246,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                     ),
                   ),
 
-                // === СПИСОК ===
+                // === LIST ===
                 Expanded(
                   child: AnimatedBuilder(
                     animation: _contentAnim,
@@ -269,7 +260,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                       );
                     },
                     child: state.results.isEmpty && !state.loading
-                        ? const _EmptyState()
+                        ? _EmptyState(colors: colors)
                         : StreamBuilder<MediaItem?>(
                             stream: player.mediaItem,
                             builder: (context, mediaSnap) {
@@ -291,9 +282,8 @@ class _SearchPageState extends ConsumerState<SearchPage>
                                       state.results,
                                       startIndex: i,
                                     ),
+                                    colors: colors,
                                   );
-
-
                                 },
                               );
                             },
@@ -317,24 +307,25 @@ class _SearchPageState extends ConsumerState<SearchPage>
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  const _EmptyState({required this.colors});
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
             Icons.search_rounded,
-            color: AppColors.textTertiary,
+            color: colors.textTertiary,
             size: 48,
           ),
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           Text(
-            'Начните вводить запрос',
+            'Start typing to search',
             style: TextStyle(
-              color: AppColors.textSecondary,
+              color: colors.textSecondary,
               fontSize: 14,
             ),
           ),
@@ -349,11 +340,13 @@ class _FilterChips extends StatefulWidget {
     required this.sources,
     required this.currentSourceId,
     required this.onSelected,
+    required this.colors,
   });
 
   final List<dynamic> sources;
   final String currentSourceId;
   final ValueChanged<String> onSelected;
+  final dynamic colors;
 
   @override
   State<_FilterChips> createState() => _FilterChipsState();
@@ -405,7 +398,6 @@ class _FilterChipsState extends State<_FilterChips>
       ),
     );
 
-    // Запускаем по очереди с задержкой 60ms между чипами
     for (var i = 0; i < count; i++) {
       Future.delayed(Duration(milliseconds: i * 100), () {
         if (mounted) _controllers[i].forward();
@@ -424,7 +416,7 @@ class _FilterChipsState extends State<_FilterChips>
   @override
   Widget build(BuildContext context) {
     final entries = <({String id, String label})>[
-      (id: kAllSourcesId, label: 'Все'),
+      (id: kAllSourcesId, label: 'All'),
       for (final s in widget.sources)
         (id: s.id as String, label: s.displayName as String),
     ];
@@ -452,6 +444,7 @@ class _FilterChipsState extends State<_FilterChips>
                     label: e.label,
                     selected: selected,
                     onTap: () => widget.onSelected(e.id),
+                    colors: widget.colors,
                   ),
                 ),
               );
@@ -484,18 +477,19 @@ class _FilterPill extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.colors,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
-    final fg = selected ?  AppColors.textPrimary : AppColors.textPrimary;
     return Material(
-      color: selected ? AppColors.elevatedHi : AppColors.surface,
+      color: selected ? colors.elevatedHi : colors.elevated,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         onTap: onTap,
@@ -505,13 +499,13 @@ class _FilterPill extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 15, color: fg),
+              Icon(icon, size: 15, color: selected ? colors.textPrimary : colors.textTertiary),
               const SizedBox(width: 6),
               Text(
                 label,
                 style: TextStyle(
-                  color: fg,
-                  fontWeight: FontWeight.w600,
+                  color: selected ? colors.textPrimary : colors.textTertiary,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                   fontSize: 13,
                 ),
               ),
@@ -529,25 +523,23 @@ class _TrackTile extends StatelessWidget {
     required this.isPlaying,
     required this.onTap,
     this.duration,
+    required this.colors,
   });
 
   final dynamic track;
   final bool isPlaying;
   final VoidCallback onTap;
   final String? duration;
-
-
+  final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
-    final accent = isPlaying
-        ? AppColors.textPrimary
-        : AppColors.textPrimary;
+    final accent = isPlaying ? colors.textPrimary : colors.textPrimary;
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 3),
       decoration: BoxDecoration(
-        color: isPlaying ? AppColors.elevatedHi : Colors.transparent,
+        color: isPlaying ? colors.elevatedHi : Colors.transparent,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Material(
@@ -600,6 +592,7 @@ class _TrackTile extends StatelessWidget {
                           color: accent,
                           fontWeight: FontWeight.w700,
                           fontSize: 16,
+                          letterSpacing: 0,
                         ),
                       ),
                       const SizedBox(height: 3),
@@ -607,8 +600,8 @@ class _TrackTile extends StatelessWidget {
                         track.artist as String,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
+                        style: TextStyle(
+                          color: colors.textSecondary,
                           fontWeight: FontWeight.w500,
                           fontSize: 10,
                         ),
@@ -617,12 +610,11 @@ class _TrackTile extends StatelessWidget {
                   ),
                 ),
                 if (duration != null) ...[
-
                   const SizedBox(width: 8),
                   Text(
                     duration!,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
+                    style: TextStyle(
+                      color: colors.textPrimary,
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
                     ),
@@ -630,7 +622,6 @@ class _TrackTile extends StatelessWidget {
                 ],
               ],
             ),
-
           ),
         ),
       ),

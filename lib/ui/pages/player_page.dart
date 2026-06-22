@@ -6,7 +6,6 @@ import 'package:marquee/marquee.dart';
 
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
-import '../../main.dart' show AppColors;
 import '../../models/track.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
@@ -14,7 +13,6 @@ import '../widgets/queue_sheet.dart';
 import '../widgets/snack.dart';
 import '../widgets/track_details_sheet.dart';
 import '../../core/artwork_helper.dart';
-
 
 /// Полноэкранный плеер.
 ///
@@ -31,14 +29,11 @@ class PlayerPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: Color(0xFF000000),
       body: SafeArea(child: PlayerContent()),
     );
   }
 }
-
-
-
 
 /// Содержимое полноэкранного плеера без [Scaffold]/[SafeArea].
 ///
@@ -50,7 +45,6 @@ class PlayerPage extends StatelessWidget {
 /// (используется оверлеем, чтобы свернуть плеер вместо `Navigator.pop`).
 class PlayerContent extends ConsumerStatefulWidget {
   const PlayerContent({super.key, this.onClose});
-
   final VoidCallback? onClose;
 
   @override
@@ -62,88 +56,104 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
   late final QueueSheetController _queueCtrl =
       QueueSheetController(vsync: this);
 
-  
-
   @override
   void dispose() {
     _queueCtrl.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final player = ref.watch(playerServiceProvider);
+ @override
+Widget build(BuildContext context) {
+  final player = ref.watch(playerServiceProvider);
+  final colors = ref.watch(animatedPaletteProvider);
 
-    return StreamBuilder<MediaItem?>(
-      stream: player.mediaItem,
-      builder: (context, snap) {
-        final item = snap.data;
-        if (item == null) {
-          return const Center(
-            child: Text(
-              'No track',
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
-          );
-        }
+  // Градиент — всегда используем gradientTop/gradientBottom, 
+  // для fixed они оба = Colors.black
+  final bgDecoration = BoxDecoration(
+    gradient: LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        colors.gradientTop,
+        colors.gradientTop,
+        colors.gradientBottom,
+      ],
+      stops: const [0.0, 0.35, 1.0],
+    ),
+  );
 
-        // Stack: содержимое плеера + поверх него выезжающее окно очереди.
-        return Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-              child: Column(
-                children: [
-                  // Пустое пространство сверху — толкает всё вниз к центру
-                  Expanded(child: SizedBox.shrink()),
+  return Container(
+    decoration: bgDecoration,
+    child: StreamBuilder<MediaItem?>(
+        stream: player.mediaItem,
+        builder: (context, snap) {
+          final item = snap.data;
 
-                  // Обложка без Expanded — занимает ровно свой размер
-                  LayoutBuilder(
-                    builder: (_, c) {
-                      final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                      return Artwork(
-                        url: item.artUri?.toString(),
-                        size: size,
-                        borderRadius: 10,
-                        memCacheSize: 800,
-                        aspectRatio: artAspectRatio(item),
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 30),
-                  _TitleScroller(text: item.title),
-                  const SizedBox(height: 0),
-                  Text(
-                    item.artist ?? '',
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 30),
-
-                  _Controls(player: player),
-                  const SizedBox(height: 15),
-                  _ProgressBar(player: player, fallbackDuration: item.duration),
-                  const SizedBox(height: 20),
-                  _BottomActions(
-                    player: player,
-                    item: item,
-                    queueCtrl: _queueCtrl,
-                  ),
-                ],
+          if (item == null) {
+            return Center(
+              child: Text(
+                'No track',
+                style: TextStyle(color: colors.textSecondary),
               ),
-            ),
-            // Окно очереди — поверх всего содержимого плеера.
-            QueueSheet(controller: _queueCtrl, player: player),
-          ],
-        );
-      },
+            );
+          }
+
+          return Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+                child: Column(
+                  children: [
+                    const Expanded(child: SizedBox.shrink()),
+                    LayoutBuilder(
+                      builder: (_, c) {
+                        final size = c.maxWidth.clamp(0, 420.0).toDouble();
+                        return Artwork(
+                          url: item.artUri?.toString(),
+                          size: size,
+                          borderRadius: 10,
+                          memCacheSize: 800,
+                          aspectRatio: artAspectRatio(item),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 30),
+                    _TitleScroller(text: item.title, colors: colors),
+                    const SizedBox(height: 0),
+                    Text(
+                      item.artist ?? '',
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+                    _Controls(player: player, colors: colors),
+                    const SizedBox(height: 15),
+                    _ProgressBar(
+                      player: player,
+                      colors: colors,
+                      fallbackDuration: item.duration,
+                    ),
+                    const SizedBox(height: 20),
+                    _BottomActions(
+                      player: player,
+                      item: item,
+                      queueCtrl: _queueCtrl,
+                      colors: colors,
+                    ),
+                  ],
+                ),
+              ),
+              QueueSheet(controller: _queueCtrl, player: player),
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -152,26 +162,26 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
 //  CONTROLS
 // =====================================================================
 
-
 class _TitleScroller extends StatelessWidget {
-  const _TitleScroller({required this.text});
+  const _TitleScroller({required this.text, required this.colors});
   final String text;
-
-  static const TextStyle _style = TextStyle(
-    color: AppColors.textPrimary,
-    fontSize: 22,
-    fontWeight: FontWeight.w700,
-    letterSpacing: -0.4,
-  );
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
+    final style = TextStyle(
+      color: colors.textPrimary,
+      fontSize: 22,
+      fontWeight: FontWeight.w700,
+      letterSpacing: -0.4,
+    );
+
     return SizedBox(
       height: 30,
       child: LayoutBuilder(
         builder: (_, c) {
           final tp = TextPainter(
-            text: TextSpan(text: text, style: _style),
+            text: TextSpan(text: text, style: style),
             textDirection: TextDirection.ltr,
             maxLines: 1,
           )..layout();
@@ -180,13 +190,13 @@ class _TitleScroller extends StatelessWidget {
               child: Text(
                 text,
                 maxLines: 1,
-                style: _style,
+                style: style,
               ),
             );
           }
           return Marquee(
             text: text,
-            style: _style,
+            style: style,
             scrollAxis: Axis.horizontal,
             blankSpace: 60,
             velocity: 30,
@@ -206,8 +216,9 @@ class _TitleScroller extends StatelessWidget {
 }
 
 class _Controls extends StatefulWidget {
-  const _Controls({required this.player});
+  const _Controls({required this.player, required this.colors});
   final PlayerService player;
+  final AppColors colors;
 
   @override
   State<_Controls> createState() => _ControlsState();
@@ -358,7 +369,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   child: GestureDetector(
                     onTap: widget.player.skipToPrevious,
                     child: Material(
-                      color: AppColors.elevated,
+                      color: widget.colors.elevated,
                       borderRadius:
                           BorderRadius.circular(isPrevPressed ? 32 : 32),
                       child: SizedBox(
@@ -366,7 +377,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                         height: 64,
                         child: Icon(
                           Icons.skip_previous_rounded,
-                          color: AppColors.textPrimary,
+                          color: widget.colors.textPrimary,
                           size: 28,
                         ),
                       ),
@@ -383,7 +394,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                     onTap: () =>
                         playing ? widget.player.pause() : widget.player.play(),
                     child: Material(
-                      color: AppColors.elevatedHi,
+                      color: widget.colors.elevatedHi,
                       borderRadius: BorderRadius.circular(
                         playing
                             ? (isPlayPressed ? 20 : 20)
@@ -394,19 +405,19 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                         height: 64,
                         child: Center(
                           child: loading
-                              ? const SizedBox(
+                              ? SizedBox(
                                   width: 24,
                                   height: 24,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2.4,
-                                    color: AppColors.textPrimary,
+                                    color: widget.colors.textPrimary,
                                   ),
                                 )
                               : Icon(
                                   playing
                                       ? Icons.pause_rounded
                                       : Icons.play_arrow_rounded,
-                                  color: AppColors.textPrimary,
+                                  color: widget.colors.textPrimary,
                                   size: 36,
                                 ),
                         ),
@@ -423,7 +434,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   child: GestureDetector(
                     onTap: widget.player.skipToNext,
                     child: Material(
-                      color: AppColors.elevated,
+                      color: widget.colors.elevated,
                       borderRadius:
                           BorderRadius.circular(isNextPressed ? 32 : 32),
                       child: SizedBox(
@@ -431,7 +442,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                         height: 64,
                         child: Icon(
                           Icons.skip_next_rounded,
-                          color: AppColors.textPrimary,
+                          color: widget.colors.textPrimary,
                           size: 28,
                         ),
                       ),
@@ -453,8 +464,13 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
 // =====================================================================
 
 class _ProgressBar extends StatefulWidget {
-  const _ProgressBar({required this.player, this.fallbackDuration});
+  const _ProgressBar({
+    required this.player,
+    required this.colors,
+    this.fallbackDuration,
+  });
   final PlayerService player;
+  final AppColors colors;
   final Duration? fallbackDuration;
 
   @override
@@ -564,6 +580,7 @@ class _ProgressBarState extends State<_ProgressBar>
                                 painter: _ProgressPainter(
                                   fraction: f,
                                   thumbAnim: _thumbAnim,
+                                  colors: widget.colors,
                                 ),
                               ),
                             ),
@@ -581,20 +598,20 @@ class _ProgressBarState extends State<_ProgressBar>
                                             milliseconds:
                                                 (f * maxMs).round())
                                         : position),
-                                    style: const TextStyle(
-                                      color: AppColors.textPrimary,
+                                    style: TextStyle(
+                                      color: widget.colors.textPrimary,
                                       fontSize: 12,
-                                      fontFeatures: [
+                                      fontFeatures: const [
                                         FontFeature.tabularFigures()
                                       ],
                                     ),
                                   ),
                                   Text(
                                     _fmt(duration),
-                                    style: const TextStyle(
-                                      color: AppColors.textSecondary,
+                                    style: TextStyle(
+                                      color: widget.colors.textSecondary,
                                       fontSize: 12,
-                                      fontFeatures: [
+                                      fontFeatures: const [
                                         FontFeature.tabularFigures()
                                       ],
                                     ),
@@ -629,10 +646,12 @@ class _ProgressPainter extends CustomPainter {
   _ProgressPainter({
     required this.fraction,
     required this.thumbAnim,
+    required this.colors,
   }) : super(repaint: thumbAnim);
 
   final double fraction;
   final Animation<double> thumbAnim;
+  final AppColors colors;
 
   static const _trackHeight = 10.0;
   static const _thumbWidthNormal = 8.0;
@@ -678,7 +697,7 @@ class _ProgressPainter extends CustomPainter {
         bottomRight: const Radius.circular(_trackHeight / 2),
       );
       final trackPaint = Paint()
-        ..color = AppColors.elevated.withValues(alpha: 0.5);
+        ..color = colors.elevated.withValues(alpha: 0.5);
       canvas.drawRRect(trackRect, trackPaint);
     }
 
@@ -694,7 +713,7 @@ class _ProgressPainter extends CustomPainter {
         bottomLeft: const Radius.circular(_trackHeight / 2),
         bottomRight: Radius.circular(thumbCornerRadius),
       );
-      final filledPaint = Paint()..color = AppColors.elevatedHi;
+      final filledPaint = Paint()..color = colors.elevatedHi;
       canvas.drawRRect(filledRect, filledPaint);
     }
 
@@ -704,13 +723,15 @@ class _ProgressPainter extends CustomPainter {
           clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
       const Radius.circular(_thumbRadius),
     );
-    final thumbPaint = Paint()..color = AppColors.elevatedHi;
+    final thumbPaint = Paint()..color = colors.elevatedHi;
     canvas.drawRRect(thumbRect, thumbPaint);
   }
 
   @override
   bool shouldRepaint(_ProgressPainter old) {
-    return old.fraction != fraction || old.thumbAnim.value != thumbAnim.value;
+    return old.fraction != fraction ||
+        old.thumbAnim.value != thumbAnim.value ||
+        old.colors != colors;
   }
 }
 
@@ -723,10 +744,12 @@ class _BottomActions extends StatefulWidget {
     required this.player,
     required this.item,
     required this.queueCtrl,
+    required this.colors,
   });
   final PlayerService player;
   final MediaItem item;
   final QueueSheetController queueCtrl;
+  final AppColors colors;
 
   @override
   State<_BottomActions> createState() => _BottomActionsState();
@@ -754,6 +777,7 @@ class _BottomActionsState extends State<_BottomActions> {
               highlighted: loop != LoopMode.off,
               onTap: widget.player.cycleLoopMode,
               shape: BoxShape.circle,
+              colors: widget.colors,
             );
           },
         ),
@@ -767,23 +791,25 @@ class _BottomActionsState extends State<_BottomActions> {
               _startValue = widget.queueCtrl.value;
             },
             onVerticalDragUpdate: (d) {
-            final currentFingerY = d.globalPosition.dy;
-            final rawDy = _startFingerY - currentFingerY;
-            
-            // Мертвая зона 10px
-            final dy = rawDy > 10 ? rawDy - 10 : (rawDy < -10 ? rawDy + 10 : 0);
+              final currentFingerY = d.globalPosition.dy;
+              final rawDy = _startFingerY - currentFingerY;
 
-            if (!_queueDragged && rawDy > 5) {
-              _queueDragged = true;
-            }
+              // Мертвая зона 10px
+              final dy = rawDy > 10
+                  ? rawDy - 10
+                  : (rawDy < -10 ? rawDy + 10 : 0);
 
-            if (_queueDragged && dy != 0) {
-              const dragDistanceForFullOpen = 690.0;
-              final valueShift = dy / dragDistanceForFullOpen;
-              final newValue = (_startValue + valueShift).clamp(0.0, 1.0);
-              widget.queueCtrl.setValue(newValue);
-            }
-          },
+              if (!_queueDragged && rawDy > 5) {
+                _queueDragged = true;
+              }
+
+              if (_queueDragged && dy != 0) {
+                const dragDistanceForFullOpen = 690.0;
+                final valueShift = dy / dragDistanceForFullOpen;
+                final newValue = (_startValue + valueShift).clamp(0.0, 1.0);
+                widget.queueCtrl.setValue(newValue);
+              }
+            },
             onVerticalDragEnd: (d) {
               if (_queueDragged) {
                 widget.queueCtrl
@@ -792,17 +818,17 @@ class _BottomActionsState extends State<_BottomActions> {
               }
             },
             child: Material(
-              color: AppColors.elevated,
+              color: widget.colors.elevated,
               borderRadius: BorderRadius.circular(28),
               child: InkWell(
                 borderRadius: BorderRadius.circular(28),
                 onTap: widget.queueCtrl.openPart,
-                child: const SizedBox(
+                child: SizedBox(
                   height: 56,
                   child: Center(
                     child: Icon(
                       Icons.queue_music_rounded,
-                      color: AppColors.textPrimary,
+                      color: widget.colors.textPrimary,
                     ),
                   ),
                 ),
@@ -815,12 +841,12 @@ class _BottomActionsState extends State<_BottomActions> {
           icon: Icons.more_horiz_rounded,
           onTap: () => _showExtra(context),
           shape: BoxShape.circle,
+          colors: widget.colors,
         ),
         const SizedBox(width: 5),
       ],
     );
   }
-
 
   void _showExtra(BuildContext context) {
     final m = widget.item;
@@ -834,7 +860,7 @@ class _BottomActionsState extends State<_BottomActions> {
     );
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: widget.colors.elevated,
       showDragHandle: true,
       builder: (ctx) {
         return SafeArea(
@@ -882,6 +908,7 @@ class _SquircleButton extends StatelessWidget {
   const _SquircleButton({
     required this.icon,
     required this.onTap,
+    required this.colors,
     this.highlighted = false,
     this.shape = BoxShape.rectangle,
   });
@@ -889,13 +916,14 @@ class _SquircleButton extends StatelessWidget {
   final VoidCallback onTap;
   final bool highlighted;
   final BoxShape shape;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
     final isCircle = shape == BoxShape.circle;
 
     return Material(
-      color: AppColors.elevated,
+      color: colors.elevated,
       shape: isCircle ? const CircleBorder() : null,
       borderRadius: isCircle ? null : BorderRadius.circular(32),
       child: InkWell(
@@ -907,8 +935,7 @@ class _SquircleButton extends StatelessWidget {
           height: 56,
           child: Icon(
             icon,
-            color:
-                highlighted ? Colors.lightGreenAccent : AppColors.textPrimary,
+            color: highlighted ? colors.accent : colors.textPrimary,
           ),
         ),
       ),

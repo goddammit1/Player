@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/playlist_backup.dart';
 import '../../core/providers.dart';
-import '../../main.dart' show AppColors;
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
@@ -25,10 +24,11 @@ class HomePage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(playlistsProvider);
     final playlists = async.value ?? const <Playlist>[];
+    final colors = ref.watch(animatedPaletteProvider);
 
     return _HomePageAnimator(
       child: Scaffold(
-        backgroundColor: AppColors.background,
+        backgroundColor: colors.background,
         body: Stack(
           children: [
             SafeArea(
@@ -37,13 +37,13 @@ class HomePage extends ConsumerWidget {
                 physics: const BouncingScrollPhysics(),
                 slivers: [
                   const SliverToBoxAdapter(child: _TopBar()),
-                  const SliverToBoxAdapter(
+                  SliverToBoxAdapter(
                     child: Padding(
-                      padding: EdgeInsets.fromLTRB(20, 20, 20, 16),
+                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
                       child: Text(
                         'Playlists',
                         style: TextStyle(
-                          color: AppColors.textPrimary,
+                          color: colors.textPrimary,
                           fontSize: 32,
                           fontWeight: FontWeight.w600,
                           letterSpacing: 0,
@@ -65,7 +65,7 @@ class HomePage extends ConsumerWidget {
                       itemBuilder: (context, i) {
                         if (i == playlists.length) return const _AddNewCard();
                         final p = playlists[i];
-                        return _PlaylistCard(playlist: p);
+                        return _PlaylistCard(playlist: p, colors: colors);
                       },
                     ),
                   ),
@@ -91,7 +91,7 @@ class _HomePageAnimator extends StatefulWidget {
 
 class _HomePageAnimatorState extends State<_HomePageAnimator>
     with SingleTickerProviderStateMixin {
-  
+
   late final AnimationController _anim;
   late final Animation<double> _slide;
   late final Animation<double> _fade;
@@ -135,11 +135,13 @@ class _HomePageAnimatorState extends State<_HomePageAnimator>
   }
 }
 
-class _TopBar extends StatelessWidget {
+class _TopBar extends ConsumerWidget {
   const _TopBar();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
@@ -147,15 +149,17 @@ class _TopBar extends StatelessWidget {
           _CircleButton(
             icon: Icons.history_rounded,
             onTap: () => showSnack(context, 'History — coming soon'),
+            colors: colors,
           ),
           const SizedBox(width: 10),
-          Expanded(child: _SearchPill()),
+          Expanded(child: _SearchPill(colors: colors)),
           const SizedBox(width: 10),
           _CircleButton(
             icon: Icons.settings_rounded,
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SettingsPage()),
             ),
+            colors: colors,
           ),
         ],
       ),
@@ -164,14 +168,19 @@ class _TopBar extends StatelessWidget {
 }
 
 class _CircleButton extends StatelessWidget {
-  const _CircleButton({required this.icon, required this.onTap});
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+  });
   final IconData icon;
   final VoidCallback onTap;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.surface,
+      color: colors.elevated,
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
@@ -179,7 +188,7 @@ class _CircleButton extends StatelessWidget {
         child: SizedBox(
           width: 60,
           height: 60,
-          child: Icon(icon, color: AppColors.textPrimary, size: 20),
+          child: Icon(icon, color: colors.textPrimary, size: 20),
         ),
       ),
     );
@@ -187,10 +196,13 @@ class _CircleButton extends StatelessWidget {
 }
 
 class _SearchPill extends StatelessWidget {
+  const _SearchPill({required this.colors});
+  final AppColors colors;
+
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.surface,
+      color: colors.elevated,
       borderRadius: BorderRadius.circular(32),
       child: InkWell(
         borderRadius: BorderRadius.circular(32),
@@ -207,16 +219,16 @@ class _SearchPill extends StatelessWidget {
             ),
           );
         },
-        child: const SizedBox(
+        child: SizedBox(
           height: 60,
           child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
                 Text(
                   'Search',
                   style: TextStyle(
-                    color: AppColors.textSecondary,
+                    color: colors.textSecondary,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
@@ -231,8 +243,9 @@ class _SearchPill extends StatelessWidget {
 }
 
 class _PlaylistCard extends StatelessWidget {
-  const _PlaylistCard({required this.playlist});
+  const _PlaylistCard({required this.playlist, required this.colors});
   final Playlist playlist;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
@@ -263,7 +276,7 @@ class _PlaylistCard extends StatelessWidget {
                   Positioned(
                     right: 8,
                     bottom: 8,
-                    child: _CountBadge(count: playlist.tracks.length),
+                    child: _CountBadge(count: playlist.tracks.length, colors: colors),
                   ),
                 ],
               ),
@@ -277,8 +290,8 @@ class _PlaylistCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.textPrimary,
+              style: TextStyle(
+                color: colors.textPrimary,
                 fontSize: 14,
                 fontWeight: FontWeight.w500,
               ),
@@ -291,8 +304,9 @@ class _PlaylistCard extends StatelessWidget {
 }
 
 class _CountBadge extends StatelessWidget {
-  const _CountBadge({required this.count});
+  const _CountBadge({required this.count, required this.colors});
   final int count;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
@@ -305,8 +319,8 @@ class _CountBadge extends StatelessWidget {
       ),
       child: Text(
         '$count',
-        style: const TextStyle(
-          color: AppColors.textPrimary,
+        style: TextStyle(
+          color: colors.textPrimary,
           fontSize: 12,
           fontWeight: FontWeight.w700,
         ),
@@ -320,6 +334,8 @@ class _AddNewCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+
     return InkWell(
       borderRadius: BorderRadius.circular(20),
       onTap: () => _showAddOptions(context, ref),
@@ -330,7 +346,7 @@ class _AddNewCard extends ConsumerWidget {
             aspectRatio: 1,
             child: Container(
               decoration: BoxDecoration(
-                color: AppColors.surface,
+                color: colors.elevated,
                 borderRadius: BorderRadius.circular(18),
               ),
               alignment: Alignment.center,
@@ -338,7 +354,7 @@ class _AddNewCard extends ConsumerWidget {
                 width: 56,
                 height: 56,
                 decoration: BoxDecoration(
-                  color: AppColors.textPrimary,
+                  color: colors.textPrimary,
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: const Icon(
@@ -350,11 +366,11 @@ class _AddNewCard extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Add new',
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: AppColors.textPrimary,
+              color: colors.textPrimary,
               fontSize: 14,
               fontWeight: FontWeight.w600,
             ),
@@ -366,9 +382,11 @@ class _AddNewCard extends ConsumerWidget {
 
   /// Показывает выбор: создать пустой плейлист или импортировать из файла.
   Future<void> _showAddOptions(BuildContext context, WidgetRef ref) async {
+    final colors = ref.read(currentPaletteProvider);
+
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: colors.elevated,
       showDragHandle: true,
       builder: (sheetCtx) {
         return SafeArea(
@@ -377,13 +395,13 @@ class _AddNewCard extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.add_rounded,
-                  color: AppColors.textPrimary,
+                  color: colors.textPrimary,
                 ),
-                title: const Text(
+                title: Text(
                   'Create empty playlist',
-                  style: TextStyle(color: AppColors.textPrimary),
+                  style: TextStyle(color: colors.textPrimary),
                 ),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
@@ -391,13 +409,13 @@ class _AddNewCard extends ConsumerWidget {
                 },
               ),
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.file_download_outlined,
-                  color: AppColors.textPrimary,
+                  color: colors.textPrimary,
                 ),
-                title: const Text(
+                title: Text(
                   'Import from file',
-                  style: TextStyle(color: AppColors.textPrimary),
+                  style: TextStyle(color: colors.textPrimary),
                 ),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
@@ -421,7 +439,7 @@ class _AddNewCard extends ConsumerWidget {
       );
     } catch (e) {
       if (!context.mounted) return;
-      _showInfo(context, title: 'Import failed', body: e.toString());
+      _showInfo(context, ref, title: 'Import failed', body: e.toString());
       return;
     }
 
@@ -429,7 +447,7 @@ class _AddNewCard extends ConsumerWidget {
     if (path == null) return; // отмена
 
     if (!context.mounted) return;
-    final strategy = await _askImportStrategy(context);
+    final strategy = await _askImportStrategy(context, ref);
     if (strategy == null) return; // отмена
 
     try {
@@ -439,16 +457,14 @@ class _AddNewCard extends ConsumerWidget {
       );
       if (!context.mounted) return;
       _showInfo(
-        context,
+        context, ref,
         title: 'Import complete',
-        body: 'Added: ${result.added}\n'
-            'Replaced: ${result.replaced}\n'
-            'Skipped: ${result.skipped}',
+        body: 'Added: ${result.added}\nReplaced: ${result.replaced}\nSkipped: ${result.skipped}',
       );
     } catch (e) {
       if (!context.mounted) return;
       _showInfo(
-        context,
+        context, ref,
         title: 'Import failed',
         body: e is FormatException ? e.message : e.toString(),
       );
@@ -456,19 +472,21 @@ class _AddNewCard extends ConsumerWidget {
   }
 
   /// Спрашивает, что делать с плейлистами, у которых `id` уже есть.
-  Future<ImportStrategy?> _askImportStrategy(BuildContext context) {
+  Future<ImportStrategy?> _askImportStrategy(BuildContext context, WidgetRef ref) {
+    final colors = ref.read(currentPaletteProvider);
+
     return showDialog<ImportStrategy>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: AppColors.surface,
-          title: const Text(
+          backgroundColor: colors.elevated,
+          title: Text(
             'Import playlist',
-            style: TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: colors.textPrimary),
           ),
-          content: const Text(
+          content: Text(
             'If a playlist already exists, what should happen?',
-            style: TextStyle(color: AppColors.textSecondary),
+            style: TextStyle(color: colors.textSecondary),
           ),
           actions: [
             TextButton(
@@ -490,22 +508,25 @@ class _AddNewCard extends ConsumerWidget {
   }
 
   void _showInfo(
-    BuildContext context, {
+    BuildContext context,
+    WidgetRef ref, {
     required String title,
     required String body,
   }) {
+    final colors = ref.read(currentPaletteProvider);
+
     showDialog<void>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: AppColors.surface,
+          backgroundColor: colors.elevated,
           title: Text(
             title,
-            style: const TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: colors.textPrimary),
           ),
           content: Text(
             body,
-            style: const TextStyle(color: AppColors.textSecondary),
+            style: TextStyle(color: colors.textSecondary),
           ),
           actions: [
             TextButton(
@@ -519,23 +540,24 @@ class _AddNewCard extends ConsumerWidget {
   }
 
   Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
+    final colors = ref.read(currentPaletteProvider);
     final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          backgroundColor: AppColors.surface,
-          title: const Text(
+          backgroundColor: colors.elevated,
+          title: Text(
             'New playlist',
-            style: TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: colors.textPrimary),
           ),
           content: TextField(
             controller: controller,
             autofocus: true,
-            style: const TextStyle(color: AppColors.textPrimary),
-            decoration: const InputDecoration(
+            style: TextStyle(color: colors.textPrimary),
+            decoration: InputDecoration(
               hintText: 'Name',
-              hintStyle: TextStyle(color: AppColors.textTertiary),
+              hintStyle: TextStyle(color: colors.textTertiary),
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),
