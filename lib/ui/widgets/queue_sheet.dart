@@ -564,46 +564,83 @@ class _QueueList extends StatefulWidget {
 }
 
 class _QueueListState extends State<_QueueList> {
+  final ScrollController _scrollController = ScrollController();
+  int _lastCurrentIndex = -1;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToIndex(int index, int totalCount) {
+    if (!_scrollController.hasClients) return;
+    if (index < 0 || index >= totalCount) return;
+
+    // Высота тайла ~64px (паддинг + арт + отступы)
+    const itemHeight = 64.0;
+    final targetOffset = index * itemHeight;
+
+    // Проверяем, есть ли уже позиция для прокрутки
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    final clampedOffset = targetOffset.clamp(0.0, maxScroll);
+
+    _scrollController.animateTo(
+      clampedOffset,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<MediaItem>>(
-      stream: widget.player.queue,
-      builder: (context, qSnap) {
-        final all = qSnap.data ?? const <MediaItem>[];
-        return StreamBuilder<int>(
-          stream: widget.player.currentIndexStream,
-          initialData: widget.player.currentIndex,
-          builder: (context, iSnap) {
-            final current = iSnap.data ?? -1;
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, child) {
+        if (widget.controller.isClosed) {
+          _lastCurrentIndex = -1;
+        }
+        return child!;
+      },
+      child: StreamBuilder<List<MediaItem>>(
+        stream: widget.player.queue,
+        builder: (context, qSnap) {
+          final all = qSnap.data ?? const <MediaItem>[];
+          return StreamBuilder<int>(
+            stream: widget.player.currentIndexStream,
+            initialData: widget.player.currentIndex,
+            builder: (context, iSnap) {
+              final current = iSnap.data ?? -1;
 
-            if (all.isEmpty) {
-              return Center(
-                child: Text(
-                  'Queue is empty',
-                  style: TextStyle(color: widget.colors.textSecondary),
-                ),
-              );
-            }
+              if (current >= 0 && current != _lastCurrentIndex) {
+                _lastCurrentIndex = current;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _scrollToIndex(current, all.length);
+                });
+              }
 
-            final visible = <MapEntry<int, MediaItem>>[
-              for (var i = 0; i < all.length; i++) MapEntry(i, all[i]),
-            ];
+              if (all.isEmpty) {
+                return Center(
+                  child: Text(
+                    'Queue is empty',
+                    style: TextStyle(color: widget.colors.textSecondary),
+                  ),
+                );
+              }
 
-            return ClipRect(
-              child: ReorderableListView.builder(
+              final visible = <MapEntry<int, MediaItem>>[
+                for (var i = 0; i < all.length; i++) MapEntry(i, all[i]),
+              ];
+
+              // Используем ListView вместо ReorderableListView.builder
+              // с ScrollController для работы с виртуализацией
+              return ListView.builder(
+                controller: _scrollController,
                 padding: EdgeInsets.only(
                   top: 2,
                   bottom: 24 + widget.bottomInset,
                 ),
-                buildDefaultDragHandles: false,
                 itemCount: visible.length,
-                onReorderItem: (oldLocal, newLocal) {
-                  if (!widget.controller.isFull) return;
-                  if (newLocal > oldLocal) newLocal -= 1;
-                  final from = visible[oldLocal].key;
-                  final to = visible[newLocal].key;
-                  widget.player.reorderQueueItem(from, to);
-                },
                 itemBuilder: (context, localIndex) {
                   final entry = visible[localIndex];
                   final realIndex = entry.key;
@@ -615,29 +652,15 @@ class _QueueListState extends State<_QueueList> {
                     media: m,
                     isHighlighted: isCurrent,
                     onTap: () => widget.player.skipToQueueItem(realIndex),
+                    onDismissed: () => widget.player.removeQueueItem(m),
                     colors: widget.colors,
                   );
                 },
-                proxyDecorator: (child, index, animation) {
-                  return AnimatedBuilder(
-                    animation: animation,
-                    builder: (context, child) {
-                      return ClipRect(
-                        child: Material(
-                          elevation: 6,
-                          color: Colors.transparent,
-                          child: child,
-                        ),
-                      );
-                    },
-                    child: child,
-                  );
-                },
-              ),
-            );
-          },
-        );
-      },
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }
@@ -648,6 +671,7 @@ class _QueueTile extends StatelessWidget {
     required this.index,
     required this.media,
     required this.onTap,
+    required this.onDismissed,
     this.isHighlighted = false,
     required this.colors,
   });
@@ -655,17 +679,18 @@ class _QueueTile extends StatelessWidget {
   final int index;
   final MediaItem media;
   final VoidCallback onTap;
+  final VoidCallback onDismissed;
   final bool isHighlighted;
   final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final tile = Container(
       margin: isHighlighted
           ? const EdgeInsets.symmetric(horizontal: 8)
           : EdgeInsets.zero,
       decoration: BoxDecoration(
-        color: isHighlighted ? colors.elevatedHi : Colors.transparent,
+        color: isHighlighted ? colors.elevatedHi : colors.background,
         borderRadius: BorderRadius.circular(12),
       ),
       child: InkWell(
@@ -725,7 +750,8 @@ class _QueueTile extends StatelessWidget {
                   ReorderableDragStartListener(
                     index: index,
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
                       child: Icon(
                         Icons.drag_handle,
                         color: colors.textSecondary,
@@ -749,6 +775,34 @@ class _QueueTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+
+    // Текущий трек нельзя свайпнуть — убираем Dismissible
+    if (isHighlighted) return tile;
+
+    return Dismissible(
+      key: ValueKey('${media.id}_$index'),
+      direction: DismissDirection.endToStart,
+      movementDuration: const Duration(milliseconds: 200),
+      resizeDuration: const Duration(milliseconds: 200), // схлопывание высоты
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(
+          color: Colors.red.withValues(alpha: 0.2),
+          borderRadius: const BorderRadius.only(
+            topRight: Radius.circular(12),
+            bottomRight: Radius.circular(12),
+          ),
+        ),
+        child: const Icon(
+          Icons.delete_outline_rounded,
+          color: Colors.redAccent,
+          size: 28,
+        ),
+      ),
+      onDismissed: (_) => onDismissed(),
+      child: tile,
     );
   }
 }

@@ -133,6 +133,50 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== Queue =====
 
+
+  /// Удаляет трек из очереди по MediaItem.
+  /// Обновляет [_currentIndex], если удалённый трек был до текущего.
+  @override
+  Future<void> removeQueueItem(MediaItem mediaItem) async {
+    final index = _queue.indexWhere((t) => t.globalId == mediaItem.id);
+    if (index < 0) return;
+
+    _queue.removeAt(index);
+
+    if (index < _currentIndex) {
+      _currentIndex -= 1;
+    } else if (index == _currentIndex) {
+      _currentIndex = -1;
+      _currentIndexSubject.add(-1);
+      await _player.stop();
+      // Не обнуляем mediaItem — пусть UI показывает "ничего не играет"
+      // или используй: mediaItem.add(MediaItem(id: '', title: '', artist: ''));
+      // если это работает в твоём BaseAudioHandler
+    }
+
+    _currentIndexSubject.add(_currentIndex);
+    queue.add(_queue.map(_toMediaItem).toList());
+  }
+
+  @override
+  Future<void> removeQueueItemAt(int index) async {
+    if (index < 0 || index >= _queue.length) return;
+
+    _queue.removeAt(index);
+
+    if (index < _currentIndex) {
+      _currentIndex -= 1;
+    } else if (index == _currentIndex) {
+      _currentIndex = -1;
+      _currentIndexSubject.add(-1);
+      await _player.stop();
+    }
+
+    _currentIndexSubject.add(_currentIndex);
+    queue.add(_queue.map(_toMediaItem).toList());
+  }
+
+
   Future<void> setQueue(List<Track> tracks, {int startIndex = 0}) async {
     _queue
       ..clear()
