@@ -7,11 +7,9 @@ import 'package:marquee/marquee.dart';
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
 import '../../models/track.dart';
-import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
+import '../widgets/track_settings_sheet.dart';
 import '../widgets/queue_sheet.dart';
-import '../widgets/snack.dart';
-import '../widgets/track_details_sheet.dart';
 import '../../core/artwork_helper.dart';
 
 /// Полноэкранный плеер.
@@ -260,8 +258,8 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _isPlayPressed = true;
       _playAnim.animateTo(
         1,
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.ease,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeInOutQuart,
       );
     }
   }
@@ -275,7 +273,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _playAnim.animateTo(
         0,
         duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutCirc,
+        curve: Curves.easeOutBack,
       );
     }
   }
@@ -285,8 +283,8 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _isPrevPressed = true;
       _prevAnim.animateTo(
         1,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.ease,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeInOutQuart,
       );
     }
   }
@@ -300,7 +298,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _prevAnim.animateTo(
         0,
         duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutCirc,
+        curve: Curves.easeOutBack,
       );
     }
   }
@@ -310,8 +308,8 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _isNextPressed = true;
       _nextAnim.animateTo(
         1,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.ease,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.easeInOutQuart,
       );
     }
   }
@@ -325,7 +323,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
       _nextAnim.animateTo(
         0,
         duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutCirc,
+        curve: Curves.easeOutBack,
       );
     }
   }
@@ -848,7 +846,7 @@ class _BottomActionsState extends State<_BottomActions> {
     );
   }
 
-  void _showExtra(BuildContext context) {
+    void _showExtra(BuildContext context) {
     final m = widget.item;
     final track = Track(
       id: m.extras?['trackId'] as String? ?? m.id,
@@ -858,48 +856,11 @@ class _BottomActionsState extends State<_BottomActions> {
       duration: m.duration,
       artworkUrl: m.artUri?.toString(),
     );
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: widget.colors.elevated,
-      showDragHandle: true,
-      builder: (ctx) {
-        return SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.info_outline_rounded),
-                title: const Text('Детали трека'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  if (track.sourceId.isNotEmpty) {
-                    showTrackDetailsSheet(context, track);
-                  }
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.playlist_add_rounded),
-                title: const Text('Add to playlist'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  if (track.sourceId.isNotEmpty) {
-                    showAddToPlaylistSheet(context, track);
-                  }
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.share_outlined),
-                title: const Text('Share'),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  showSnack(context, 'Share — coming soon');
-                },
-              ),
-            ],
-          ),
-        );
-      },
+
+    showTrackSettingsSheet(
+      context,
+      track: track,
+      currentMediaItem: m,
     );
   }
 }

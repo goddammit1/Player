@@ -1,11 +1,49 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:palette_generator/palette_generator.dart';
 import 'package:audio_service/audio_service.dart';
 
-import 'providers.dart';
+import 'providers.dart';  // для playerServiceProvider
 
-/// Провайдер анимированной палитры — используйте вместо currentPaletteProvider
+// ── Media item stream ──────────────────────────────────────────────────────
+
+final _mediaItemProvider = StreamProvider<MediaItem?>((ref) {
+  final player = ref.watch(playerServiceProvider);
+  return player.mediaItem;
+});
+
+// ── Async palette from URL ─────────────────────────────────────────────────
+
+final _asyncPaletteProvider = FutureProvider.family<PaletteGenerator, String>((ref, url) async {
+  if (url.isEmpty) throw Exception('Empty URL');
+  return await PaletteGenerator.fromImageProvider(
+    NetworkImage(url),
+    maximumColorCount: 24,
+    timeout: const Duration(seconds: 5),
+  );
+});
+
+// ── Current palette (instant, no animation) ────────────────────────────────
+
+final currentPaletteProvider = Provider<AppColors>((ref) {
+  final mode = ref.watch(appThemeModeProvider);
+  if (mode == AppThemeMode.fixed) return AppColors.fixed;
+
+  final mediaItem = ref.watch(_mediaItemProvider);
+  final url = mediaItem.value?.artUri?.toString();
+  if (url == null || url.isEmpty) return AppColors.fixed;
+
+  final paletteAsync = ref.watch(_asyncPaletteProvider(url));
+  return paletteAsync.when(
+    data: (palette) => AppColors.fromPalette(palette),
+    loading: () => AppColors.fixed,
+    error: (_, _) => AppColors.fixed,
+  );
+});
+
+// ── Animated palette — StateNotifierProvider (совместим с существующим кодом) ─
+
 final animatedPaletteProvider = StateNotifierProvider<AnimatedPaletteNotifier, AppColors>((ref) {
   return AnimatedPaletteNotifier(ref);
 });
@@ -23,7 +61,6 @@ class AnimatedPaletteNotifier extends StateNotifier<AppColors> {
   static const _duration = Duration(milliseconds: 1000);
 
   void _init() {
-    // Слушаем изменения текущей палитры
     _ref.listen(currentPaletteProvider, (previous, next) {
       if (previous == next) return;
       
@@ -59,33 +96,7 @@ class AnimatedPaletteNotifier extends StateNotifier<AppColors> {
   }
 }
 
-/// Мгновенная палитра (без анимации) — для внутреннего использования
-final currentPaletteProvider = Provider<AppColors>((ref) {
-  final mode = ref.watch(appThemeModeProvider);
-
-  if (mode == AppThemeMode.fixed) {
-    return AppColors.fixed;
-  }
-
-  final mediaItemAsync = ref.watch(_mediaItemProvider);
-  final artworkUrl = mediaItemAsync.value?.artUri?.toString();
-
-  if (artworkUrl == null || artworkUrl.isEmpty) {
-    return AppColors.fixed;
-  }
-
-  final asyncPalette = ref.watch(dynamicPaletteProvider(artworkUrl));
-  return asyncPalette.when(
-    data: (p) => AppColors.fromDynamic(p),
-    loading: () => AppColors.fixed,
-    error: (_, _) => AppColors.fixed,
-  );
-});
-
-final _mediaItemProvider = StreamProvider<MediaItem?>((ref) {
-  final player = ref.watch(playerServiceProvider);
-  return player.mediaItem;
-});
+// ── AppColors ──────────────────────────────────────────────────────────────
 
 @immutable
 class AppColors {
@@ -121,23 +132,32 @@ class AppColors {
     isDynamic: false,
   );
 
-  factory AppColors.fromDynamic(DynamicPalette palette) {
-      final midBackground = Color.lerp(palette.gradientTop, palette.gradientBottom, 0.6)!;
-      return AppColors._(
-        background: midBackground,
-        elevated: palette.elevated,
-        elevatedVariant: _darken(palette.elevated, 0.05),
+  factory AppColors.fromPalette(PaletteGenerator palette) {
+    final dominant = palette.dominantColor?.color ?? Colors.grey;
+    final hsl = HSLColor.fromColor(dominant);
+    final baseHue = hsl.hue;
+    final baseSat = (hsl.saturation * 0.6).clamp(0.15, 0.50);
 
-        elevatedHi: palette.accent,
-        elevatedProgressBar: palette.accent.withValues(alpha: 0.5),
-        outline: _lighten(palette.elevated, 0.15),
-        textPrimary: const Color(0xFFF9F8F8),
-        textSecondary: const Color(0xB3F9F8F8),
-        textTertiary: const Color(0x80F9F8F8),
-        accent: palette.accent,
-        gradientTop: palette.gradientTop,
-        gradientBottom: palette.gradientBottom,
-        isDynamic: true,
+    final elevated = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.7, 0.20).toColor();
+    final accent = HSLColor.fromAHSL(1.0, baseHue, baseSat, 0.55).toColor();
+    final gradientTop = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.8, 0.18).toColor();
+    final gradientBottom = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.3, 0.03).toColor();
+    final midBackground = Color.lerp(gradientTop, gradientBottom, 0.6)!;
+
+    return AppColors._(
+      background: midBackground,
+      elevated: elevated,
+      elevatedVariant: _darken(elevated, 0.05),
+      elevatedHi: accent,
+      elevatedProgressBar: accent.withValues(alpha: 0.5),
+      outline: _lighten(elevated, 0.15),
+      textPrimary: const Color(0xFFF9F8F8),
+      textSecondary: const Color(0xB3F9F8F8),
+      textTertiary: const Color(0x80F9F8F8),
+      accent: accent,
+      gradientTop: gradientTop,
+      gradientBottom: gradientBottom,
+      isDynamic: true,
     );
   }
 

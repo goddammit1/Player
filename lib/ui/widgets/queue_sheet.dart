@@ -1,11 +1,12 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
+import 'dart:ui';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../core/providers.dart';
+import '../widgets/track_settings_sheet.dart';
 import '../../models/track.dart';
-import 'add_to_playlist_sheet.dart';
 import '../../core/player_service.dart';
 import 'artwork.dart';
 import '../../core/artwork_helper.dart';
@@ -179,9 +180,15 @@ class QueueSheet extends ConsumerWidget {
                       d.primaryVelocity ?? 0,
                       fromButton: false,
                     ),
-                    child: ColoredBox(
-                      color: Colors.black.withValues(alpha: scrimOpacity),
-                    ),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(
+                        sigmaX: 4 * scrimOpacity,
+                        sigmaY: 4 * scrimOpacity,
+                      ),
+                      child: Container(
+                        color: Colors.black.withValues(alpha: scrimOpacity),
+                      ),
+                    )
                   ),
                 ),
 
@@ -309,7 +316,7 @@ class _Header extends StatelessWidget {
           width: 40,
           height: 4,
           decoration: BoxDecoration(
-            color: colors.elevatedHi,
+            color: colors.textPrimary,
             borderRadius: BorderRadius.circular(2),
           ),
         ),
@@ -367,12 +374,13 @@ class _Header extends StatelessWidget {
                       IconButton(
                         onPressed: () {
                           if (item == null) return;
-                          showAddToPlaylistSheet(context, item.toTrack());
+                          showTrackSettingsSheet(
+                            context,
+                            track: item.toTrack(),
+                            currentMediaItem: item,
+                          );
                         },
-                        icon: Icon(
-                          Icons.more_vert_rounded,
-                          color: colors.textPrimary,
-                        ),
+                        icon: Icon(Icons.more_vert_rounded, color: colors.textPrimary),
                       ),
                     ],
                   ),
@@ -458,6 +466,7 @@ class _ShuffleButton extends StatelessWidget {
           bottomRight: Radius.circular(5),
         ),
         child: Container(
+          height: 50,
           padding: const EdgeInsets.symmetric(vertical: 15),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -514,6 +523,7 @@ class _RepeatButton extends StatelessWidget {
             onTap: player.cycleLoopMode,
             borderRadius: borderRadius,
             child: Container(
+              height: 50,
               padding: const EdgeInsets.symmetric(vertical: 15),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -696,7 +706,11 @@ class _QueueTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         onLongPress: () {
-          showAddToPlaylistSheet(context, media.toTrack());
+          showTrackSettingsSheet(
+            context,
+            track: media.toTrack(),
+            currentMediaItem: media,
+          );
         },
         borderRadius: BorderRadius.circular(12),
         child: Padding(

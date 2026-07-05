@@ -192,6 +192,21 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     queue.add([...queue.value, _toMediaItem(track)]);
   }
 
+  /// Вставляет трек в очередь сразу после текущего играющего.
+  /// Если ничего не играет — добавляет в начало.
+  Future<void> insertToQueue(Track track) async {
+    final insertIndex = _currentIndex >= 0 ? _currentIndex + 1 : 0;
+    _queue.insert(insertIndex, track);
+
+    // Корректируем currentIndex если вставили до него
+    if (insertIndex <= _currentIndex) {
+      _currentIndex += 1;
+      _currentIndexSubject.add(_currentIndex);
+    }
+
+    queue.add(_queue.map(_toMediaItem).toList());
+  }
+
   Future<void> _playIndex(int index, {bool isRetry = false}) async {
     if (index < 0 || index >= _queue.length) return;
 

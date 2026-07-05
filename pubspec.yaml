@@ -13,6 +13,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   palette_generator: ^0.3.3+3
   shared_preferences: ^2.5.3
+  flutter_color_models: ^1.3.3
+  blur: ^3.1.0
 
   # --- Audio / background playback ---
   just_audio: ^0.9.40

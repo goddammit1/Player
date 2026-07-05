@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
 import '../../sources/source_registry.dart';
-import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_settings_sheet.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../../core/artwork_helper.dart';
@@ -546,7 +546,10 @@ class _TrackTile extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          onLongPress: () => showAddToPlaylistSheet(context, track),
+          onLongPress: () => showTrackSettingsSheet(
+            context,
+            track: track,
+          ),
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
