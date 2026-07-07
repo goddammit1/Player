@@ -63,11 +63,11 @@ class AnimatedPaletteNotifier extends StateNotifier<AppColors> {
   void _init() {
     _ref.listen(currentPaletteProvider, (previous, next) {
       if (previous == next) return;
-      
+
       _startColors = state;
       _targetColors = next;
       _animationStart = DateTime.now();
-      
+
       _debounceTimer?.cancel();
       _animate();
     });
@@ -75,13 +75,13 @@ class AnimatedPaletteNotifier extends StateNotifier<AppColors> {
 
   void _animate() {
     if (_targetColors == null) return;
-    
+
     final elapsed = DateTime.now().difference(_animationStart!);
     final t = (elapsed.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
     final eased = Curves.easeInOutCubic.transform(t);
-    
+
     state = AppColors.lerp(_startColors, _targetColors!, eased);
-    
+
     if (t < 1.0) {
       _debounceTimer = Timer(const Duration(milliseconds: 16), _animate);
     } else {
@@ -132,16 +132,48 @@ class AppColors {
     isDynamic: false,
   );
 
+  /// Выбирает самый насыщенный цвет из палитры обложки
   factory AppColors.fromPalette(PaletteGenerator palette) {
-    final dominant = palette.dominantColor?.color ?? Colors.grey;
-    final hsl = HSLColor.fromColor(dominant);
-    final baseHue = hsl.hue;
-    final baseSat = (hsl.saturation * 0.6).clamp(0.15, 0.50);
+    // Собираем все доступные swatches
+    final allSwatches = [
+      palette.vibrantColor,
+      palette.lightVibrantColor,
+      palette.darkVibrantColor,
+      palette.dominantColor,
+      palette.mutedColor,
+      palette.darkMutedColor,
+      palette.lightMutedColor,
+    ].whereType<PaletteColor>().toList();
 
-    final elevated = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.7, 0.20).toColor();
-    final accent = HSLColor.fromAHSL(1.0, baseHue, baseSat, 0.55).toColor();
-    final gradientTop = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.8, 0.18).toColor();
-    final gradientBottom = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.3, 0.03).toColor();
+    if (allSwatches.isEmpty) {
+      return AppColors.fixed;
+    }
+
+    // Находим цвет с максимальной насыщенностью (HSV saturation)
+    Color mostSaturated = allSwatches.first.color;
+    double maxSaturation = _saturation(mostSaturated);
+
+    for (final swatch in allSwatches) {
+      final sat = _saturation(swatch.color);
+      if (sat > maxSaturation) {
+        maxSaturation = sat;
+        mostSaturated = swatch.color;
+      }
+    }
+
+    // Если самый насыщенный слишком тусклый — берём vibrantColor как fallback
+    if (maxSaturation < 0.3) {
+      mostSaturated = palette.vibrantColor?.color ?? mostSaturated;
+    }
+
+    final hsl = HSLColor.fromColor(mostSaturated);
+    final baseHue = hsl.hue;
+    final baseSat = (hsl.saturation * 0.9).clamp(0.35, 0.75);
+
+    final elevated = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 0.80).clamp(0.0, 0.65), 0.20).toColor();
+    final accent = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 1.0).clamp(0.0, 0.75), 0.55).toColor();
+    final gradientTop = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 0.85).clamp(0.0, 0.60), 0.18).toColor();
+    final gradientBottom = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 0.50).clamp(0.0, 0.40), 0.03).toColor();
     final midBackground = Color.lerp(gradientTop, gradientBottom, 0.6)!;
 
     return AppColors._(
@@ -159,6 +191,16 @@ class AppColors {
       gradientBottom: gradientBottom,
       isDynamic: true,
     );
+  }
+
+  /// HSV saturation of a color (0.0 - 1.0)
+  static double _saturation(Color color) {
+    final hsl = HSLColor.fromColor(color);
+    final s = hsl.saturation;
+    final l = hsl.lightness;
+    final v = l + s * (l < 0.5 ? l : 1.0 - l);
+    final sv = v == 0 ? 0.0 : 2 * (1.0 - l / v);
+    return sv.clamp(0.0, 1.0);
   }
 
   final Color background;

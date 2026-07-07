@@ -1,6 +1,9 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:vibration/vibration.dart';
 import 'dart:ui';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -40,6 +43,110 @@ String _formatDuration(Duration? d) {
     return '$hours:$mm:$ss';
   }
   return '$minutes:$ss';
+}
+
+// ============================================================
+// Haptic helper через пакет vibration
+// ============================================================
+
+class HapticHelper {
+  static bool _hasVibrator = false;
+  static bool _hasAmplitude = false;
+  static bool _checked = false;
+
+  static Future<void> _ensureChecked() async {
+    if (_checked) return;
+    _hasVibrator = await Vibration.hasVibrator();
+    _hasAmplitude = await Vibration.hasAmplitudeControl();
+    _checked = true;
+  }
+
+  /// Очень лёгкий микро-отклик — для progress bar steps
+  static Future<void> microTick() async {
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.selectionClick();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 5, amplitude: 40);
+    } else {
+      await Vibration.vibrate(duration: 5);
+    }
+  }
+
+  /// Лёгкий отклик
+  static Future<void> light() async {
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 10, amplitude: 80);
+    } else {
+      await Vibration.vibrate(duration: 10);
+    }
+  }
+
+  /// Средний отклик
+  static Future<void> medium() async {
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 20, amplitude: 140);
+    } else {
+      await Vibration.vibrate(duration: 20);
+    }
+  }
+
+  /// Сильный отклик — пересечение threshold
+  static Future<void> strong() async {
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.heavyImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 30, amplitude: 220);
+    } else {
+      await Vibration.vibrate(duration: 40);
+    }
+  }
+
+  /// Слабый отклик — возврат
+  static Future<void> weak() async {
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 10, amplitude: 50);
+    } else {
+      await Vibration.vibrate(duration: 10);
+    }
+  }
+
+  /// Подтверждение удаления
+  static Future<void> confirmDelete() async {
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(
+        pattern: [0, 30, 50, 20],
+        intensities: [0, 255, 0, 100],
+      );
+    } else {
+      await Vibration.vibrate(duration: 35);
+    }
+  }
 }
 
 class QueueSheetController extends ChangeNotifier {
@@ -142,6 +249,7 @@ class QueueSheet extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final enabled = ref.watch(vibrationEnabledProvider);
     final colors = ref.watch(animatedPaletteProvider);
     final media = MediaQuery.of(context);
     final maxHeight = media.size.height;
@@ -157,7 +265,7 @@ class QueueSheet extends ConsumerWidget {
         final contentOpacity = isClosed
             ? 0.0
             : (t / (QueueSheetController.partPosition / 2)).clamp(0.0, 1.0);
-        
+
         final scrimOpacity = (t / QueueSheetController.partPosition * 0.5)
             .clamp(0.0, 0.5);
 
@@ -198,6 +306,7 @@ class QueueSheet extends ConsumerWidget {
                     child: Opacity(
                       opacity: contentOpacity,
                       child: _QueueBody(
+                        vibrationEnabled: enabled,
                         controller: controller,
                         player: player,
                         maxHeight: maxHeight,
@@ -219,6 +328,7 @@ class QueueSheet extends ConsumerWidget {
 
 class _QueueBody extends StatelessWidget {
   const _QueueBody({
+    required this.vibrationEnabled,
     required this.controller,
     required this.player,
     required this.maxHeight,
@@ -228,6 +338,7 @@ class _QueueBody extends StatelessWidget {
   });
 
   final QueueSheetController controller;
+  final bool vibrationEnabled;
   final PlayerService player;
   final double maxHeight;
   final double topInset;
@@ -280,6 +391,7 @@ class _QueueBody extends StatelessWidget {
                 ),
                 Expanded(
                   child: _QueueList(
+                    vibrationEnabled: vibrationEnabled,
                     controller: controller,
                     player: player,
                     bottomInset: bottomInset,
@@ -554,8 +666,12 @@ class _RepeatButton extends StatelessWidget {
   }
 }
 
+// ============================================================
+// _QueueList — ReorderableListView.builder
+// ============================================================
 class _QueueList extends StatefulWidget {
   const _QueueList({
+    required this.vibrationEnabled,
     required this.controller,
     required this.player,
     required this.bottomInset,
@@ -564,6 +680,7 @@ class _QueueList extends StatefulWidget {
   });
 
   final QueueSheetController controller;
+  final bool vibrationEnabled;
   final PlayerService player;
   final double bottomInset;
   final double maxHeight;
@@ -587,11 +704,8 @@ class _QueueListState extends State<_QueueList> {
     if (!_scrollController.hasClients) return;
     if (index < 0 || index >= totalCount) return;
 
-    // Высота тайла ~64px (паддинг + арт + отступы)
     const itemHeight = 64.0;
     final targetOffset = index * itemHeight;
-
-    // Проверяем, есть ли уже позиция для прокрутки
     final maxScroll = _scrollController.position.maxScrollExtent;
     final clampedOffset = targetOffset.clamp(0.0, maxScroll);
 
@@ -638,30 +752,41 @@ class _QueueListState extends State<_QueueList> {
                 );
               }
 
-              final visible = <MapEntry<int, MediaItem>>[
-                for (var i = 0; i < all.length; i++) MapEntry(i, all[i]),
-              ];
-
-              // Используем ListView вместо ReorderableListView.builder
-              // с ScrollController для работы с виртуализацией
-              return ListView.builder(
-                controller: _scrollController,
+              return ReorderableListView.builder(
+                scrollController: _scrollController,
                 padding: EdgeInsets.only(
                   top: 2,
                   bottom: 24 + widget.bottomInset,
                 ),
-                itemCount: visible.length,
-                itemBuilder: (context, localIndex) {
-                  final entry = visible[localIndex];
-                  final realIndex = entry.key;
-                  final m = entry.value;
-                  final isCurrent = realIndex == current;
-                  return _QueueTile(
-                    key: ValueKey('${m.id}_$realIndex'),
-                    index: localIndex,
+                itemCount: all.length,
+                proxyDecorator: _proxyDecorator,
+                onReorderItem: (oldIndex, newIndex) {
+                  if (newIndex > oldIndex) newIndex -= 1;
+                  widget.player.reorderQueueItem(oldIndex, newIndex);
+                },
+                itemBuilder: (context, index) {
+                  final m = all[index];
+                  final isCurrent = index == current;
+
+                  if (isCurrent) {
+                    return _QueueTile(
+                      key: ValueKey('${m.id}_$index'),
+                      index: index,
+                      media: m,
+                      isHighlighted: true,
+                      onTap: () {},
+                      onDismissed: null,
+                      colors: widget.colors,
+                    );
+                  }
+
+                  return _DismissibleQueueTile(
+                    enabled: widget.vibrationEnabled,
+                    key: ValueKey('${m.id}_$index'),
+                    index: index,
                     media: m,
-                    isHighlighted: isCurrent,
-                    onTap: () => widget.player.skipToQueueItem(realIndex),
+                    isHighlighted: false,
+                    onTap: () => widget.player.skipToQueueItem(index),
                     onDismissed: () => widget.player.removeQueueItem(m),
                     colors: widget.colors,
                   );
@@ -673,8 +798,27 @@ class _QueueListState extends State<_QueueList> {
       ),
     );
   }
+
+  Widget _proxyDecorator(Widget child, int index, Animation<double> animation) {
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, child) {
+        final elevation = Tween<double>(begin: 0, end: 6).evaluate(animation);
+        return Material(
+          elevation: elevation,
+          borderRadius: BorderRadius.circular(12),
+          color: Colors.transparent,
+          child: child,
+        );
+      },
+      child: child,
+    );
+  }
 }
 
+// ============================================================
+// _QueueTile — drag-иконка справа
+// ============================================================
 class _QueueTile extends StatelessWidget {
   const _QueueTile({
     super.key,
@@ -689,13 +833,13 @@ class _QueueTile extends StatelessWidget {
   final int index;
   final MediaItem media;
   final VoidCallback onTap;
-  final VoidCallback onDismissed;
+  final VoidCallback? onDismissed;
   final bool isHighlighted;
   final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
-    final tile = Container(
+    return Container(
       margin: isHighlighted
           ? const EdgeInsets.symmetric(horizontal: 8)
           : EdgeInsets.zero,
@@ -790,15 +934,59 @@ class _QueueTile extends StatelessWidget {
         ),
       ),
     );
+  }
+}
 
-    // Текущий трек нельзя свайпнуть — убираем Dismissible
-    if (isHighlighted) return tile;
+// ============================================================
+// _DismissibleQueueTile — свайп с haptic feedback через vibration
+// ============================================================
+class _DismissibleQueueTile extends StatefulWidget {
+  const _DismissibleQueueTile({
+    super.key,
+    required this.index,
+    required this.media,
+    required this.onTap,
+    required this.onDismissed,
+    this.isHighlighted = false,
+    required this.colors,
+    required this.enabled,
+  });
 
+  final int index;
+  final MediaItem media;
+  final VoidCallback onTap;
+  final VoidCallback onDismissed;
+  final bool isHighlighted;
+  final dynamic colors;
+  final bool enabled;
+
+  @override
+  State<_DismissibleQueueTile> createState() => _DismissibleQueueTileState();
+}
+
+class _DismissibleQueueTileState extends State<_DismissibleQueueTile> {
+  bool _hasVibrated = false;
+
+  void _onUpdate(DismissUpdateDetails details) {
+    const threshold = 0.35;
+
+    if (details.progress >= threshold && !_hasVibrated && widget.enabled) {
+      _hasVibrated = true;
+      HapticHelper.strong();
+    } else if (details.progress < threshold && _hasVibrated) {
+      _hasVibrated = false;
+      if (widget.enabled) HapticHelper.weak();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Dismissible(
-      key: ValueKey('${media.id}_$index'),
+      key: widget.key!,
       direction: DismissDirection.endToStart,
       movementDuration: const Duration(milliseconds: 200),
-      resizeDuration: const Duration(milliseconds: 200), // схлопывание высоты
+      resizeDuration: const Duration(milliseconds: 200),
+      onUpdate: _onUpdate,
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
@@ -815,8 +1003,19 @@ class _QueueTile extends StatelessWidget {
           size: 28,
         ),
       ),
-      onDismissed: (_) => onDismissed(),
-      child: tile,
+      onDismissed: (_) {
+        if (widget.enabled) HapticHelper.confirmDelete();
+        widget.onDismissed();
+      },
+      child: _QueueTile(
+        key: widget.key,
+        index: widget.index,
+        media: widget.media,
+        isHighlighted: widget.isHighlighted,
+        onTap: widget.onTap,
+        onDismissed: null,
+        colors: widget.colors,
+      ),
     );
   }
 }

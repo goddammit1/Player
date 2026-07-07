@@ -10,6 +10,7 @@ import 'playlist_repository.dart';
 export 'appearance_provider.dart';
 export 'dynamic_colors.dart';
 export 'global_theme_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// PlayerService инициализируется в main.dart и пробрасывается сюда через
 /// override. См. main.dart -> ProviderScope(overrides: [...]).
@@ -213,3 +214,29 @@ final playlistsProvider = StreamProvider<List<Playlist>>((ref) async* {
 final playlistRepositoryProvider = Provider<PlaylistRepository>((ref) {
   return PlaylistRepository.instance;
 });
+
+
+final vibrationEnabledProvider = StateNotifierProvider<VibrationNotifier, bool>(
+  (ref) => VibrationNotifier(),
+);
+
+class VibrationNotifier extends StateNotifier<bool> {
+  static const _key = 'vibration_enabled';
+
+  VibrationNotifier() : super(true) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? true;
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, enabled);
+    state = enabled;
+  }
+
+  Future<void> toggle() => setEnabled(!state);
+}

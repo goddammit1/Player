@@ -1,8 +1,10 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:marquee/marquee.dart';
+import 'package:vibration/vibration.dart';
 
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
@@ -153,6 +155,122 @@ Widget build(BuildContext context) {
         },
       ),
     );
+  }
+}
+
+// =====================================================================
+//  HAPTIC HELPER
+// =====================================================================
+
+class HapticHelper {
+  static bool _hasVibrator = false;
+  static bool _hasAmplitude = false;
+  static bool _checked = false;
+
+  static Future<void> _ensureChecked() async {
+    if (_checked) return;
+    _hasVibrator = await Vibration.hasVibrator();
+    _hasAmplitude = await Vibration.hasAmplitudeControl();
+    _checked = true;
+  }
+
+  /// Очень лёгкий микро-отклик — для progress bar steps
+  static Future<void> microTick({required WidgetRef ref}) async {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.selectionClick();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 5, amplitude: 40);
+    } else {
+      await Vibration.vibrate(duration: 5);
+    }
+  }
+
+  /// Лёгкий отклик
+  static Future<void> light({required WidgetRef ref}) async {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 10, amplitude: 80);
+    } else {
+      await Vibration.vibrate(duration: 10);
+    }
+  }
+
+  /// Средний отклик
+  static Future<void> medium({required WidgetRef ref}) async {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 20, amplitude: 140);
+    } else {
+      await Vibration.vibrate(duration: 20);
+    }
+  }
+
+  /// Сильный отклик — пересечение threshold
+  static Future<void> strong({required WidgetRef ref}) async {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.heavyImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 30, amplitude: 220);
+    } else {
+      await Vibration.vibrate(duration: 40);
+    }
+  }
+
+  /// Слабый отклик — возврат
+  static Future<void> weak({required WidgetRef ref}) async {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 10, amplitude: 50);
+    } else {
+      await Vibration.vibrate(duration: 10);
+    }
+  }
+
+  /// Подтверждение удаления
+  static Future<void> confirmDelete({required WidgetRef ref}) async {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(
+        pattern: [0, 30, 50, 20],
+        intensities: [0, 255, 0, 100],
+      );
+    } else {
+      await Vibration.vibrate(duration: 35);
+    }
   }
 }
 
@@ -458,10 +576,10 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
 }
 
 // =====================================================================
-//  PROGRESS BAR
+//  PROGRESS BAR with Haptic Feedback
 // =====================================================================
 
-class _ProgressBar extends StatefulWidget {
+class _ProgressBar extends ConsumerStatefulWidget {
   const _ProgressBar({
     required this.player,
     required this.colors,
@@ -472,10 +590,10 @@ class _ProgressBar extends StatefulWidget {
   final Duration? fallbackDuration;
 
   @override
-  State<_ProgressBar> createState() => _ProgressBarState();
+  ConsumerState<_ProgressBar> createState() => _ProgressBarState();  // <-- ConsumerState
 }
 
-class _ProgressBarState extends State<_ProgressBar>
+class _ProgressBarState extends ConsumerState<_ProgressBar>
     with SingleTickerProviderStateMixin {
   /// Когда пользователь тянет ползунок — показываем эту позицию вместо
   /// реальной из стрима, иначе UI «дёргается».
@@ -488,11 +606,38 @@ class _ProgressBarState extends State<_ProgressBar>
     value: 0, // 0 = нормальный размер, 1 = сжатый
   );
 
+  // ===== HAPTIC STATE =====
+  /// Последняя позиция, при которой сработала вибрация (в долях 0..1)
+  double _lastHapticFraction = -1.0;
+  /// Минимальное расстояние между ступенями вибрации (в долях)
+  static const double _hapticStep = 0.015; // ~1.5% от трека
+  /// Cooldown между вибрациями (мс)
+  static const int _hapticCooldownMs = 40;
+  DateTime? _lastHapticTime;
+
   @override
   void dispose() {
     _thumbAnim.dispose();
     super.dispose();
   }
+
+  /// Проверяет, нужно ли вызвать вибрацию при текущей позиции
+  void _maybeHaptic(double currentFraction) {
+    final enabled = ref.read(vibrationEnabledProvider);
+    if (!enabled) return;
+    final now = DateTime.now();
+    if (_lastHapticTime != null) {
+      final elapsed = now.difference(_lastHapticTime!).inMilliseconds;
+      if (elapsed < _hapticCooldownMs) return;
+    }
+
+    if ((currentFraction - _lastHapticFraction).abs() >= _hapticStep) {
+      _lastHapticFraction = currentFraction;
+      _lastHapticTime = now;
+       HapticHelper.microTick(ref: ref);  // <-- передаём ref
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -523,12 +668,15 @@ class _ProgressBarState extends State<_ProgressBar>
                       behavior: HitTestBehavior.opaque,
                       onHorizontalDragStart: (d) {
                         _thumbAnim.forward();
+                        _lastHapticFraction = -1.0; // Сброс при начале drag
                       },
                       onHorizontalDragUpdate: (d) {
+                        final newFraction =
+                            (d.localPosition.dx / width).clamp(0.0, 1.0);
                         setState(() {
-                          _dragFraction =
-                              (d.localPosition.dx / width).clamp(0.0, 1.0);
+                          _dragFraction = newFraction;
                         });
+                        _maybeHaptic(newFraction);
                       },
                       onHorizontalDragEnd: (_) {
                         _thumbAnim.reverse();
@@ -541,10 +689,12 @@ class _ProgressBarState extends State<_ProgressBar>
                         }
                         setState(() {
                           _dragFraction = null;
+                          _lastHapticFraction = -1.0;
                         });
                       },
                       onTapDown: (d) {
                         _thumbAnim.forward();
+                        _lastHapticFraction = -1.0;
                       },
                       onTapUp: (d) {
                         _thumbAnim.reverse();
@@ -555,14 +705,18 @@ class _ProgressBarState extends State<_ProgressBar>
                             Duration(milliseconds: (frac * maxMs).round()),
                           );
                         }
+                        // Однократная вибрация при тапе
+                        HapticHelper.light(ref: ref);
                         setState(() {
                           _dragFraction = null;
+                          _lastHapticFraction = -1.0;
                         });
                       },
                       onTapCancel: () {
                         _thumbAnim.reverse();
                         setState(() {
                           _dragFraction = null;
+                          _lastHapticFraction = -1.0;
                         });
                       },
                       child: Container(
@@ -903,3 +1057,4 @@ class _SquircleButton extends StatelessWidget {
     );
   }
 }
+

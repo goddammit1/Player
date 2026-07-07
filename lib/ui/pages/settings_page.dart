@@ -6,6 +6,10 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/providers.dart';
 
+// ═══════════════════════════════════════════════════════════════════
+//  SETTINGS PAGE
+// ═══════════════════════════════════════════════════════════════════
+
 class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
 
@@ -40,6 +44,7 @@ class SettingsPage extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(vertical: 8),
           children: [
             _AppearanceSection(colors: colors),
+            _HapticsSection(colors: colors),
             _AboutSection(repo: _repo, colors: colors),
           ],
         ),
@@ -188,6 +193,51 @@ class _ThemeOption extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// =====================================================================
+//  HAPTICS SECTION — NEW
+// =====================================================================
+
+class _HapticsSection extends ConsumerWidget {
+  const _HapticsSection({required this.colors});
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final enabled = ref.watch(vibrationEnabledProvider);
+
+    return _Section(
+      title: 'Haptics',
+      colors: colors,
+      children: [
+        ListTile(
+          leading: Icon(
+            Icons.vibration_rounded,
+            color: colors.textPrimary,
+          ),
+          title: Text(
+            'Vibration feedback',
+            style: TextStyle(color: colors.textPrimary),
+          ),
+          subtitle: Text(
+            enabled
+                ? 'Haptic feedback on progress bar and queue interactions.'
+                : 'Haptic feedback is disabled.',
+            style: TextStyle(color: colors.textSecondary),
+          ),
+          trailing: Switch.adaptive(
+            value: enabled,
+            onChanged: (v) => ref.read(vibrationEnabledProvider.notifier).setEnabled(v),
+            activeThumbColor: colors.accent,
+            activeTrackColor: colors.accent.withValues(alpha: 0.3),
+            inactiveThumbColor: colors.textSecondary,
+            inactiveTrackColor: colors.elevated,
+          ),
+        ),
+      ],
     );
   }
 }

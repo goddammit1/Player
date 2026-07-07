@@ -117,6 +117,10 @@ class ArtworkProvider {
   Future<String?> findArtwork(String artist, String title) async {
     final key = _key(artist, title);
 
+    // ВРЕМЕННЫЙ ЛОГ — удали после починки
+    debugPrint('[ArtworkProvider] findArtwork called: "$artist - $title"');
+    debugPrint('[ArtworkProvider] hasGeniusToken = $hasGeniusToken');
+
     // 1) RAM.
     final mem = _memCache[key];
     if (mem != null) return mem.isEmpty ? null : mem;

@@ -228,7 +228,7 @@ class _SearchPill extends StatelessWidget {
                 Text(
                   'Search',
                   style: TextStyle(
-                    color: colors.textSecondary,
+                    color: colors.textPrimary,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
