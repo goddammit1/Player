@@ -10,15 +10,22 @@ import 'core/playlist_repository.dart';
 import 'core/providers.dart';
 import 'sources/source_registry.dart';
 import 'ui/pages/home_page.dart';
+import 'core/youtube_cache.dart';
 
 
 /// Палитра приложения. Pure-black темная тема, серые градации,
 /// никакого «цветного» акцента — по дизайну, переданному заказчиком.
 
+
+
 Future<void> main() async {
   runZonedGuarded<Future<void>>(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+
+      // === ЗАГРУЗКА ЛИМИТОВ КЭША ===
+      await YoutubeCache.loadLimits();
+      // ===============================
 
       SystemChrome.setSystemUIOverlayStyle(
         const SystemUiOverlayStyle(

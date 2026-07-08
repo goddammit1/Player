@@ -3,7 +3,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/track.dart';
 import 'track_source.dart';
-import 'youtube_cache.dart';
+import '../core/youtube_cache.dart';
 
 // ignore: avoid_print
 void _ytLog(String msg) => print('[YoutubeSource] $msg');

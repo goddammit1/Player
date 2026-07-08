@@ -112,7 +112,7 @@ Widget build(BuildContext context) {
                           url: item.artUri?.toString(),
                           size: size,
                           borderRadius: 10,
-                          memCacheSize: 800,
+                          memCacheSize: 600,
                           aspectRatio: artAspectRatio(item),
                         );
                       },

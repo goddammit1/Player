@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,8 +9,10 @@ import '../../core/player_service.dart';
 import '../../core/providers.dart';
 import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
+import '../../sources/source_registry.dart';
 import 'artwork.dart';
 import 'track_details_sheet.dart';
+import '../../core/youtube_cache.dart';
 
 // =============================================================================
 // PUBLIC API
@@ -102,7 +105,7 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
                       label: 'Add to playlist',
                       onTap: () => _showAddToPlaylist(context, t),
                       colors: colors,
-                      position: _ButtonPosition.left,  // закругление справа
+                      position: _ButtonPosition.left,
                     ),
                   ),
                   const SizedBox(width: 5),
@@ -112,7 +115,7 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
                       label: 'Play Next',
                       onTap: () => _addToQueueNext(context, player, t),
                       colors: colors,
-                      position: _ButtonPosition.right,  // закругление слева
+                      position: _ButtonPosition.right,
                     ),
                   ),
                 ],
@@ -121,7 +124,7 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
 
             const SizedBox(height: 8),
 
-            // ── Volume slider (иконка внутри) ──
+            // ── Volume slider ──
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: _VolumeSlider(
@@ -164,7 +167,6 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
   }
 
   void _showAddToPlaylist(BuildContext ctx, Track track) {
-    // НЕ закрываем sheet — открываем поверх
     showAddToPlaylistSheet(ctx, track);
   }
 
@@ -334,8 +336,7 @@ class _ActionButton extends StatelessWidget {
 }
 
 // =============================================================================
-// VOLUME SLIDER (0–200%, шаг 1%)
-// Иконка динамика внутри slider, логика thumb 1:1 как в player page
+// VOLUME SLIDER
 // =============================================================================
 
 class _VolumeSlider extends ConsumerStatefulWidget {
@@ -350,11 +351,8 @@ class _VolumeSlider extends ConsumerStatefulWidget {
 
 class _VolumeSliderState extends ConsumerState<_VolumeSlider>
     with SingleTickerProviderStateMixin {
-  /// Когда пользователь тянет ползунок — показываем эту позицию вместо
-  /// реальной из стрима, иначе UI «дёргается».
   double? _dragFraction;
 
-  // Анимация thumb
   late final AnimationController _thumbAnim = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 50),
@@ -384,7 +382,7 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
               ),
             ),
             Text(
-              _percentText,
+              _labelText,
               style: TextStyle(
                 color: widget.colors.textPrimary,
                 fontSize: 14,
@@ -400,41 +398,26 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
             final width = c.maxWidth;
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onHorizontalDragStart: (_) {
-                _thumbAnim.forward();
-              },
+              onHorizontalDragStart: (_) => _thumbAnim.forward(),
               onHorizontalDragUpdate: (d) {
-                setState(() {
-                  _dragFraction =
-                      (d.localPosition.dx / width).clamp(0.0, 1.0);
-                });
+                final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                setState(() => _dragFraction = frac);
+                _applyVolumeAndGain(frac);
               },
               onHorizontalDragEnd: (_) {
                 _thumbAnim.reverse();
-                if (_dragFraction != null) {
-                  _applyVolume(_dragFraction!);
-                }
-                setState(() {
-                  _dragFraction = null;
-                });
+                setState(() => _dragFraction = null);
               },
-              onTapDown: (d) {
-                _thumbAnim.forward();
-              },
+              onTapDown: (_) => _thumbAnim.forward(),
               onTapUp: (d) {
                 _thumbAnim.reverse();
-                final frac =
-                    (d.localPosition.dx / width).clamp(0.0, 1.0);
-                _applyVolume(frac);
-                setState(() {
-                  _dragFraction = null;
-                });
+                final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
+                _applyVolumeAndGain(frac);
+                setState(() => _dragFraction = null);
               },
               onTapCancel: () {
                 _thumbAnim.reverse();
-                setState(() {
-                  _dragFraction = null;
-                });
+                setState(() => _dragFraction = null);
               },
               child: CustomPaint(
                 size: const Size(double.infinity, 40),
@@ -451,27 +434,40 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
     );
   }
 
-  /// Текущая отображаемая fraction: при drag — _dragFraction, иначе — из плеера.
+  /// Текущая позиция слайдера (0.0–1.0).
+  /// 0.0–0.5 → volume 0–100%, gain 0 dB
+  /// 0.5–1.0 → volume 100%, gain 0–+6 dB (UI: 100–200%)
   double get _currentFraction {
     if (_dragFraction != null) return _dragFraction!;
-    final vol = widget.player.rawPlayer.volume; // 0.0 – 2.0
-    return (vol / 2.0).clamp(0.0, 1.0);
+    final vol = widget.player.rawPlayer.volume;
+    final gain = widget.player.gainDb;
+    if (gain > 0) {
+      // gain 0..6 dB maps to fraction 0.5..1.0
+      return (0.5 + gain / 12.0).clamp(0.5, 1.0);
+    }
+    return (vol * 0.5).clamp(0.0, 0.5);
   }
 
-  String get _percentText {
-    final pct = (_currentFraction * 200).round();
+  /// Label: 0% → 100% → 200%
+  String get _labelText {
+    final pct = (_currentFraction * 2 * 100).round();
     return '$pct%';
   }
 
-  Future<void> _applyVolume(double fraction) async {
-    final clamped = fraction.clamp(0.0, 1.0);
-    final volume = clamped * 2.0; // 0.0 – 2.0
-    await widget.player.rawPlayer.setVolume(volume);
+  /// Применяет volume/gain.
+  /// fraction 0.0–0.5: volume 0–100%
+  /// fraction 0.5–1.0: volume 100%, gain 0–+6 dB
+  Future<void> _applyVolumeAndGain(double fraction) async {
+    if (fraction <= 0.5) {
+      final volume = (fraction * 2.0).clamp(0.0, 1.0);
+      await widget.player.setVolumeAndGain(volume, 0.0);
+    } else {
+      final gainDb = ((fraction - 0.5) * 2.0 * 6.0).clamp(0.0, 6.0);
+      await widget.player.setVolumeAndGain(1.0, gainDb);
+    }
   }
 }
 
-/// Кастомный painter для слайдера громкости.
-/// Иконка динамика сдвигается вправо, когда thumb приближается.
 class _VolumePainter extends CustomPainter {
   _VolumePainter({
     required this.fraction,
@@ -493,7 +489,6 @@ class _VolumePainter extends CustomPainter {
   static const _gapDragging = 4.0;
   static const _margin = 0.0;
 
-  /// Ширина иконки + отступы
   static const _iconWidth = 16.0;
   static const _iconPadding = 16.0;
   static const _iconTotalWidth = _iconWidth + _iconPadding * 2;
@@ -518,14 +513,12 @@ class _VolumePainter extends CustomPainter {
     final double clampedThumbX =
         thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
 
-    // ── Позиция иконки: сдвигается вправо, если thumb близко ──
     final double iconBaseX = _margin + _iconPadding;
     final double iconShiftThreshold = _iconTotalWidth;
     final double iconX = clampedThumbX < iconShiftThreshold
         ? clampedThumbX + thumbWidth / 2 + gap + _iconPadding
         : iconBaseX;
 
-    // ── Фоновый трек (неактивная часть) ──
     if (clampedThumbX + thumbWidth + gap < _margin + totalWidth) {
       final double trackStart = clampedThumbX + thumbWidth + gap;
       final double trackWidth = (_margin + totalWidth) - trackStart;
@@ -543,7 +536,6 @@ class _VolumePainter extends CustomPainter {
       canvas.drawRRect(trackRect, trackPaint);
     }
 
-    // ── Заполненная часть (активная) ──
     if (clampedThumbX > _margin + gap) {
       final double filledWidth = clampedThumbX - gap - _margin;
 
@@ -559,7 +551,6 @@ class _VolumePainter extends CustomPainter {
       canvas.drawRRect(filledRect, filledPaint);
     }
 
-    // ── Бегунок (thumb) ──
     final thumbRect = RRect.fromRectAndRadius(
       Rect.fromLTWH(
           clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
@@ -568,7 +559,6 @@ class _VolumePainter extends CustomPainter {
     final thumbPaint = Paint()..color = colors.elevatedHi;
     canvas.drawRRect(thumbRect, thumbPaint);
 
-    // ── Иконка динамика (сдвигается, если thumb близко) ──
     _drawVolumeIcon(canvas, size, fraction, colors, iconX);
   }
 
@@ -579,7 +569,6 @@ class _VolumePainter extends CustomPainter {
     AppColors colors,
     double iconX,
   ) {
-    // Определяем иконку по уровню громкости
     final IconData iconData;
     if (fraction <= 0.005) {
       iconData = Icons.volume_off_rounded;
@@ -591,7 +580,6 @@ class _VolumePainter extends CustomPainter {
       iconData = Icons.volume_up_rounded;
     }
 
-    // Рисуем иконку через TextPainter
     final iconStr = String.fromCharCode(iconData.codePoint);
     final textPainter = TextPainter(
       text: TextSpan(
@@ -606,7 +594,6 @@ class _VolumePainter extends CustomPainter {
     );
     textPainter.layout();
 
-    // Центрируем по вертикали
     final iconY = (size.height - textPainter.height) / 2;
     textPainter.paint(canvas, Offset(iconX, iconY));
   }
@@ -620,7 +607,7 @@ class _VolumePainter extends CustomPainter {
 }
 
 // =============================================================================
-// SETTINGS GROUP (легко расширяемый)
+// SETTINGS GROUP (РЕАЛЬНОЕ КЭШИРОВАНИЕ)
 // =============================================================================
 
 class _SettingsGroup extends ConsumerStatefulWidget {
@@ -638,7 +625,6 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
   bool _checking = true;
   bool _downloading = false;
   double? _progress;
-  String? _cacheSize;
 
   @override
   void initState() {
@@ -646,11 +632,22 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     _checkCache();
   }
 
+  /// Формирует namespaced id так же, как в PlayerService._cacheIdForTrack
+  String _cacheId(Track track) {
+    switch (track.sourceId) {
+      case 'muzmo':
+        return 'muzmo_${track.id}';
+      case 'soundcloud':
+        return 'soundcloud_${track.id}';
+      default:
+        return track.id;
+    }
+  }
+
   Future<void> _checkCache() async {
     setState(() => _checking = true);
     try {
-      _isCached = false;
-      _cacheSize = null;
+      _isCached = await YoutubeCache.instance.hasFile(_cacheId(widget.track));
     } catch (_) {
       _isCached = false;
     } finally {
@@ -663,14 +660,44 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
       _downloading = true;
       _progress = 0.0;
     });
+
     try {
-      await Future.delayed(const Duration(seconds: 2));
+      // Резолвим прямую ссылку
+      final source = SourceRegistry.instance.require(widget.track.sourceId);
+      final url = await source.resolveStreamUrl(widget.track);
+
+      // Получаем путь в кэше
+      final cacheFile = await YoutubeCache.instance.fileFor(
+        _cacheId(widget.track),
+        extension: 'mp3',
+      );
+
+      // Скачиваем напрямую в кэш-директорию
+      final dio = Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 30),
+        ),
+      );
+
+      await dio.download(
+        url,
+        cacheFile.path,
+        onReceiveProgress: (received, total) {
+          if (total > 0 && mounted) {
+            setState(() => _progress = (received / total).clamp(0.0, 1.0));
+          }
+        },
+      );
+
+      // Обновляем LRU, чтобы эвиктор не удалил свежескачанный трек
+      YoutubeCache.instance.touch(_cacheId(widget.track));
+
       if (mounted) {
         setState(() {
           _isCached = true;
           _downloading = false;
           _progress = null;
-          _cacheSize = '12.4 MB';
         });
       }
     } catch (e) {
@@ -679,6 +706,17 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
           _downloading = false;
           _progress = null;
         });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Download failed: $e'),
+            backgroundColor: widget.colors.elevated,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
     }
   }
@@ -686,14 +724,22 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
   Future<void> _deleteCache() async {
     setState(() => _checking = true);
     try {
-      await Future.delayed(const Duration(milliseconds: 300));
+      await YoutubeCache.instance.evict(_cacheId(widget.track));
+      if (mounted) setState(() => _isCached = false);
+    } catch (e) {
       if (mounted) {
-        setState(() {
-          _isCached = false;
-          _cacheSize = null;
-        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: widget.colors.elevated,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
       }
-    } catch (_) {
     } finally {
       if (mounted) setState(() => _checking = false);
     }
@@ -712,7 +758,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         icon: _isCached ? Icons.download_done_rounded : Icons.download_rounded,
         iconColor: _isCached ? colors.accent : colors.textPrimary,
         title: _isCached ? 'Cached' : 'Download',
-        subtitle: _isCached ? (_cacheSize ?? 'Available offline') : null,
+        subtitle: _isCached ? 'Available offline' : null,
         trailing: _isCached
             ? Icon(Icons.check_circle_rounded, color: colors.accent, size: 20)
             : null,
@@ -744,11 +790,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
               colors: colors,
             ),
             if (i < tiles.length - 1)
-              // Замена Divider на SizedBox с фоном — без margin'ов, полная ширина
-              Container(
-                height: 4,
-                color: colors.background,
-              ),
+              Container(height: 4, color: colors.background),
           ],
         ],
       ),
@@ -815,7 +857,6 @@ class _SettingsTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (data.loading && data.progress != null) {
-      // Progress state
       return SizedBox(
         height: 50,
         child: Padding(
@@ -848,7 +889,6 @@ class _SettingsTile extends StatelessWidget {
     }
 
     if (data.loading) {
-      // Generic loading
       return const SizedBox(
         height: 50,
         child: Center(

@@ -1,10 +1,11 @@
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:dio/dio.dart';
 
 import '../../core/providers.dart';
+import 'cache_page.dart';
 
 // ═══════════════════════════════════════════════════════════════════
 //  SETTINGS PAGE
@@ -45,6 +46,7 @@ class SettingsPage extends ConsumerWidget {
           children: [
             _AppearanceSection(colors: colors),
             _HapticsSection(colors: colors),
+            _CacheTile(colors: colors),
             _AboutSection(repo: _repo, colors: colors),
           ],
         ),
@@ -52,6 +54,36 @@ class SettingsPage extends ConsumerWidget {
     );
   }
 }
+
+
+// =====================================================================
+//  CACHE TILE (переход на страницу кэша)
+// =====================================================================
+
+class _CacheTile extends ConsumerWidget {
+  const _CacheTile({required this.colors});
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ListTile(
+      leading: Icon(Icons.storage_rounded, color: colors.textPrimary),
+      title: Text('Cache', style: TextStyle(color: colors.textPrimary)),
+      subtitle: Text(
+        'Manage audio & artwork cache',
+        style: TextStyle(color: colors.textSecondary),
+      ),
+      trailing: Icon(
+        Icons.chevron_right_rounded,
+        color: colors.textTertiary,
+      ),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const CachePage()),
+      ),
+    );
+  }
+}
+
 
 // =====================================================================
 //  APPEARANCE SECTION

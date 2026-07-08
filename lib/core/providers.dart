@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/playlist.dart';
@@ -115,31 +117,84 @@ class SearchController extends StateNotifier<SearchState> {
     _enrichArtworks(source, results, query);
   }
 
-  /// Поиск во всех зарегистрированных источниках сразу. Результаты
-  /// объединяются «вперемешку»: по одному треку из каждого источника по
-  /// кругу — так выдача не оказывается забита одним источником сверху.
+  /// Таймаут на один источник в режиме «all».
+  /// Оптимальный баланс: достаточно быстро для хорошего UX,
+  /// но и достаточно, чтобы медленный, но рабочий источник успел ответить.
+  static const _sourceTimeout = Duration(seconds: 5);
+
+  /// Поиск во всех зарегистрированных источниках сразу.
+  ///
+  /// Результаты показываются сразу по мере поступления — как только хотя
+  /// бы один источник ответил, UI получает первую порцию. Медленные или
+  /// недоступные источники (например, SoundCloud без VPN) тихо
+  /// пропускаются по таймауту [_sourceTimeout].
+  ///
+  /// Финальная выдача объединяется round-robin: по одному треку из
+  /// каждого источника по кругу — так список не забит одним источником.
   Future<void> _searchAll(String query, bool Function() isStale) async {
     final sources = SourceRegistry.instance.searchable;
-    // Запускаем поиск во всех источниках параллельно. Падение одного не
-    // должно ронять остальные — ошибки гасим в пустой список.
-    final lists = await Future.wait(
-      sources.map((s) async {
-        try {
-          return await s.search(query);
-        } catch (_) {
-          return <Track>[];
-        }
+    if (sources.isEmpty) {
+      state = state.copyWith(results: const [], loading: false);
+      return;
+    }
+
+    // Запускаем поиск в каждом источнике параллельно.
+    // Каждый источник обёрнут в таймаут — если не ответил за 5 сек,
+    // возвращается пустой список (тихо, без ошибки в UI).
+    final futures = sources.map((s) async {
+      try {
+        return await s.search(query).timeout(_sourceTimeout);
+      } catch (_) {
+        return <Track>[];
+      }
+    }).toList();
+
+    // Слушаем результаты по мере готовности через Stream.
+    // Каждый future оборачиваем в пару (index, result), чтобы знать
+    // какой источник ответил.
+    final resultStream = Stream.fromFutures(
+      List.generate(futures.length, (i) async {
+        final list = await futures[i];
+        return (i, list);
       }),
     );
-    if (isStale()) return;
 
-    final merged = _interleave(lists);
-    state = state.copyWith(results: merged, loading: false);
+    final completed = List<bool>.filled(futures.length, false);
+    final results = List<List<Track>>.filled(futures.length, const []);
 
-    // Обогащаем обложками те источники, что это поддерживают
-    // (Muzmo — всегда, SoundCloud — только треки без обложки).
-    for (final source in sources) {
-      _enrichArtworks(source, merged, query);
+    // Первый ответивший показываем сразу — сбрасываем loading.
+    var firstResultShown = false;
+
+    await for (final (index, list) in resultStream) {
+      if (isStale()) return;
+
+      completed[index] = true;
+      results[index] = list;
+
+      // Round-robin слияние уже полученных результатов.
+      final merged = _interleave(
+        List.generate(results.length, (i) => completed[i] ? results[i] : const []),
+      );
+
+      if (!firstResultShown) {
+        firstResultShown = true;
+        // Первый источник ответил — показываем результаты и убираем
+        // индикатор загрузки. Остальные придут позже и доклеятся.
+        state = state.copyWith(results: merged, loading: false);
+      } else {
+        // Последующие источники доклеиваются к уже показанным.
+        state = state.copyWith(results: merged);
+      }
+
+      // Запускаем обогащение обложками для треков этого источника.
+      _enrichArtworks(sources[index], list, query);
+    }
+
+    // Все источники либо ответили, либо упали по таймауту.
+    // Если ни один не ответил до сих пор (все упали мгновенно) —
+    // сбрасываем loading и показываем пустой список.
+    if (!firstResultShown && !isStale()) {
+      state = state.copyWith(results: const [], loading: false);
     }
   }
 

@@ -8,7 +8,7 @@ import 'package:just_audio/just_audio.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'track_source.dart';
-import 'youtube_cache.dart';
+import '../core/youtube_cache.dart';
 
 /// Источник треков на основе публичного веб-API SoundCloud.
 ///
@@ -506,8 +506,20 @@ class SoundCloudSource implements TrackSource {
 
   @override
   Future<void> prefetch(Track track) async {
-    // Прогреваем client_id, чтобы первый play() не ждал извлечения.
+    // Прогреваем client_id
     await _ensureClientId();
+    
+    // Если у трека уже есть transcodingUrl — резолвим финальный CDN-URL
+    // и начнём фоновое скачивание через LockCachingAudioSource
+    final transcodingUrl = track.extra['transcodingUrl'] as String?;
+    if (transcodingUrl != null && transcodingUrl.isNotEmpty) {
+      try {
+        // Резолвим финальный URL (это самая долгая операция)
+        await _resolveProgressiveUrl(transcodingUrl);
+      } catch (_) {
+        // best-effort, не критично
+      }
+    }
   }
 
   @override

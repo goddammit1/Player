@@ -4,81 +4,71 @@ import 'dart:math';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener;
 
 import '../models/track.dart';
 import '../sources/source_registry.dart';
-import '../sources/youtube_cache.dart';
+import 'youtube_cache.dart';
 
 // print -> adb logcat (tag: flutter)
 // ignore: avoid_print
 void _log(String msg) => print('[PlayerService] $msg');
 
 class PlayerService extends BaseAudioHandler with SeekHandler {
-  final AudioPlayer _player = AudioPlayer(
-    audioLoadConfiguration: const AudioLoadConfiguration(
-      androidLoadControl: AndroidLoadControl(
-        // Поскольку весь трек кэшируется в локальный файл
-        // (LockCachingAudioSource), огромный rolling-буфер в RAM
-        // лишний — он только давит на GC при длинной очереди.
-        // 15..30 секунд более чем достаточно для seek/rebuffer,
-        // дальше данные читаются с диска мгновенно.
-        minBufferDuration: Duration(seconds: 15),
-        maxBufferDuration: Duration(seconds: 30),
-        bufferForPlaybackDuration: Duration(milliseconds: 1500),
-        bufferForPlaybackAfterRebufferDuration: Duration(milliseconds: 800),
-      ),
-    ),
-  );
+  // ===== VOLUME & GAIN =====
 
+  /// Gain в децибелах. 0 dB = без изменений.
+  double _gainDb = 0.0;
+  double get gainDb => _gainDb;
+
+  late final AndroidLoudnessEnhancer _loudnessEnhancer;
+  late final AudioPlayer _player;
 
   final List<Track> _queue = [];
   int _currentIndex = -1;
 
-  // ===== Очередь / repeat — состояние и стримы =====
-
-  /// Режим повтора (off / all / one). Вынесен из UI в сервис, чтобы
-  /// окно очереди и нижняя панель показывали единое состояние.
   final BehaviorSubject<LoopMode> _loopMode =
       BehaviorSubject<LoopMode>.seeded(LoopMode.off);
   Stream<LoopMode> get loopModeStream => _loopMode.stream;
   LoopMode get loopMode => _loopMode.value;
 
-  /// Индекс текущего трека в очереди (-1 если ничего не играет).
   final BehaviorSubject<int> _currentIndexSubject =
       BehaviorSubject<int>.seeded(-1);
   Stream<int> get currentIndexStream => _currentIndexSubject.stream;
   int get currentIndex => _currentIndex;
 
-  // Поколение текущей загрузки. Старые завершаются молча.
   int _loadGeneration = 0;
-
-  // Идёт ли сейчас загрузка нового трека (resolve URL + setAudioSource).
-  // Пока true — пользовательский play() блокируется, чтобы не воскрешать старый.
   bool _isLoading = false;
   bool get isLoading => _isLoading;
 
   PlayerService() {
-    // Любая ошибка от ExoPlayer / локального прокси just_audio попадёт
-    // сюда (например, обрыв сети при первичной загрузке трека). Без
-    // onError эти ошибки становятся Unhandled Exception и роняют
-    // изолят. Просто логируем — пользовательский интерфейс сам
-    // отобразит "buffering" через playbackState.
+    _loudnessEnhancer = AndroidLoudnessEnhancer();
+
+    _player = AudioPlayer(
+      audioLoadConfiguration: const AudioLoadConfiguration(
+        androidLoadControl: AndroidLoadControl(
+          minBufferDuration: Duration(seconds: 15),
+          maxBufferDuration: Duration(seconds: 30),
+          bufferForPlaybackDuration: Duration(milliseconds: 1500),
+          bufferForPlaybackAfterRebufferDuration: Duration(milliseconds: 800),
+        ),
+      ),
+      audioPipeline: AudioPipeline(
+        androidAudioEffects: [_loudnessEnhancer],
+      ),
+    );
+
     _player.playbackEventStream.map(_transformEvent).listen(
       playbackState.add,
       onError: (Object e, StackTrace st) {
         _log('playbackEventStream error: $e');
       },
     );
+
     _player.playerStateStream.listen(
       (state) {
-        // Авто-переход на следующий трек только при штатном завершении.
-        // На processingState=completed с position < duration это ошибка
-        // (Source error), и skipToNext только усугубит ситуацию.
         if (state.processingState == ProcessingState.completed) {
-          // Если уже идёт загрузка следующего трека (пользователь нажал
-          // next/skip вручную) — не дублируем переход. Без этой проверки
-          // «completed» от старого источника вызывает повторный skipToNext
-          // и перескакивает через трек.
           if (_isLoading) {
             _log('completed ignored (already loading gen=$_loadGeneration)');
             return;
@@ -97,19 +87,34 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     );
   }
 
+  // ===== VOLUME & GAIN METHODS =====
+
+  Future<void> setVolume(double volume) async {
+    await _player.setVolume(volume.clamp(0.0, 1.0));
+  }
+
+  Future<void> setGain(double db) async {
+    _gainDb = db;
+    try {
+      await _loudnessEnhancer.setEnabled(true);
+      await _loudnessEnhancer.setTargetGain(db);
+      _log('setGain($db dB) OK');
+    } catch (e) {
+      _log('setGain FAILED: $e');
+    }
+  }
+
+
+  Future<void> setVolumeAndGain(double volume, double gainDb) async {
+    await setVolume(volume);
+    await setGain(gainDb);
+  }
+
   // ===== Авто-переход при завершении трека =====
 
-  /// Вызывается, когда текущий трек штатно доиграл до конца.
-  /// Учитывает [LoopMode]:
-  /// - [LoopMode.one] — повторяет текущий трек;
-  /// - [LoopMode.all] — переходит к следующему, а в конце очереди —
-  ///   к первому;
-  /// - [LoopMode.off] — переходит к следующему, в конце — стоп.
   void _onTrackFinished() {
     switch (_loopMode.value) {
       case LoopMode.one:
-        // just_audio сам повторяет при setLoopMode(one), но на некоторых
-        // версиях/устройствах completed всё равно прилетает. Подстраховка:
         _log('LoopMode.one → replay index=$_currentIndex');
         _playIndex(_currentIndex);
       case LoopMode.all:
@@ -133,9 +138,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== Queue =====
 
-
-  /// Удаляет трек из очереди по MediaItem.
-  /// Обновляет [_currentIndex], если удалённый трек был до текущего.
   @override
   Future<void> removeQueueItem(MediaItem mediaItem) async {
     final index = _queue.indexWhere((t) => t.globalId == mediaItem.id);
@@ -149,9 +151,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       _currentIndex = -1;
       _currentIndexSubject.add(-1);
       await _player.stop();
-      // Не обнуляем mediaItem — пусть UI показывает "ничего не играет"
-      // или используй: mediaItem.add(MediaItem(id: '', title: '', artist: ''));
-      // если это работает в твоём BaseAudioHandler
     }
 
     _currentIndexSubject.add(_currentIndex);
@@ -176,7 +175,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     queue.add(_queue.map(_toMediaItem).toList());
   }
 
-
   Future<void> setQueue(List<Track> tracks, {int startIndex = 0}) async {
     _queue
       ..clear()
@@ -192,13 +190,10 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     queue.add([...queue.value, _toMediaItem(track)]);
   }
 
-  /// Вставляет трек в очередь сразу после текущего играющего.
-  /// Если ничего не играет — добавляет в начало.
   Future<void> insertToQueue(Track track) async {
     final insertIndex = _currentIndex >= 0 ? _currentIndex + 1 : 0;
     _queue.insert(insertIndex, track);
 
-    // Корректируем currentIndex если вставили до него
     if (insertIndex <= _currentIndex) {
       _currentIndex += 1;
       _currentIndexSubject.add(_currentIndex);
@@ -221,26 +216,15 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
     mediaItem.add(_toMediaItem(track));
 
-    // Детерминированно останавливаем плеер ПЕРЕД резолвом нового
-    // источника. await гарантирует, что ExoPlayer закрыл предыдущий
-    // LockCachingAudioSource и его прокси-сервер, HTTP-клиент, буферы
-    // полностью освобождены. Без этого при смене источника (например,
-    // YouTube → Muzmo) старый декодер может не отпустить ресурсы
-    // вовремя, и новый setAudioSource молча фейлится.
     try {
       await _player.stop();
-    } catch (_) {
-      // best-effort; stop из idle состояния безопасен
-    }
+    } catch (_) {}
 
     try {
       final source = SourceRegistry.instance.require(track.sourceId);
       _log('[$myGen] Resolving audio source...');
       final sw = Stopwatch()..start();
 
-      // Источник сам решает, как отдавать аудио. Для YouTube это
-      // LockCachingAudioSource поверх локального файла — скачивает в
-      // фоне и обслуживает seek-запросы из диска.
       final audioSource = await source.createAudioSource(track);
 
       if (myGen != _loadGeneration) {
@@ -257,14 +241,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       }
 
       _isLoading = false;
-      _consecutiveSkips = 0; // Успешное воспроизведение — сброс счётчика
+      _consecutiveSkips = 0;
       _log('[$myGen] setAudioSource OK (${sw.elapsedMilliseconds} ms total),'
           ' starting playback');
       await _player.play();
 
-      // Прогрев следующего трека — с задержкой, чтобы не конкурировать
-      // за сеть/CPU с буферизацией текущего. К моменту реального
-      // skipToNext этот prefetch уже отработает.
+      _warmArtwork(_currentIndex);
       _schedulePrefetchNext(myGen);
     } catch (e, st) {
       if (myGen != _loadGeneration) return;
@@ -272,32 +254,19 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       _log('[$myGen] PLAYBACK ERROR: $e');
       _log('Stack: $st');
 
-      // Одна попытка retry: эвикнуть кэш-файл (может быть битым от
-      // предыдущей прерванной загрузки) и переразрешить URL. Это
-      // покрывает случай, когда кэш-файл остался от предыдущего
-      // LockCachingAudioSource в незавершённом состоянии (.part →
-      // rename не произошёл) или URL протух между prefetch и play.
       if (!isRetry) {
         _log('[$myGen] Evicting cache and retrying...');
         final cacheId = _cacheIdForTrack(track);
         await YoutubeCache.instance.evict(cacheId);
-        // Поколение не инкрементируем — retry считается частью того же
-        // логического перехода, чтобы не ломать generation-guard.
-        _loadGeneration = myGen - 1; // откатываем, _playIndex инкрементирует
+        _loadGeneration = myGen - 1;
         await _playIndex(index, isRetry: true);
       } else {
-        // Retry тоже не помог — трек недоступен. Пропускаем к
-        // следующему, чтобы плеер не зависал на битом треке.
         _log('[$myGen] Track unavailable after retry, skipping...');
         _skipAfterError(index);
       }
     }
   }
 
-  /// Автопропуск при ошибке: переходим к следующему доступному треку.
-  /// Если следующего нет — пытаемся вернуть предыдущий. Защита от
-  /// бесконечного цикла: не пропускаем больше [_maxConsecutiveSkips]
-  /// треков подряд.
   int _consecutiveSkips = 0;
   static const int _maxConsecutiveSkips = 5;
 
@@ -314,7 +283,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       _log('Skipping to next after error: index=$next');
       _playIndex(next);
     } else if (failedIndex > 0) {
-      // Конец очереди — возвращаемся к предыдущему (который работал).
       _log('End of queue after error, going back to index=${failedIndex - 1}');
       _playIndex(failedIndex - 1);
     } else {
@@ -323,8 +291,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  /// Возвращает ключ кэша для данного трека (такой же, как передаётся
-  /// в [YoutubeCache.fileFor] в каждом источнике).
   String _cacheIdForTrack(Track track) {
     switch (track.sourceId) {
       case 'muzmo':
@@ -332,16 +298,11 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       case 'soundcloud':
         return 'soundcloud_${track.id}';
       default:
-        return track.id; // YouTube использует просто videoId
+        return track.id;
     }
   }
 
-  /// Отложенный таймер прогрева следующего трека.
   Timer? _prefetchTimer;
-
-  /// Best-effort предзагрузка манифеста следующего трека. Запускается
-  /// с задержкой [_prefetchDelay], чтобы не конкурировать с заливкой
-  /// текущего трека в буфер ExoPlayer'а на первых секундах.
   static const Duration _prefetchDelay = Duration(seconds: 5);
 
   void _schedulePrefetchNext(int gen) {
@@ -358,9 +319,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
           if (gen == _loadGeneration) {
             _log('[$gen] prefetched next: "${next.title}"');
           }
-        } catch (_) {
-          // молча
-        }
+        } catch (_) {}
       }());
     });
   }
@@ -376,6 +335,25 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     await _player.play();
   }
 
+  void _warmArtwork(int index) {
+    if (index >= 0 && index < _queue.length) {
+      final url = _queue[index].artworkUrl;
+      if (url != null) _precacheImage(url);
+    }
+    final next = index + 1;
+    if (next < _queue.length) {
+      final url = _queue[next].artworkUrl;
+      if (url != null) _precacheImage(url);
+    }
+  }
+
+  void _precacheImage(String url) {
+    final provider = CachedNetworkImageProvider(url);
+    provider.resolve(ImageConfiguration.empty).addListener(
+      ImageStreamListener((_, _) {}),
+    );
+  }
+
   @override
   Future<void> pause() => _player.pause();
 
@@ -387,9 +365,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> seek(Duration position) async {
-    // LockCachingAudioSource обслуживает любые позиции из локального
-    // файла, поэтому seek работает в обе стороны мгновенно. Просто
-    // оборачиваем в try/catch на случай редких ошибок прокси.
     try {
       await _player.seek(position);
     } catch (e) {
@@ -420,9 +395,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== Reorder / shuffle / repeat =====
 
-  /// Перемещает трек в очереди с позиции [oldIndex] на [newIndex].
-  /// Корректирует [_currentIndex], чтобы текущий играющий трек не
-  /// «потерялся». Не прерывает воспроизведение.
   Future<void> reorderQueueItem(int oldIndex, int newIndex) async {
     if (oldIndex < 0 || oldIndex >= _queue.length) return;
     if (newIndex < 0 || newIndex >= _queue.length) return;
@@ -431,7 +403,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     final track = _queue.removeAt(oldIndex);
     _queue.insert(newIndex, track);
 
-    // Пересчёт индекса текущего трека.
     if (oldIndex == _currentIndex) {
       _currentIndex = newIndex;
     } else if (oldIndex < _currentIndex && newIndex >= _currentIndex) {
@@ -444,22 +415,18 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     queue.add(_queue.map(_toMediaItem).toList());
   }
 
-  /// Разово перемешивает очередь. Текущий играющий трек остаётся на
-  /// своём месте (становится первым), остальные тасуются. Это не режим —
-  /// просто действие над очередью, поэтому никакого состояния не хранит.
   Future<void> shuffleQueue() async {
     if (_queue.length < 2) return;
 
     final current = _currentIndex >= 0 ? _queue[_currentIndex] : null;
     final rng = Random();
-    // Fisher–Yates.
     for (var i = _queue.length - 1; i > 0; i--) {
       final j = rng.nextInt(i + 1);
       final tmp = _queue[i];
       _queue[i] = _queue[j];
       _queue[j] = tmp;
     }
-    // Возвращаем текущий трек в начало.
+
     if (current != null) {
       final idx = _queue.indexOf(current);
       if (idx > 0) {
@@ -472,13 +439,11 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     queue.add(_queue.map(_toMediaItem).toList());
   }
 
-  /// Устанавливает режим повтора и пробрасывает его в just_audio.
   Future<void> setLoopMode(LoopMode mode) async {
     _loopMode.add(mode);
     await _player.setLoopMode(mode);
   }
 
-  /// Циклически переключает режим повтора: off → all → one → off.
   Future<void> cycleLoopMode() {
     final next = switch (_loopMode.value) {
       LoopMode.off => LoopMode.all,

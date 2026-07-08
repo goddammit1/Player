@@ -10,7 +10,7 @@ import 'package:just_audio/just_audio.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'track_source.dart';
-import 'youtube_cache.dart';
+import '../core/youtube_cache.dart';
 
 /// Источник треков на основе сайта rmr.muzmo.cc.
 ///
@@ -443,7 +443,14 @@ class MuzmoSource implements TrackSource {
 
   @override
   Future<void> prefetch(Track track) async {
-    // У muzmo URL уже есть в extra, ничего не нужно резолвить заранее.
+    // У muzmo streamUrl уже есть в extra — ничего резолвить не надо.
+    // Но можем прогреть сессию (куку sid), если ещё не делали.
+    await _ensureSession();
+    
+    // Опционально: начинаем фоновое скачивание кэш-файла
+    // LockCachingAudioSource сам начнёт качать при createAudioSource,
+    // но если хотим предзагрузку — нужен полный createAudioSource.
+    // Пока ограничимся прогревом сессии.
   }
 
   @override

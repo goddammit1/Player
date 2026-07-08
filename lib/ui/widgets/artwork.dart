@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
 
+
+
 class Artwork extends ConsumerWidget {
   const Artwork({
     super.key,
