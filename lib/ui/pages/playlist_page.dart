@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,6 +14,14 @@ import '../../core/artwork_helper.dart';
 
 /// Экран отдельного плейлиста: большая обложка-мозаика, имя, кнопка
 /// Play, список треков. Используется и для пустого, и для заполненного.
+
+/// Провайдер текущего globalId трека из плеера.
+/// Сравниваем с track.globalId чтобы показать оверлей «сейчас играет».
+final _currentTrackIdProvider = StreamProvider<String?>((ref) {
+  final player = ref.watch(playerServiceProvider);
+  return player.mediaItem.map((item) => item?.id);
+});
+
 class PlaylistPage extends ConsumerWidget {
   const PlaylistPage({super.key, required this.playlistId});
   final String playlistId;
@@ -38,9 +48,10 @@ class PlaylistPage extends ConsumerWidget {
             backgroundColor: colors.background,
             surfaceTintColor: Colors.transparent,
             elevation: 0,
-            leading: IconButton(
-              icon: Icon(Icons.chevron_left_rounded, size: 28, color: colors.textPrimary),
+            leading: _CircleButton(
+              icon: Icons.chevron_left_rounded,
               onPressed: () => Navigator.of(context).pop(),
+              colors: colors,
             ),
           ),
           body: Center(
@@ -57,6 +68,10 @@ class PlaylistPage extends ConsumerWidget {
     final player = ref.read(playerServiceProvider);
     final repo = ref.read(playlistRepositoryProvider);
 
+    final playableTracks = p.tracks
+        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
+        .toList();
+
     return _PageAnimator(
       child: Scaffold(
         backgroundColor: colors.background,
@@ -67,94 +82,154 @@ class PlaylistPage extends ConsumerWidget {
               child: CustomScrollView(
                 physics: const BouncingScrollPhysics(),
                 slivers: [
+                  // ── Static TopBar — unified approach, full control ──
                   SliverAppBar(
                     pinned: true,
+                    floating: false,
+                    snap: false,
                     backgroundColor: colors.background,
                     surfaceTintColor: Colors.transparent,
                     elevation: 0,
-                    leading: IconButton(
-                      icon: Icon(Icons.chevron_left_rounded, size: 28, color: colors.textPrimary),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                    actions: [
-                      IconButton(
-                        icon: Icon(Icons.more_horiz_rounded, color: colors.textPrimary),
-                        onPressed: () => _showPlaylistMenu(context, ref, repo, p),
+                    toolbarHeight: 88,
+                    automaticallyImplyLeading: false,
+                    title: Padding(
+                      padding: const EdgeInsets.only(top: 16, bottom: 12),
+                      child: Row(
+                        children: [
+                          _CircleButton(
+                            icon: Icons.chevron_left_rounded,
+                            onPressed: () => Navigator.of(context).pop(),
+                            colors: colors,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              p.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: colors.textPrimary,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          _CircleButton(
+                            icon: Icons.more_horiz_rounded,
+                            onPressed: () => _showPlaylistMenu(context, ref, repo, p),
+                            colors: colors,
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 4),
-                    ],
+                    ),
                   ),
+
+                  // ── Artwork with track count badge ──
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-                      child: Column(
-                        children: [
-                          AspectRatio(
-                            aspectRatio: 1,
-                            child: LayoutBuilder(
-                              builder: (_, c) => ArtworkMosaic(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                      child: AspectRatio(
+                        aspectRatio: 1,
+                        child: LayoutBuilder(
+                          builder: (_, c) => Stack(
+                            children: [
+                              ArtworkMosaic(
                                 urls: p.coverThumbnails,
                                 size: c.maxWidth,
                                 borderRadius: 24,
                               ),
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          Text(
-                            p.name,
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: colors.textPrimary,
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            '${p.tracks.length} tracks',
-                            style: TextStyle(
-                              color: colors.textSecondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          const SizedBox(height: 18),
-                          SizedBox(
-                            height: 52,
-                            child: ElevatedButton.icon(
-                              icon: Icon(Icons.play_arrow_rounded, color: Colors.black),
-                              label: const Text(
-                                'Play',
-                                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: colors.textPrimary,
-                                foregroundColor: Colors.black,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(26),
+                              // Track count badge — bottom right
+                              if (p.tracks.isNotEmpty)
+                                Positioned(
+                                  right: 12,
+                                  bottom: 12,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withValues(alpha: 0.6),
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    child: Text(
+                                      '${p.tracks.length}',
+                                      style: TextStyle(
+                                        color: colors.textPrimary,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                                minimumSize: const Size(160, 52),
-                                elevation: 0,
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // ── Play / Shuffle buttons ──
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      child: Row(
+                        children: [
+                          // Play/Pause button
+                          Expanded(
+                            child: _PlayPauseButton(
+                              playableTracks: playableTracks,
+                              colors: colors,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          // Shuffle button
+                          Expanded(
+                            child: SizedBox(
+                              height: 60,
+                              child: ElevatedButton.icon(
+                                icon: Icon(
+                                  Icons.shuffle_rounded,
+                                  color: colors.textPrimary,
+                                  size: 22,
+                                ),
+                                label: Text(
+                                  'Shuffle',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 16,
+                                    letterSpacing: 0.2,
+                                    color: colors.textPrimary,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: colors.elevated,
+                                  foregroundColor: colors.textPrimary,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(30),
+                                  ),
+                                  elevation: 0,
+                                  padding: EdgeInsets.zero,
+                                ),
+                                onPressed: playableTracks.isEmpty
+                                    ? null
+                                    : () {
+                                        final shuffled = [...playableTracks];
+                                        shuffled.shuffle(math.Random());
+                                        player.setQueue(shuffled);
+                                      },
                               ),
-                              onPressed: p.tracks.isEmpty
-                                  ? null
-                                  : () {
-                                      final playable = p.tracks
-                                          .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
-                                          .toList();
-                                      if (playable.isNotEmpty) {
-                                        player.setQueue(playable);
-                                      }
-                                    },
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
+
+                  // ── Track list or empty state ──
                   if (p.tracks.isEmpty)
                     SliverToBoxAdapter(
                       child: Padding(
@@ -174,7 +249,7 @@ class PlaylistPage extends ConsumerWidget {
                     )
                   else
                     SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(8, 0, 8, 120),
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
                       sliver: SliverList.builder(
                         itemCount: p.tracks.length,
                         itemBuilder: (context, i) {
@@ -194,35 +269,10 @@ class PlaylistPage extends ConsumerWidget {
                             ),
                             onDismissed: (_) => repo.removeTrack(p.id, t.globalId),
                             child: ListTile(
-                              leading: Stack(
-                                children: [
-                                  Opacity(
-                                    opacity: isDisabled ? 0.4 : 1.0,
-                                    child: Artwork(
-                                      url: t.artworkUrl,
-                                      size: 48,
-                                      borderRadius: 8,
-                                      aspectRatio: artAspectRatio(t),
-                                    ),
-                                  ),
-                                  if (isDisabled)
-                                    Positioned(
-                                      right: 0,
-                                      bottom: 0,
-                                      child: Container(
-                                        padding: const EdgeInsets.all(2),
-                                        decoration: const BoxDecoration(
-                                          color: Colors.orange,
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.warning_rounded,
-                                          size: 12,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ),
-                                ],
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 0),
+                              leading: _TrackArtworkWithOverlay(
+                                track: t,
+                                isDisabled: isDisabled,
                               ),
                               title: Text(
                                 t.title,
@@ -274,13 +324,10 @@ class PlaylistPage extends ConsumerWidget {
                                   ? () => _showReplacementSheet(
                                         context, ref, p, t)
                                   : () {
-                                      final playable = p.tracks
-                                          .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
-                                          .toList();
-                                      final idx = playable.indexWhere(
+                                      final idx = playableTracks.indexWhere(
                                           (pt) => pt.globalId == t.globalId);
                                       player.setQueue(
-                                        playable,
+                                        playableTracks,
                                         startIndex: idx >= 0 ? idx : 0,
                                       );
                                     },
@@ -494,9 +541,261 @@ class PlaylistPage extends ConsumerWidget {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  CIRCLE BUTTON (60x60, 100% rounded)
+// ═══════════════════════════════════════════════════════════════════
+
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onPressed,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressed;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 60,
+      height: 60,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(30),
+          child: Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: colors.elevated,
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              icon,
+              size: 28,
+              color: colors.textPrimary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// ═══════════════════════════════════════════════════════════════════
 ///  SHARED ANIMATOR (как в HomePage)
 /// ═══════════════════════════════════════════════════════════════════
+
+/// ═══════════════════════════════════════════════════════════════════
+///  TRACK ARTWORK WITH NOW-PLAYING OVERLAY
+/// ═══════════════════════════════════════════════════════════════════
+
+class _TrackArtworkWithOverlay extends ConsumerWidget {
+  const _TrackArtworkWithOverlay({
+    required this.track,
+    required this.isDisabled,
+  });
+
+  final Track track;
+  final bool isDisabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+    final currentIdAsync = ref.watch(_currentTrackIdProvider);
+    final currentId = currentIdAsync.value;
+    final isPlaying = currentId == track.globalId;
+
+    return Stack(
+      children: [
+        Opacity(
+          opacity: isDisabled ? 0.4 : 1.0,
+          child: Artwork(
+            url: track.artworkUrl,
+            size: 48,
+            borderRadius: 8,
+            aspectRatio: artAspectRatio(track),
+          ),
+        ),
+        // Now playing animated wave overlay
+        if (isPlaying)
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              alignment: Alignment.center,
+              child: _WaveBars(color: colors.elevatedHi),
+            ),
+          ),
+        if (isDisabled)
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.all(2),
+              decoration: const BoxDecoration(
+                color: Colors.orange,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.warning_rounded,
+                size: 12,
+                color: Colors.white,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// ═══════════════════════════════════════════════════════════════════
+///  ANIMATED WAVE BARS — looping equalizer
+/// ═══════════════════════════════════════════════════════════════════
+
+class _WaveBars extends StatefulWidget {
+  const _WaveBars({required this.color});
+  final Color color;
+
+  @override
+  State<_WaveBars> createState() => _WaveBarsState();
+}
+
+class _WaveBarsState extends State<_WaveBars>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  static const _barCount = 5;
+  static const _barWidth = 3.0;
+  static const _barGap = 2.0;
+  static const _maxHeight = 20.0;
+  static const _minHeight = 4.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        final t = _ctrl.value;
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: List.generate(_barCount, (i) {
+            // Each bar has its own phase offset for organic wave effect
+            final phase = (i / _barCount) * 2 * math.pi;
+            // Double sine wave for more complex motion
+            final wave = math.sin(t * 2 * math.pi + phase) * 0.5 +
+                         math.sin(t * 4 * math.pi + phase * 1.5) * 0.3;
+            final height = _minHeight +
+                (_maxHeight - _minHeight) *
+                ((wave + 0.8) / 1.6).clamp(0.0, 1.0);
+
+            return Container(
+              width: _barWidth,
+              height: height,
+              margin: EdgeInsets.only(
+                right: i < _barCount - 1 ? _barGap : 0,
+              ),
+              decoration: BoxDecoration(
+                color: widget.color,
+                borderRadius: BorderRadius.circular(_barWidth / 2),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
+/// ═══════════════════════════════════════════════════════════════════
+///  PLAY / PAUSE BUTTON — fast, reactive via Riverpod streams
+/// ═══════════════════════════════════════════════════════════════════
+
+class _PlayPauseButton extends ConsumerWidget {
+  const _PlayPauseButton({
+    required this.playableTracks,
+    required this.colors,
+  });
+
+  final List<Track> playableTracks;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final player = ref.watch(playerServiceProvider);
+    final isPlaying = ref.watch(_isPlayingProvider).value ?? false;
+    final currentId = ref.watch(_currentTrackIdProvider).value;
+
+    final isThisPlaylist = currentId != null &&
+        playableTracks.any((t) => t.globalId == currentId);
+    final showPause = isPlaying && isThisPlaylist;
+
+    return SizedBox(
+      height: 60,
+      child: ElevatedButton.icon(
+        icon: Icon(
+          showPause ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          color: colors.textPrimary,
+          size: 26,
+        ),
+        label: Text(
+          showPause ? 'Pause' : 'Play',
+          style: const TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 16,
+            letterSpacing: 0.2,
+          ),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: colors.elevatedHi,
+          foregroundColor: colors.textPrimary,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(30),
+          ),
+          elevation: 0,
+          padding: EdgeInsets.zero,
+        ),
+        onPressed: playableTracks.isEmpty
+            ? null
+            : () {
+                if (showPause) {
+                  player.pause();
+                } else {
+                  player.setQueue(playableTracks);
+                }
+              },
+      ),
+    );
+  }
+}
+
+/// StreamProvider для isPlaying — мгновенные обновления
+final _isPlayingProvider = StreamProvider<bool>((ref) {
+  final player = ref.watch(playerServiceProvider);
+  return player.playingStream;
+});
 
 class _PageAnimator extends StatefulWidget {
   const _PageAnimator({required this.child});
