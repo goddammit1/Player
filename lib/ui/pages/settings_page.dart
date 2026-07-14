@@ -45,6 +45,7 @@ class SettingsPage extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(vertical: 8),
           children: [
             _AppearanceSection(colors: colors),
+            _SearchViewSection(colors: colors),
             _HapticsSection(colors: colors),
             _CacheTile(colors: colors),
             _AboutSection(repo: _repo, colors: colors),
@@ -230,7 +231,151 @@ class _ThemeOption extends StatelessWidget {
 }
 
 // =====================================================================
-//  HAPTICS SECTION — NEW
+//  SEARCH VIEW SECTION — NEW
+// =====================================================================
+
+class _SearchViewSection extends ConsumerWidget {
+  const _SearchViewSection({required this.colors});
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final viewMode = ref.watch(searchViewModeProvider);
+
+    return _Section(
+      title: 'Search',
+      colors: colors,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'View mode',
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colors.elevated,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: colors.outline, width: 1),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _ViewModeOption(
+                        label: 'Grid',
+                        icon: Icons.grid_view_rounded,
+                        isSelected: viewMode == SearchViewMode.grid,
+                        onTap: () => ref
+                            .read(searchViewModeProvider.notifier)
+                            .setMode(SearchViewMode.grid),
+                        colors: colors,
+                      ),
+                    ),
+                    VerticalDivider(
+                      width: 1,
+                      thickness: 1,
+                      color: colors.outline,
+                      indent: 8,
+                      endIndent: 8,
+                    ),
+                    Expanded(
+                      child: _ViewModeOption(
+                        label: 'List',
+                        icon: Icons.view_list_rounded,
+                        isSelected: viewMode == SearchViewMode.list,
+                        onTap: () => ref
+                            .read(searchViewModeProvider.notifier)
+                            .setMode(SearchViewMode.list),
+                        colors: colors,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                viewMode == SearchViewMode.grid
+                    ? 'Large artwork tiles with color frames.'
+                    : 'Compact list with small artwork.',
+                style: TextStyle(
+                  color: colors.textTertiary,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+class _ViewModeOption extends StatelessWidget {
+  const _ViewModeOption({
+    required this.label,
+    required this.icon,
+    required this.isSelected,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool isSelected;
+  final VoidCallback onTap;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: isSelected
+                    ? colors.textPrimary
+                    : colors.textTertiary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: isSelected
+                      ? colors.textPrimary
+                      : colors.textTertiary,
+                  fontSize: 14,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =====================================================================
+//  HAPTICS SECTION
 // =====================================================================
 
 class _HapticsSection extends ConsumerWidget {
@@ -544,7 +689,7 @@ class _Section extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  SHARED ANIMATOR (как в HomePage)
+//  SHARED ANIMATOR
 // ═══════════════════════════════════════════════════════════════════
 
 class _PageAnimator extends StatefulWidget {

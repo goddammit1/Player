@@ -295,3 +295,34 @@ class VibrationNotifier extends StateNotifier<bool> {
 
   Future<void> toggle() => setEnabled(!state);
 }
+
+enum SearchViewMode { grid, list }
+
+final searchViewModeProvider = StateNotifierProvider<SearchViewModeNotifier, SearchViewMode>(
+  (ref) => SearchViewModeNotifier(),
+);
+
+class SearchViewModeNotifier extends StateNotifier<SearchViewMode> {
+  static const _key = 'search_view_mode';
+
+  SearchViewModeNotifier() : super(SearchViewMode.grid) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_key);
+    if (saved != null) {
+      state = SearchViewMode.values.firstWhere(
+        (e) => e.name == saved,
+        orElse: () => SearchViewMode.grid,
+      );
+    }
+  }
+
+  Future<void> setMode(SearchViewMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, mode.name);
+    state = mode;
+  }
+}
