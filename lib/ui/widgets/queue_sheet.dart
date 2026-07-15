@@ -760,7 +760,7 @@ class _QueueListState extends State<_QueueList> {
                 ),
                 itemCount: all.length,
                 proxyDecorator: _proxyDecorator,
-                onReorderItem: (oldIndex, newIndex) {
+                onReorder: (oldIndex, newIndex) {
                   if (newIndex > oldIndex) newIndex -= 1;
                   widget.player.reorderQueueItem(oldIndex, newIndex);
                 },
