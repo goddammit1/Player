@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
 import '../../core/youtube_cache.dart';
-import 'package:path_provider/path_provider.dart';
 
 /// Страница управления кэшем.
 ///
@@ -48,9 +47,8 @@ class _CachePageState extends ConsumerState<CachePage> {
   Future<void> _refreshStats() async {
     final audioDir = YoutubeCache.instance.audioDir;
     
-    // Стандартный путь CachedNetworkImage
-    final tmp = await getTemporaryDirectory();
-    final artworkDir = Directory('${tmp.path}/libCachedImageData');
+    // Инициализирует пути кэша, если их ещё никто не трогал.
+    final artworkDir = await YoutubeCache.instance.ensureArtworkDir();
 
     final audioStats = await _calcDirStats(audioDir);
     final artworkStats = await _calcDirStats(artworkDir);
@@ -127,16 +125,8 @@ class _CachePageState extends ConsumerState<CachePage> {
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
 
-    // Чистим дисковый кэш CachedNetworkImage
-    final tmp = await getTemporaryDirectory();
-    final dir = Directory('${tmp.path}/libCachedImageData');
-    if (await dir.exists()) {
-      await for (final entity in dir.list(followLinks: false)) {
-        if (entity is File) {
-          try { await entity.delete(); } catch (_) {}
-        }
-      }
-    }
+    // Дисковый кэш CachedNetworkImage чистит YoutubeCache.
+    await YoutubeCache.instance.clearArtworkCache();
 
     await _refreshStats();
     if (mounted) _showSnack('Artwork cache cleared');
@@ -223,7 +213,10 @@ class _CachePageState extends ConsumerState<CachePage> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: EdgeInsets.only(
+          top: 8,
+          bottom: 8 + MediaQuery.of(context).padding.bottom,
+        ),
         children: [
           // === AUDIO CACHE ===
           _buildSectionHeader('Audio Cache', colors),

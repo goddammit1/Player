@@ -60,8 +60,29 @@ class ArtworkProvider {
   Future<void> _ensurePrefs() {
     _prefsInit ??= () async {
       _prefs = await SharedPreferences.getInstance();
+      await _purgeLegacyPrefs();
     }();
     return _prefsInit!;
+  }
+
+  /// Разовая чистка ключей от старых версий кэша обложек (artwork_v1/v2).
+  /// Их формат устарел, а место в SharedPreferences они занимают навсегда.
+  static const List<String> _legacyPrefsPrefixes = ['artwork_v1', 'artwork_v2'];
+
+  Future<void> _purgeLegacyPrefs() async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    try {
+      final stale = prefs
+          .getKeys()
+          .where(
+            (k) => _legacyPrefsPrefixes.any((prefix) => k.startsWith(prefix)),
+          )
+          .toList();
+      for (final k in stale) {
+        await prefs.remove(k);
+      }
+    } catch (_) {}
   }
 
   bool _tokenStatusLogged = false;
@@ -116,10 +137,6 @@ class ArtworkProvider {
   /// нашли (или всё упало). Никогда не кидает исключений наружу.
   Future<String?> findArtwork(String artist, String title) async {
     final key = _key(artist, title);
-
-    // ВРЕМЕННЫЙ ЛОГ — удали после починки
-    debugPrint('[ArtworkProvider] findArtwork called: "$artist - $title"');
-    debugPrint('[ArtworkProvider] hasGeniusToken = $hasGeniusToken');
 
     // 1) RAM.
     final mem = _memCache[key];

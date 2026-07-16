@@ -57,3 +57,12 @@ app.*.map.json
 # Local artifacts from project scripts
 /rmr_*.html
 /rmr_*.txt
+
+# Local secrets (dart-define), see env.json.example
+/env.json
+
+# local junk
+.onlysq/
+analyze_result.txt
+muzmo_cookies.tmp
+muzmo_search.html

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:dio/dio.dart';
@@ -351,6 +352,8 @@ class _VolumeSlider extends ConsumerStatefulWidget {
 
 class _VolumeSliderState extends ConsumerState<_VolumeSlider>
     with SingleTickerProviderStateMixin {
+  /// Локальный override во время drag/tap — чтобы UI не «мерцал», пока
+  /// системная громкость и стрим догоняют жест.
   double? _dragFraction;
 
   late final AnimationController _thumbAnim = AnimationController(
@@ -365,106 +368,93 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
     super.dispose();
   }
 
+  /// UI-громкость 0.0..2.0 → фракция слайдера 0.0..1.0.
+  double _fractionFromUiVolume(double uiVol) =>
+      (uiVol / 2.0).clamp(0.0, 1.0);
+
+  void _apply(double fraction) {
+    widget.player.setUiVolume(fraction * 2.0);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return StreamBuilder<double>(
+      stream: widget.player.uiVolumeStream,
+      initialData: widget.player.uiVolume,
+      builder: (context, snap) {
+        final uiVol = snap.data ?? 1.0;
+        final fraction = _dragFraction ?? _fractionFromUiVolume(uiVol);
+        final pct = (fraction * 2 * 100).round();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Volume',
-              style: TextStyle(
-                color: widget.colors.textPrimary,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Volume',
+                  style: TextStyle(
+                    color: widget.colors.textPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  '$pct%',
+                  style: TextStyle(
+                    color: widget.colors.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
             ),
-            Text(
-              _labelText,
-              style: TextStyle(
-                color: widget.colors.textPrimary,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
+            const SizedBox(height: 12),
+            LayoutBuilder(
+              builder: (_, c) {
+                final width = c.maxWidth;
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onHorizontalDragStart: (_) => _thumbAnim.forward(),
+                  onHorizontalDragUpdate: (d) {
+                    final frac =
+                        (d.localPosition.dx / width).clamp(0.0, 1.0);
+                    setState(() => _dragFraction = frac);
+                    _apply(frac);
+                  },
+                  onHorizontalDragEnd: (_) {
+                    _thumbAnim.reverse();
+                    setState(() => _dragFraction = null);
+                  },
+                  onTapDown: (_) => _thumbAnim.forward(),
+                  onTapUp: (d) {
+                    _thumbAnim.reverse();
+                    final frac =
+                        (d.localPosition.dx / width).clamp(0.0, 1.0);
+                    _apply(frac);
+                    setState(() => _dragFraction = null);
+                  },
+                  onTapCancel: () {
+                    _thumbAnim.reverse();
+                    setState(() => _dragFraction = null);
+                  },
+                  child: CustomPaint(
+                    size: const Size(double.infinity, 40),
+                    painter: _VolumePainter(
+                      fraction: fraction,
+                      thumbAnim: _thumbAnim,
+                      colors: widget.colors,
+                    ),
+                  ),
+                );
+              },
             ),
           ],
-        ),
-        const SizedBox(height: 12),
-        LayoutBuilder(
-          builder: (_, c) {
-            final width = c.maxWidth;
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onHorizontalDragStart: (_) => _thumbAnim.forward(),
-              onHorizontalDragUpdate: (d) {
-                final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
-                setState(() => _dragFraction = frac);
-                _applyVolumeAndGain(frac);
-              },
-              onHorizontalDragEnd: (_) {
-                _thumbAnim.reverse();
-                setState(() => _dragFraction = null);
-              },
-              onTapDown: (_) => _thumbAnim.forward(),
-              onTapUp: (d) {
-                _thumbAnim.reverse();
-                final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
-                _applyVolumeAndGain(frac);
-                setState(() => _dragFraction = null);
-              },
-              onTapCancel: () {
-                _thumbAnim.reverse();
-                setState(() => _dragFraction = null);
-              },
-              child: CustomPaint(
-                size: const Size(double.infinity, 40),
-                painter: _VolumePainter(
-                  fraction: _currentFraction,
-                  thumbAnim: _thumbAnim,
-                  colors: widget.colors,
-                ),
-              ),
-            );
-          },
-        ),
-      ],
+        );
+      },
     );
-  }
-
-  /// Текущая позиция слайдера (0.0–1.0).
-  /// 0.0–0.5 → volume 0–100%, gain 0 dB
-  /// 0.5–1.0 → volume 100%, gain 0–+6 dB (UI: 100–200%)
-  double get _currentFraction {
-    if (_dragFraction != null) return _dragFraction!;
-    final vol = widget.player.rawPlayer.volume;
-    final gain = widget.player.gainDb;
-    if (gain > 0) {
-      // gain 0..6 dB maps to fraction 0.5..1.0
-      return (0.5 + gain / 12.0).clamp(0.5, 1.0);
-    }
-    return (vol * 0.5).clamp(0.0, 0.5);
-  }
-
-  /// Label: 0% → 100% → 200%
-  String get _labelText {
-    final pct = (_currentFraction * 2 * 100).round();
-    return '$pct%';
-  }
-
-  /// Применяет volume/gain.
-  /// fraction 0.0–0.5: volume 0–100%
-  /// fraction 0.5–1.0: volume 100%, gain 0–+6 dB
-  Future<void> _applyVolumeAndGain(double fraction) async {
-    if (fraction <= 0.5) {
-      final volume = (fraction * 2.0).clamp(0.0, 1.0);
-      await widget.player.setVolumeAndGain(volume, 0.0);
-    } else {
-      final gainDb = ((fraction - 0.5) * 2.0 * 6.0).clamp(0.0, 6.0);
-      await widget.player.setVolumeAndGain(1.0, gainDb);
-    }
   }
 }
 
@@ -632,17 +622,9 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     _checkCache();
   }
 
-  /// Формирует namespaced id так же, как в PlayerService._cacheIdForTrack
-  String _cacheId(Track track) {
-    switch (track.sourceId) {
-      case 'muzmo':
-        return 'muzmo_${track.id}';
-      case 'soundcloud':
-        return 'soundcloud_${track.id}';
-      default:
-        return track.id;
-    }
-  }
+  /// Единый cache id — та же логика, что у PlayerService (см. YoutubeCache).
+  String _cacheId(Track track) =>
+      YoutubeCache.cacheIdFor(sourceId: track.sourceId, trackId: track.id);
 
   Future<void> _checkCache() async {
     setState(() => _checking = true);
@@ -672,7 +654,11 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         extension: 'mp3',
       );
 
-      // Скачиваем напрямую в кэш-директорию
+      // Качаем во временный .part и переименовываем только после
+      // успешного завершения: оборванная загрузка больше не оставляет
+      // в кэше обрезанный файл, который выглядел бы как «Cached».
+      // Суффикс .part также защищает файл от LRU-эвиктора.
+      final partPath = '${cacheFile.path}.part';
       final dio = Dio(
         BaseOptions(
           connectTimeout: const Duration(seconds: 15),
@@ -680,18 +666,28 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         ),
       );
 
-      await dio.download(
-        url,
-        cacheFile.path,
-        onReceiveProgress: (received, total) {
-          if (total > 0 && mounted) {
-            setState(() => _progress = (received / total).clamp(0.0, 1.0));
-          }
-        },
-      );
+      try {
+        await dio.download(
+          url,
+          partPath,
+          onReceiveProgress: (received, total) {
+            if (total > 0 && mounted) {
+              setState(() => _progress = (received / total).clamp(0.0, 1.0));
+            }
+          },
+        );
+        await File(partPath).rename(cacheFile.path);
+      } catch (_) {
+        // Подчищаем недокачанный файл.
+        try {
+          final part = File(partPath);
+          if (await part.exists()) await part.delete();
+        } catch (_) {}
+        rethrow;
+      }
 
-      // Обновляем LRU, чтобы эвиктор не удалил свежескачанный трек
-      YoutubeCache.instance.touch(_cacheId(widget.track));
+      // Закрепляем: вручную скачанный трек не должен вычищаться LRU.
+      await YoutubeCache.instance.pin(_cacheId(widget.track));
 
       if (mounted) {
         setState(() {

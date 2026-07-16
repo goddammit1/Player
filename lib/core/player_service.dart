@@ -2,10 +2,16 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener;
+import 'package:flutter/services.dart'
+    show HapticFeedback, MethodCall, MethodChannel;
+import 'package:flutter/widgets.dart'
+    show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/track.dart';
 import '../sources/source_registry.dart';
@@ -15,12 +21,30 @@ import 'youtube_cache.dart';
 // ignore: avoid_print
 void _log(String msg) => print('[PlayerService] $msg');
 
-class PlayerService extends BaseAudioHandler with SeekHandler {
+class PlayerService extends BaseAudioHandler
+    with SeekHandler, WidgetsBindingObserver {
   // ===== VOLUME & GAIN =====
+
+  static const MethodChannel _volumeKeysChannel =
+      MethodChannel('player/volume_keys');
+  static const double _volumeStep = 0.05;
+  static const String _uiVolumeKey = 'ui_volume_v1';
+
+  /// Системная громкость на момент входа в плеер.
+  /// Восстанавливается при paused/detached.
+  double? _savedSysVol;
 
   /// Gain в децибелах. 0 dB = без изменений.
   double _gainDb = 0.0;
   double get gainDb => _gainDb;
+
+  /// UI-громкость 0.0..2.0.
+  /// 0.0..1.0 — синхронизирована с системной (STREAM_MUSIC).
+  /// 1.0..2.0 — системная = 1.0, поверх накладывается AndroidLoudnessEnhancer.
+  final BehaviorSubject<double> _uiVolume =
+      BehaviorSubject<double>.seeded(1.0);
+  Stream<double> get uiVolumeStream => _uiVolume.stream;
+  double get uiVolume => _uiVolume.value;
 
   late final AndroidLoudnessEnhancer _loudnessEnhancer;
   late final AudioPlayer _player;
@@ -85,6 +109,83 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
         _log('playerStateStream error: $e');
       },
     );
+
+    // Пока юзер в плеере, системная громкость всегда max, а наша
+    // 0..200% шкала — единственный источник истины:
+    // 0..1 — громкость движка, 1..2 — LoudnessEnhancer.
+    WidgetsBinding.instance.addObserver(this);
+    _volumeKeysChannel.setMethodCallHandler(_onVolumeKey);
+    unawaited(_initSystemVolume());
+  }
+
+  Future<void> _initSystemVolume() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getDouble(_uiVolumeKey);
+      await _enterPlayerVolumeMode();
+      await setUiVolume(saved ?? 1.0);
+    } catch (e) {
+      _log('system volume init failed: $e');
+    }
+  }
+
+  /// resumed — запоминаем системную громкость и выкручиваем STREAM_MUSIC
+  /// на max; paused/detached — возвращаем как было.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        unawaited(
+          _enterPlayerVolumeMode().then((_) => setUiVolume(uiVolume)),
+        );
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        unawaited(_restoreSystemVolume());
+      default:
+        break;
+    }
+  }
+
+  Future<void> _enterPlayerVolumeMode() async {
+    try {
+      _savedSysVol ??= await FlutterVolumeController.getVolume();
+      await FlutterVolumeController.setVolume(1.0);
+      FlutterVolumeController.updateShowSystemUI(false);
+    } catch (e) {
+      _log('_enterPlayerVolumeMode failed: $e');
+    }
+  }
+
+  Future<void> _restoreSystemVolume() async {
+    final v = _savedSysVol;
+    _savedSysVol = null;
+    if (v == null) return;
+    try {
+      await FlutterVolumeController.setVolume(v);
+    } catch (e) {
+      _log('_restoreSystemVolume failed: $e');
+    }
+  }
+
+  Future<dynamic> _onVolumeKey(MethodCall call) async {
+    switch (call.method) {
+      case 'up':
+        await nudgeVolume(_volumeStep);
+      case 'down':
+        await nudgeVolume(-_volumeStep);
+    }
+    return null;
+  }
+
+  /// Шаг громкости от физических кнопок (см. MainActivity.dispatchKeyEvent).
+  Future<void> nudgeVolume(double delta) =>
+      setUiVolume(_uiVolume.value + delta);
+
+  Future<void> _persistUiVolume(double v) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_uiVolumeKey, v);
+    } catch (_) {}
   }
 
   // ===== VOLUME & GAIN METHODS =====
@@ -108,6 +209,33 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   Future<void> setVolumeAndGain(double volume, double gainDb) async {
     await setVolume(volume);
     await setGain(gainDb);
+  }
+
+  /// Единая точка входа для громкости (слайдер UI и физкнопки).
+  /// Системная громкость при активной сессии всегда 1.0.
+  /// 0.0..1.0 — громкость движка, gain = 0.
+  /// 1.0..2.0 — движок на 1.0, gain 0..+6 dB (≈ x2).
+  Future<void> setUiVolume(double v) async {
+    v = v.clamp(0.0, 2.0);
+    final prev = _uiVolume.value;
+    _uiVolume.add(v);
+
+    if (v <= 1.0) {
+      await _player.setVolume(v);
+      if (_gainDb != 0.0) {
+        await setGain(0.0);
+      }
+    } else {
+      await _player.setVolume(1.0);
+      final gainDb = ((v - 1.0) * 6.0).clamp(0.0, 6.0);
+      await setGain(gainDb);
+    }
+
+    // Haptic на пересечении границы 100%.
+    if ((prev <= 1.0) != (v <= 1.0)) {
+      unawaited(HapticFeedback.selectionClick());
+    }
+    unawaited(_persistUiVolume(v));
   }
 
   // ===== Авто-переход при завершении трека =====
@@ -216,6 +344,9 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
     mediaItem.add(_toMediaItem(track));
 
+    // Защищаем файл текущего трека от эвикта/очистки, пока он играет.
+    YoutubeCache.instance.setProtectedId(_cacheIdForTrack(track));
+
     try {
       await _player.stop();
     } catch (_) {}
@@ -291,16 +422,8 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  String _cacheIdForTrack(Track track) {
-    switch (track.sourceId) {
-      case 'muzmo':
-        return 'muzmo_${track.id}';
-      case 'soundcloud':
-        return 'soundcloud_${track.id}';
-      default:
-        return track.id;
-    }
-  }
+  String _cacheIdForTrack(Track track) =>
+      YoutubeCache.cacheIdFor(sourceId: track.sourceId, trackId: track.id);
 
   Timer? _prefetchTimer;
   static const Duration _prefetchDelay = Duration(seconds: 5);

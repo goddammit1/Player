@@ -82,16 +82,41 @@ SourceRegistry.instance.register(SoundCloudSource());
 3. Результаты кэшируются в RAM и в `SharedPreferences`, поэтому
    повторные поиски не дёргают сеть.
 
-Токен Genius задаётся при сборке через `--dart-define`. ВАЖНО: нужен
-именно **Client Access Token** (со страницы https://genius.com/api-clients),
-а НЕ Client Secret. Код шлёт его в заголовке `Authorization: Bearer <token>`.
+Токен Genius задаётся при сборке через `--dart-define-from-file=env.json`.
+ВАЖНО: нужен именно **Client Access Token** (со страницы
+https://genius.com/api-clients), а НЕ Client Secret. Код шлёт его в
+заголовке `Authorization: Bearer <token>`.
+
+Настройка (один раз):
+
+1. Скопируй `env.json.example` в `env.json` (файл в `.gitignore`, в git
+   не попадает).
+2. Вставь токен в `env.json`:
+
+```json
+{
+  "GENIUS_TOKEN": "<твой_Client_Access_Token>"
+}
+```
+
+Дальше токен подставляется автоматически:
+
+```powershell
+# debug / запуск (аргументы пробрасываются в flutter run)
+tools\run.ps1
+
+# release APK — скрипт сам добавит токен и упадёт с ошибкой, если он пуст
+tools\build_release.ps1
+```
+
+Запуск по F5 из VS Code тоже работает: конфигурации в `.vscode/launch.json`
+уже передают `--dart-define-from-file=env.json`.
+
+Если собираешь вручную — флаг нужно указывать самому:
 
 ```bash
-# debug / запуск
-flutter run --dart-define=GENIUS_TOKEN=<твой_Client_Access_Token>
-
-# release APK — флаг ОБЯЗАТЕЛЬНО повторить, иначе токена не будет
-flutter build apk --release --dart-define=GENIUS_TOKEN=<твой_Client_Access_Token>
+flutter run --dart-define-from-file=env.json
+flutter build apk --release --dart-define-from-file=env.json
 ```
 
 Если токен не указан или неверный, Genius тихо пропускается и
@@ -108,8 +133,8 @@ flutter build apk --release --dart-define=GENIUS_TOKEN=<твой_Client_Access_T
 
 ```bash
 flutter pub get
-flutter run                  # на подключённом устройстве / эмуляторе
-flutter build apk --release  # релизный APK
+tools\run.ps1            # запуск на устройстве/эмуляторе (токен из env.json)
+tools\build_release.ps1  # релизный APK (токен из env.json)
 ```
 
 ## Подпись release-сборки

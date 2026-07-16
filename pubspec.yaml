@@ -53,6 +53,7 @@ dependencies:
 
   # --- Permissions / offline ---
   permission_handler: ^11.3.1
+  flutter_volume_controller: ^2.0.1
 
 dev_dependencies:
   flutter_test:

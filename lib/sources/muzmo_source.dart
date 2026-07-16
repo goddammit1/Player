@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
+import 'package:flutter/foundation.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:just_audio/just_audio.dart';
@@ -102,32 +103,41 @@ class MuzmoSource implements TrackSource {
     return tracks;
   }
 
-  /// Ленивый битрейт для «Деталей трека»: считаем по размеру mp3 и
-  /// длительности. Размер узнаём GET-запросом с `Range: bytes=0-0`:
-  /// сервер отвечает `206` и заголовком `Content-Range: bytes 0-0/<total>`,
-  /// откуда берём полный размер (тело — 1 байт). Надёжнее HEAD, который
-  /// muzmo может не поддерживать. Фолбэк — Content-Length при статусе 200.
+  /// Ленивый битрейт для «Деталей трека».
+  ///
+  /// Порядок:
+  /// 1. Переразрешаем streamUrl при необходимости (трек из плейлиста/БД
+  ///    приходит без extra — см. Track.toMap) и проходим 302 до прямой
+  ///    CDN-ссылки: Range-запрос через кросс-доменный редирект ненадёжен
+  ///    (см. комментарий к [_resolveCdnUrl]).
+  /// 2. Пытаемся узнать размер файла (Content-Range при 206, иначе
+  ///    Content-Length при 200) → kbps = размер*8/длительность.
+  /// 3. Если размер неизвестен (сервер игнорирует Range и льёт chunked)
+  ///    — читаем первые ~256 КБ и парсим битрейт из заголовка первого
+  ///    mp3-кадра (для CBR это точное значение).
   @override
   Future<int?> resolveBitrate(Track t) async {
-    final url = t.extra['streamUrl'] as String?;
     final dur = t.duration;
-    if (url == null || url.isEmpty) return null;
     if (dur == null || dur.inSeconds <= 0) return null;
 
     try {
+      // Не полагаемся на extra['streamUrl'] напрямую: resolveStreamUrl
+      // сам возьмёт его из extra или переразрешит повторным поиском.
+      final url = await resolveStreamUrl(t);
+      final directUrl = await _resolveCdnUrl(url);
 
-      final resp = await _dio.get<List<int>>(
-        url,
+      final resp = await _dio.get<ResponseBody>(
+        directUrl,
         options: Options(
-          headers: {'Referer': '$_baseUrl/', 'Range': 'bytes=0-0'},
-          responseType: ResponseType.bytes,
+          headers: {'Range': 'bytes=0-262143'},
+          responseType: ResponseType.stream,
           validateStatus: (code) => code != null && code < 500,
         ),
       );
 
       int? bytes;
 
-      // 1) Content-Range: bytes 0-0/123456 → число после '/'.
+      // 1) Content-Range: bytes 0-262143/123456 → число после '/'.
       final contentRange = resp.headers.value('content-range');
       if (contentRange != null) {
         final slash = contentRange.lastIndexOf('/');
@@ -143,13 +153,101 @@ class MuzmoSource implements TrackSource {
         if (len != null && len > 1) bytes = len;
       }
 
-      if (bytes == null || bytes <= 0) return null;
+      if (bytes != null && bytes > 0) {
+        // Размер известен — тело не нужно, обрываем стрим.
+        unawaited(
+            resp.data?.stream.listen(null, cancelOnError: true).cancel());
+        final kbps = (bytes * 8) / dur.inSeconds / 1000;
+        return kbps.round();
+      }
 
-      final kbps = (bytes * 8) / dur.inSeconds / 1000;
-      return kbps.round();
-    } catch (_) {
+      // 3) Размер неизвестен — достаём битрейт из заголовка первого
+      // mp3-кадра в начале файла.
+      final head = resp.data == null
+          ? const <int>[]
+          : await _readUpTo(resp.data!.stream, 256 * 1024);
+      final parsed = _mp3BitrateFromBytes(head);
+      if (parsed == null && kDebugMode) {
+        debugPrint('[Muzmo] resolveBitrate: размер неизвестен '
+            '(HTTP ${resp.statusCode}) и mp3-кадр не найден '
+            '(прочитано ${head.length} байт)');
+      }
+      return parsed;
+    } catch (e) {
+      if (kDebugMode) debugPrint('[Muzmo] resolveBitrate threw: $e');
       return null;
     }
+  }
+
+  /// Читает из потока не более [maxBytes] и обрывает подписку, чтобы
+  /// сервер, игнорирующий Range, не лил нам весь файл.
+  Future<List<int>> _readUpTo(Stream<List<int>> stream, int maxBytes) {
+    final collected = <int>[];
+    final completer = Completer<List<int>>();
+    late StreamSubscription<List<int>> sub;
+
+    void finish() {
+      if (!completer.isCompleted) completer.complete(collected);
+    }
+
+    sub = stream.listen(
+      (chunk) {
+        collected.addAll(chunk);
+        if (collected.length >= maxBytes) {
+          sub.cancel();
+          finish();
+        }
+      },
+      onDone: finish,
+      onError: (Object _) => finish(),
+      cancelOnError: true,
+    );
+
+    return completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        sub.cancel();
+        return collected;
+      },
+    );
+  }
+
+  /// Достаёт битрейт (kbps) из заголовка первого mp3-кадра. Понимает
+  /// ID3v2 в начале файла (пропускает тег, если тот поместился в буфер).
+  /// Для CBR-файлов muzmo это точное значение битрейта.
+  int? _mp3BitrateFromBytes(List<int> b) {
+    var i = 0;
+
+    // ID3v2: "ID3" + версия(2) + флаги(1) + размер(4 байта, syncsafe).
+    if (b.length >= 10 && b[0] == 0x49 && b[1] == 0x44 && b[2] == 0x33) {
+      final tagSize = ((b[6] & 0x7F) << 21) |
+          ((b[7] & 0x7F) << 14) |
+          ((b[8] & 0x7F) << 7) |
+          (b[9] & 0x7F);
+      i = 10 + tagSize;
+      if (i >= b.length) return null; // тег (с обложкой?) больше буфера
+    }
+
+    // Таблицы битрейтов Layer III: MPEG1 и MPEG2/2.5.
+    const v1l3 = [
+      0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+    ];
+    const v2l3 = [
+      0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160,
+    ];
+
+    for (; i + 2 < b.length; i++) {
+      // Синхрослово кадра: 11 единичных бит.
+      if (b[i] != 0xFF || (b[i + 1] & 0xE0) != 0xE0) continue;
+      final versionBits = (b[i + 1] >> 3) & 0x03; // 3=MPEG1, 2=MPEG2, 0=2.5
+      final layerBits = (b[i + 1] >> 1) & 0x03; // 1=Layer III
+      final bitrateIdx = (b[i + 2] >> 4) & 0x0F;
+      if (versionBits == 1 || layerBits != 1) continue; // reserved / не L3
+      if (bitrateIdx == 0 || bitrateIdx == 15) continue; // free / invalid
+      final kbps = versionBits == 3 ? v1l3[bitrateIdx] : v2l3[bitrateIdx];
+      if (kbps > 0) return kbps;
+    }
+    return null;
   }
 
 

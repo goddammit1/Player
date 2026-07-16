@@ -5,7 +5,18 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// LRU file cache for downloaded audio streams and artwork.
+/// Дисковый кэш приложения.
+///
+/// Аудио (`yt_audio_cache`): LRU-кэш по mtime файлов с лимитом в МБ.
+/// Сюда пишут LockCachingAudioSource (muzmo/soundcloud — всегда mp3) и
+/// ручное скачивание из шторки трека. Файлы m4a/webm — легаси от
+/// отключённого YouTube-источника: они по-прежнему учитываются в
+/// размере и эвиктятся.
+///
+/// Обложки: их хранит CachedNetworkImage (flutter_cache_manager) в
+/// `libCachedImageData`. Мы этот каталог НЕ наполняем — только меряем
+/// и ограничиваем по размеру. Удалять файлы «за спиной» cache manager
+/// безопасно: при промахе обложка просто скачается заново.
 class YoutubeCache {
   YoutubeCache._();
   static final YoutubeCache instance = YoutubeCache._();
@@ -39,6 +50,32 @@ class YoutubeCache {
   }
 
   // ═══════════════════════════════════════════════════════════════════
+  //  CACHE ID / EXTENSIONS
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Расширения, с которыми аудио может лежать в кэше.
+  /// mp3 — актуальные источники (muzmo, soundcloud);
+  /// m4a/webm — легаси-файлы отключённого YouTube-источника.
+  static const List<String> audioExtensions = ['mp3', 'm4a', 'webm'];
+
+  /// Единственная точка формирования cache id по треку.
+  /// Раньше эта логика дублировалась в PlayerService и
+  /// track_settings_sheet и могла разъехаться при добавлении источника.
+  static String cacheIdFor({
+    required String sourceId,
+    required String trackId,
+  }) {
+    switch (sourceId) {
+      case 'muzmo':
+        return 'muzmo_$trackId';
+      case 'soundcloud':
+        return 'soundcloud_$trackId';
+      default:
+        return trackId;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
   //  CONSTANTS
   // ═══════════════════════════════════════════════════════════════════
 
@@ -53,11 +90,28 @@ class YoutubeCache {
   Directory? _artworkDir;
 
   Directory? get audioDir => _audioDir;
+
+  /// Каталог дискового кэша CachedNetworkImage (`libCachedImageData`).
   Directory? get artworkDir => _artworkDir;
 
-  final Map<String, DateTime> _lastAccess = {};
   Future<void>? _initFuture;
   Timer? _evictTimer;
+
+  /// id трека, который играет прямо сейчас: его файл нельзя эвиктить
+  /// или удалять при «Clear audio cache» — LockCachingAudioSource держит
+  /// его открытым, удаление на лету роняет воспроизведение.
+  String? _protectedId;
+
+  /// id вручную скачанных («закреплённых») треков. Они лежат в общем
+  /// аудио-каталоге (чтобы LockCachingAudioSource играл их из кэша, в т.ч.
+  /// офлайн), но LRU-эвиктор их не трогает.
+  final Set<String> _pinnedIds = <String>{};
+  bool _pinnedLoaded = false;
+
+  /// Отмечает трек как играющий (защита от эвикта). null — снять защиту.
+  void setProtectedId(String? id) => _protectedId = id;
+
+  bool isPinned(String id) => _pinnedIds.contains(id);
 
   // ═══════════════════════════════════════════════════════════════════
   //  INIT
@@ -69,10 +123,11 @@ class YoutubeCache {
     return _audioDir!;
   }
 
-  Future<Directory> _ensureArtworkDir() async {
+  /// Инициализирует пути кэша (используется страницей статистики).
+  Future<Directory?> ensureArtworkDir() async {
     _initFuture ??= _init();
     await _initFuture;
-    return _artworkDir!;
+    return _artworkDir;
   }
 
   Future<void> _init() async {
@@ -83,62 +138,95 @@ class YoutubeCache {
       await _audioDir!.create(recursive: true);
     }
 
-    _artworkDir = Directory(p.join(tmp.path, 'yt_artwork_cache'));
-    if (!await _artworkDir!.exists()) {
-      await _artworkDir!.create(recursive: true);
-    }
+    // Каталог создаёт сам flutter_cache_manager — не создаём за него.
+    _artworkDir = Directory(p.join(tmp.path, 'libCachedImageData'));
 
-    await for (final entity in _audioDir!.list()) {
-      if (entity is File) {
-        final id = p.basenameWithoutExtension(entity.path);
-        final stat = await entity.stat();
-        _lastAccess[id] = stat.modified;
-      }
-    }
+    await _loadPinnedIds();
+
     _scheduleEviction();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  PINNED (ручные загрузки)
+  // ═══════════════════════════════════════════════════════════════════
+
+  static const String _pinnedPrefsKey = 'cache_pinned_ids';
+
+  Future<void> _loadPinnedIds() async {
+    if (_pinnedLoaded) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _pinnedIds
+        ..clear()
+        ..addAll(prefs.getStringList(_pinnedPrefsKey) ?? const <String>[]);
+    } catch (_) {}
+    _pinnedLoaded = true;
+  }
+
+  Future<void> _persistPinnedIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_pinnedPrefsKey, _pinnedIds.toList());
+    } catch (_) {}
+  }
+
+  /// Закрепляет трек (ручная загрузка): защищает от LRU-эвикта.
+  Future<void> pin(String id) async {
+    await _loadPinnedIds();
+    if (_pinnedIds.add(id)) {
+      await _persistPinnedIds();
+    }
+  }
+
+  /// Снимает закрепление.
+  Future<void> unpin(String id) async {
+    await _loadPinnedIds();
+    if (_pinnedIds.remove(id)) {
+      await _persistPinnedIds();
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
   //  FILE ACCESS
   // ═══════════════════════════════════════════════════════════════════
 
-  Future<File> fileFor(
-    String id, {
-    String extension = 'm4a',
-    CacheType type = CacheType.audio,
-  }) async {
-    final dir = type == CacheType.audio
-        ? await _ensureAudioDir()
-        : await _ensureArtworkDir();
+  Future<File> fileFor(String id, {String extension = 'mp3'}) async {
+    final dir = await _ensureAudioDir();
     final file = File(p.join(dir.path, '$id.$extension'));
 
-    if (type == CacheType.audio) {
-      _lastAccess[id] = DateTime.now();
-      if (await file.exists()) {
-        try {
-          await file.setLastModified(DateTime.now());
-        } catch (_) {}
-      }
+    // LRU: единственный источник истины — mtime файла.
+    if (await file.exists()) {
+      try {
+        await file.setLastModified(DateTime.now());
+      } catch (_) {}
     }
 
     _scheduleEviction();
     return file;
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  //  НОВЫЕ МЕТОДЫ — ВСТАВЬ СЮДА (после fileFor, перед EVICTION)
-  // ═══════════════════════════════════════════════════════════════════
+  /// Есть ли трек в аудио-кэше (с любым известным расширением).
+  Future<bool> hasFile(String id) async => (await findFile(id)) != null;
 
-  /// Проверяет, есть ли трек в аудио-кэше.
-  Future<bool> hasFile(String id, {String extension = 'mp3'}) async {
+  /// Ищет файл трека в кэше независимо от расширения.
+  Future<File?> findFile(String id) async {
     final dir = await _ensureAudioDir();
-    final file = File(p.join(dir.path, '$id.$extension'));
-    return file.exists();
+    for (final ext in audioExtensions) {
+      final f = File(p.join(dir.path, '$id.$ext'));
+      if (await f.exists()) return f;
+    }
+    return null;
   }
 
-  /// Обновляет LRU timestamp (после ручного скачивания).
-  void touch(String id) {
-    _lastAccess[id] = DateTime.now();
+  /// Обновляет LRU timestamp (mtime файла) — например, после ручного
+  /// скачивания, чтобы эвиктор не удалил свежескачанный трек.
+  Future<void> touch(String id) async {
+    final f = await findFile(id);
+    if (f != null) {
+      try {
+        await f.setLastModified(DateTime.now());
+      } catch (_) {}
+    }
     _scheduleEviction();
   }
 
@@ -179,21 +267,27 @@ class YoutubeCache {
       if (now.difference(stat.modified) < _protectWindow) continue;
 
       final fid = p.basenameWithoutExtension(file.path);
+      if (fid == _protectedId) continue;
+      if (_pinnedIds.contains(fid)) continue;
       if (await _hasActiveDownload(_audioDir!, fid)) continue;
 
       try {
         await file.delete();
-        _lastAccess.remove(fid);
         overflow -= size;
       } catch (_) {}
     }
   }
 
+  /// Ограничивает по размеру дисковый кэш CachedNetworkImage.
+  /// Раньше здесь эвиктился `yt_artwork_cache` — каталог, в который
+  /// никто никогда не писал, т.е. лимит обложек не работал вовсе.
   Future<void> _evictArtworkIfNeeded() async {
-    if (_artworkDir == null || _maxArtworkCacheMB == 0) return;
+    final dir = _artworkDir;
+    if (dir == null || _maxArtworkCacheMB == 0) return;
+    if (!await dir.exists()) return;
 
     final limitBytes = _maxArtworkCacheMB * 1024 * 1024;
-    final files = await _listFilesWithSize(_artworkDir!);
+    final files = await _listFilesWithSize(dir);
     final totalBytes = files.fold<int>(0, (sum, f) => sum + f.$2);
 
     if (totalBytes <= limitBytes) return;
@@ -224,7 +318,7 @@ class YoutubeCache {
   }
 
   Future<bool> _hasActiveDownload(Directory dir, String id) async {
-    for (final ext in const ['m4a', 'webm', 'mp3']) {
+    for (final ext in audioExtensions) {
       final part = File(p.join(dir.path, '$id.$ext.part'));
       if (await part.exists()) return true;
     }
@@ -236,20 +330,28 @@ class YoutubeCache {
   // ═══════════════════════════════════════════════════════════════════
 
   Future<void> clearAudioCache() async {
+    await _ensureAudioDir();
     if (_audioDir == null) return;
     await for (final entity in _audioDir!.list(followLinks: false)) {
       if (entity is File) {
+        // Не трогаем файл играющего трека — он открыт плеером.
+        final fid = p.basenameWithoutExtension(entity.path);
+        if (fid == _protectedId) continue;
         try {
           await entity.delete();
         } catch (_) {}
       }
     }
-    _lastAccess.clear();
+    _pinnedIds.clear();
+    await _persistPinnedIds();
   }
 
+  /// Чистит дисковый кэш обложек CachedNetworkImage. RAM ImageCache
+  /// Flutter вызывающая сторона чистит сама (PaintingBinding).
   Future<void> clearArtworkCache() async {
-    if (_artworkDir == null) return;
-    await for (final entity in _artworkDir!.list(followLinks: false)) {
+    final dir = await ensureArtworkDir();
+    if (dir == null || !await dir.exists()) return;
+    await for (final entity in dir.list(followLinks: false)) {
       if (entity is File) {
         try {
           await entity.delete();
@@ -264,21 +366,19 @@ class YoutubeCache {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  LEGACY
+  //  EVICT ONE
   // ═══════════════════════════════════════════════════════════════════
 
   Future<void> evict(String id) async {
-    if (_audioDir == null) return;
-    _lastAccess.remove(id);
-    for (final ext in const ['m4a', 'webm', 'mp3']) {
-      final f = File(p.join(_audioDir!.path, '$id.$ext'));
+    final dir = await _ensureAudioDir();
+    for (final ext in audioExtensions) {
+      final f = File(p.join(dir.path, '$id.$ext'));
       if (await f.exists()) {
         try {
           await f.delete();
         } catch (_) {}
       }
     }
+    await unpin(id);
   }
 }
-
-enum CacheType { audio, artwork }

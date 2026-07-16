@@ -224,6 +224,11 @@ class SoundCloudSource implements TrackSource {
       final progressive = _findProgressive(transcodings);
       if (progressive == null) continue; // только HLS — пропускаем (вариант 1)
 
+      final progressiveUrl = progressive['url'] as String;
+      // Оценка битрейта по метаданным транскодинга — мгновенно и без
+      // сетевых запросов (точного битрейта api-v2 не отдаёт).
+      final presetKbps = _bitrateFromTranscoding(progressive);
+
       final idVal = item['id'];
       if (idVal == null) continue;
       final trackId = idVal.toString();
@@ -253,9 +258,11 @@ class SoundCloudSource implements TrackSource {
           artist: artist,
           duration: duration,
           artworkUrl: artworkUrl,
+          qualityScore: presetKbps,
+          qualityLabel: presetKbps != null ? '$presetKbps kbps' : null,
           extra: {
             // URL транскодинга (authorized) — резолвим в CDN-ссылку лениво.
-            'transcodingUrl': progressive,
+            'transcodingUrl': progressiveUrl,
           },
         ),
       );
@@ -266,17 +273,38 @@ class SoundCloudSource implements TrackSource {
     return result;
   }
 
-  /// Находит URL progressive-транскодинга (MP3) среди списка.
-  String? _findProgressive(List transcodings) {
+  /// Находит progressive-транскодинг (MP3) среди списка. Возвращает всю
+  /// Map транскодинга (url, preset, quality, format), а не только URL —
+  /// метаданные нужны для оценки битрейта.
+  Map? _findProgressive(List transcodings) {
     for (final t in transcodings) {
       if (t is! Map) continue;
       final format = t['format'];
       final protocol = format is Map ? format['protocol'] : null;
       if (protocol == 'progressive') {
         final url = t['url'];
-        if (url is String && url.isNotEmpty) return url;
+        if (url is String && url.isNotEmpty) return t;
       }
     }
+    return null;
+  }
+
+  /// Оценивает битрейт (kbps) по метаданным транскодинга SoundCloud.
+  ///
+  /// Точного битрейта api-v2 не отдаёт, но preset/quality стабильны:
+  /// progressive mp3 «sq» — 128 kbps, «hq» (Go+) — 256, opus — ~64.
+  int? _bitrateFromTranscoding(Map t) {
+    final preset = (t['preset'] as String? ?? '').toLowerCase();
+    final quality = (t['quality'] as String? ?? '').toLowerCase();
+    final format = t['format'];
+    final mime = format is Map
+        ? (format['mime_type'] as String? ?? '').toLowerCase()
+        : '';
+
+    if (quality == 'hq') return 256;
+    if (preset.startsWith('mp3') || mime.contains('mpeg')) return 128;
+    if (preset.startsWith('opus') || mime.contains('opus')) return 64;
+    if (preset.startsWith('aac') || mime.contains('mp4')) return 160;
     return null;
   }
 
@@ -464,25 +492,37 @@ class SoundCloudSource implements TrackSource {
     );
   }
 
+  /// Битрейт progressive mp3 SoundCloud по умолчанию (стандарт «sq»).
+  static const int _defaultProgressiveKbps = 128;
+
   /// Ленивый битрейт для «Деталей трека»: считаем по размеру MP3 и
   /// длительности. Размер узнаём Range-GET с `bytes=0-0`.
+  ///
+  /// Важно: CDN SoundCloud может проигнорировать Range и ответить `200`
+  /// потоком без Content-Length. Поэтому тело читаем как stream (а не
+  /// bytes — иначе Dio скачает весь mp3 ради заголовков) и при
+  /// неизвестном размере фолбэкаемся на оценку из preset.
   @override
   Future<int?> resolveBitrate(Track track) async {
     final dur = track.duration;
-    if (dur == null || dur.inSeconds <= 0) return null;
+    if (dur == null || dur.inSeconds <= 0) {
+      return track.qualityScore ?? _defaultProgressiveKbps;
+    }
 
     try {
       final url = await resolveStreamUrl(track);
-      final resp = await _dio.get<List<int>>(
+      final resp = await _dio.get<ResponseBody>(
         url,
         options: Options(
           headers: {'Range': 'bytes=0-0'},
-          responseType: ResponseType.bytes,
+          responseType: ResponseType.stream,
           validateStatus: (code) => code != null && code < 500,
         ),
       );
 
       int? bytes;
+
+      // 1) 206: Content-Range: bytes 0-0/123456 → число после '/'.
       final contentRange = resp.headers.value('content-range');
       if (contentRange != null) {
         final slash = contentRange.lastIndexOf('/');
@@ -490,17 +530,37 @@ class SoundCloudSource implements TrackSource {
           bytes = int.tryParse(contentRange.substring(slash + 1).trim());
         }
       }
+
+      // 2) Фолбэк: Content-Length при полном ответе (200).
       if ((bytes == null || bytes <= 0) && resp.statusCode == 200) {
         final lenStr = resp.headers.value('content-length');
         final len = lenStr != null ? int.tryParse(lenStr) : null;
         if (len != null && len > 1) bytes = len;
       }
-      if (bytes == null || bytes <= 0) return null;
+
+      // Заголовки прочитаны — тело не нужно. Обрываем стрим, чтобы CDN,
+      // проигнорировавший Range, не лил нам весь файл.
+      final body = resp.data;
+      if (body != null) {
+        unawaited(body.stream.listen(null, cancelOnError: true).cancel());
+      }
+
+      if (bytes == null || bytes <= 0) {
+        if (kDebugMode) {
+          debugPrint('[SoundCloud] resolveBitrate: размер неизвестен '
+              '(HTTP ${resp.statusCode}, Content-Range: $contentRange) — '
+              'фолбэк на preset');
+        }
+        return track.qualityScore ?? _defaultProgressiveKbps;
+      }
 
       final kbps = (bytes * 8) / dur.inSeconds / 1000;
       return kbps.round();
-    } catch (_) {
-      return null;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('[SoundCloud] resolveBitrate threw: $e');
+      }
+      return track.qualityScore ?? _defaultProgressiveKbps;
     }
   }
 
