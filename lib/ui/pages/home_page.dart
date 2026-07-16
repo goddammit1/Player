@@ -10,7 +10,7 @@ import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
 
 import 'playlist_page.dart';
-import 'search_page.dart';
+import 'search_history_page.dart';
 import 'settings_page.dart';
 
 /// Главный экран: топ-бар, заголовок «Playlists», сетка плейлистов
@@ -152,7 +152,25 @@ class _TopBar extends ConsumerWidget {
             colors: colors,
           ),
           const SizedBox(width: 10),
-          Expanded(child: _SearchPill(colors: colors)),
+          Expanded(
+            child: _SearchPill(
+              colors: colors,
+              onTap: () {
+                Navigator.of(context).push(
+                  PageRouteBuilder(
+                    pageBuilder: (context, animation, secondaryAnimation) =>
+                        const SearchHistoryPage(),
+                    transitionsBuilder:
+                        (context, animation, secondaryAnimation, child) {
+                      return child;
+                    },
+                    transitionDuration: Duration.zero,
+                    reverseTransitionDuration: Duration.zero,
+                  ),
+                );
+              },
+            ),
+          ),
           const SizedBox(width: 10),
           _CircleButton(
             icon: Icons.settings_rounded,
@@ -196,8 +214,9 @@ class _CircleButton extends StatelessWidget {
 }
 
 class _SearchPill extends StatelessWidget {
-  const _SearchPill({required this.colors});
+  const _SearchPill({required this.colors, required this.onTap});
   final AppColors colors;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -206,19 +225,7 @@ class _SearchPill extends StatelessWidget {
       borderRadius: BorderRadius.circular(32),
       child: InkWell(
         borderRadius: BorderRadius.circular(32),
-        onTap: () {
-          Navigator.of(context).push(
-            PageRouteBuilder(
-              pageBuilder: (context, animation, secondaryAnimation) =>
-                  const SearchPage(),
-              transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                return child;
-              },
-              transitionDuration: Duration.zero,
-              reverseTransitionDuration: Duration.zero,
-            ),
-          );
-        },
+        onTap: onTap,
         child: SizedBox(
           height: 60,
           child: Padding(

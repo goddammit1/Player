@@ -14,6 +14,8 @@ import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../../core/artwork_helper.dart';
+import 'search_history_page.dart';
+import 'settings_page.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
   const SearchPage({super.key});
@@ -24,17 +26,10 @@ class SearchPage extends ConsumerStatefulWidget {
 
 class _SearchPageState extends ConsumerState<SearchPage>
     with TickerProviderStateMixin {
-  final _controller = TextEditingController();
-  final _focus = FocusNode();
   bool _isPopping = false;
 
   late final AnimationController _barAnim;
   late final Animation<double> _barExpand;
-
-  late final AnimationController _contentAnim;
-  late final Animation<double> _chipsSlide;
-  late final Animation<double> _chipsFade;
-
 
   @override
   void initState() {
@@ -54,32 +49,9 @@ class _SearchPageState extends ConsumerState<SearchPage>
       ),
     );
 
-    _contentAnim = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 400),
-      reverseDuration: const Duration(milliseconds: 120),
-    );
-
-    _chipsSlide = Tween<double>(begin: -12, end: 0).animate(
-      CurvedAnimation(
-        parent: _contentAnim,
-        curve: const Interval(0.35, 0.75, curve: Curves.easeOutCubic),
-        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
-      ),
-    );
-    _chipsFade = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(
-        parent: _contentAnim,
-        curve: const Interval(0.35, 0.65, curve: Curves.easeOut),
-        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
-      ),
-    );
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _focus.requestFocus();
         _barAnim.forward();
-        _contentAnim.forward();
       }
     });
   }
@@ -87,9 +59,6 @@ class _SearchPageState extends ConsumerState<SearchPage>
   @override
   void dispose() {
     _barAnim.dispose();
-    _contentAnim.dispose();
-    _controller.dispose();
-    _focus.dispose();
     super.dispose();
   }
 
@@ -97,13 +66,25 @@ class _SearchPageState extends ConsumerState<SearchPage>
     if (_isPopping) return;
     _isPopping = true;
 
-    _focus.unfocus();
-    _contentAnim.reverse();
     await _barAnim.reverse();
 
     if (mounted) {
       Navigator.of(context).popUntil((route) => route.isFirst);
     }
+  }
+
+  void _goToSearchHistory() {
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const SearchHistoryPage(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return child;
+        },
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+      ),
+    );
   }
 
   @override
@@ -115,7 +96,6 @@ class _SearchPageState extends ConsumerState<SearchPage>
     final currentSourceId = state.sourceId;
     final colors = ref.watch(animatedPaletteProvider);
     final viewMode = ref.watch(searchViewModeProvider);
-    final history = ref.watch(searchHistoryProvider);
 
     return Scaffold(
       backgroundColor: colors.background,
@@ -131,36 +111,25 @@ class _SearchPageState extends ConsumerState<SearchPage>
                   delegate: _SearchBarDelegate(
                     barAnim: _barAnim,
                     barExpand: _barExpand,
-                    controller: _controller,
-                    focusNode: _focus,
                     colors: colors,
-                    state: state,
-                    searchCtl: searchCtl,
+                    query: state.query,
                     onPop: _popWithAnimation,
-                    onChanged: () => setState(() {}),
-                    onSubmit: (q) {
-                      searchCtl.search(q);
-                      ref.read(searchHistoryProvider.notifier).add(q);
+                    onTapSearch: _goToSearchHistory,
+                    onTapSettings: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const SettingsPage(),
+                        ),
+                      );
                     },
                   ),
                 ),
 
-                // === FILTERS ===
-                if (!(state.results.isEmpty && !state.loading && history.isNotEmpty))
-                SliverToBoxAdapter(
-                  child: AnimatedBuilder(
-                    animation: _contentAnim,
-                    builder: (context, child) {
-                      return Transform.translate(
-                        offset: Offset(0, _chipsSlide.value),
-                        child: Opacity(
-                          opacity: _chipsFade.value,
-                          child: child,
-                        ),
-                      );
-                    },
+                // === FILTERS (no animation) ===
+                if (state.results.isNotEmpty || state.loading)
+                  SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.only(bottom: 16, top: 4),
                       child: _FilterChips(
                         sources: sources,
                         currentSourceId: currentSourceId,
@@ -175,7 +144,6 @@ class _SearchPageState extends ConsumerState<SearchPage>
                       ),
                     ),
                   ),
-                ),
 
                 // === ERROR ===
                 if (state.error != null)
@@ -196,29 +164,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                   ),
 
                 // === CONTENT: GRID OR LIST ===
-                if (state.results.isEmpty &&
-                    !state.loading &&
-                    history.isNotEmpty)
-                  SliverToBoxAdapter(
-                    child: _SearchHistory(
-                      history: history,
-                      colors: colors,
-                      onTapQuery: (q) {
-                        _controller.text = q;
-                        _controller.selection =
-                            TextSelection.collapsed(offset: q.length);
-                        _focus.unfocus();
-                        searchCtl.search(q);
-                        ref.read(searchHistoryProvider.notifier).add(q);
-                        setState(() {});
-                      },
-                      onRemove: (q) =>
-                          ref.read(searchHistoryProvider.notifier).remove(q),
-                      onClear: () =>
-                          ref.read(searchHistoryProvider.notifier).clear(),
-                    ),
-                  )
-                else if (state.results.isEmpty && !state.loading)
+                if (state.results.isEmpty && !state.loading)
                   SliverFillRemaining(
                     hasScrollBody: false,
                     child: _EmptyState(colors: colors),
@@ -311,26 +257,20 @@ class _SearchPageState extends ConsumerState<SearchPage>
 class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
   final AnimationController barAnim;
   final Animation<double> barExpand;
-  final TextEditingController controller;
-  final FocusNode focusNode;
   final dynamic colors;
-  final SearchState state;
-  final dynamic searchCtl;
+  final String query;
   final VoidCallback onPop;
-  final VoidCallback onChanged;
-  final ValueChanged<String> onSubmit;
+  final VoidCallback onTapSearch;
+  final VoidCallback onTapSettings;
 
   _SearchBarDelegate({
     required this.barAnim,
     required this.barExpand,
-    required this.controller,
-    required this.focusNode,
     required this.colors,
-    required this.state,
-    required this.searchCtl,
+    required this.query,
     required this.onPop,
-    required this.onChanged,
-    required this.onSubmit,
+    required this.onTapSearch,
+    required this.onTapSettings,
   });
 
   @override
@@ -344,82 +284,106 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
     return Container(
       color: colors.background,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-      child: AnimatedBuilder(
-        animation: barAnim,
-        builder: (context, child) {
-          final expand = barExpand.value;
-          final maxWidth = MediaQuery.of(context).size.width - 32;
-          const startWidth = 200.0;
-
-          return Container(
-            height: 60,
-            width: startWidth + (maxWidth - startWidth) * expand,
-            decoration: BoxDecoration(
-              color: colors.elevated,
-              borderRadius: BorderRadius.circular(16),
+      child: Row(
+        children: [
+          _CircleButton(
+            icon: Icons.arrow_back_rounded,
+            onTap: onPop,
+            colors: colors,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _SearchPill(
+              colors: colors,
+              query: query,
+              onTap: onTapSearch,
             ),
-            child: child,
-          );
-        },
-        child: Row(
-          children: [
-            IconButton(
-              icon: Icon(Icons.arrow_back_rounded, size: 24, color: colors.textPrimary),
-              onPressed: onPop,
-            ),
-            Expanded(
-              child: TextField(
-                controller: controller,
-                focusNode: focusNode,
-                textInputAction: TextInputAction.search,
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontSize: 16,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'Search...',
-                  hintStyle: TextStyle(color: colors.textSecondary),
-                  border: InputBorder.none,
-                  isCollapsed: true,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                onChanged: (_) => onChanged(),
-                onSubmitted: onSubmit,
-              ),
-            ),
-            if (state.loading)
-              Padding(
-                padding: const EdgeInsets.only(right: 16),
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: colors.textPrimary,
-                  ),
-                ),
-              )
-            else if (controller.text.isNotEmpty)
-              IconButton(
-                icon: Icon(Icons.close_rounded,
-                    size: 22, color: colors.textPrimary),
-                onPressed: () {
-                  controller.clear();
-                  searchCtl.search('');
-                  onChanged();
-                },
-              )
-            else
-              const SizedBox(width: 12),
-          ],
-        ),
+          ),
+          const SizedBox(width: 10),
+          _CircleButton(
+            icon: Icons.settings_rounded,
+            onTap: onTapSettings,
+            colors: colors,
+          ),
+        ],
       ),
     );
   }
 
   @override
   bool shouldRebuild(covariant _SearchBarDelegate oldDelegate) {
-    return colors != oldDelegate.colors || state != oldDelegate.state;
+    return colors != oldDelegate.colors || query != oldDelegate.query;
+  }
+}
+
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 60,
+          height: 60,
+          child: Icon(icon, color: colors.textPrimary, size: 20),
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchPill extends StatelessWidget {
+  const _SearchPill({
+    required this.colors,
+    required this.query,
+    required this.onTap,
+  });
+
+  final dynamic colors;
+  final String query;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      borderRadius: BorderRadius.circular(32),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(32),
+        onTap: onTap,
+        child: SizedBox(
+          height: 60,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Text(
+                  query.isEmpty ? 'Search...' : query,
+                  style: TextStyle(
+                    color: query.isEmpty ? colors.textSecondary : colors.textPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -453,102 +417,10 @@ class _EmptyState extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SEARCH HISTORY
+//  FILTER CHIPS (no animation)
 // ═══════════════════════════════════════════════════════════════════════════
 
-class _SearchHistory extends StatelessWidget {
-  const _SearchHistory({
-    required this.history,
-    required this.colors,
-    required this.onTapQuery,
-    required this.onRemove,
-    required this.onClear,
-  });
-
-  final List<String> history;
-  final dynamic colors;
-  final ValueChanged<String> onTapQuery;
-  final ValueChanged<String> onRemove;
-  final VoidCallback onClear;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final q in history)
-          _HistoryTile(
-            query: q,
-            colors: colors,
-            onTap: () => onTapQuery(q),
-            onRemove: () => onRemove(q),
-          ),
-      ],
-    );
-  }
-}
-
-class _HistoryTile extends StatelessWidget {
-  const _HistoryTile({
-    required this.query,
-    required this.colors,
-    required this.onTap,
-    required this.onRemove,
-  });
-
-  final String query;
-  final dynamic colors;
-  final VoidCallback onTap;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-          child: Row(
-            children: [
-              Icon(
-                Icons.history_rounded,
-                size: 20,
-                color: colors.textTertiary,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(
-                  query,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 16,
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: Icon(
-                  Icons.close_rounded,
-                  size: 18,
-                  color: colors.textTertiary,
-                ),
-                onPressed: onRemove,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  FILTER CHIPS
-// ═══════════════════════════════════════════════════════════════════════════
-
-class _FilterChips extends StatefulWidget {
+class _FilterChips extends StatelessWidget {
   const _FilterChips({
     required this.sources,
     required this.currentSourceId,
@@ -562,90 +434,19 @@ class _FilterChips extends StatefulWidget {
   final dynamic colors;
 
   @override
-  State<_FilterChips> createState() => _FilterChipsState();
-}
-
-class _FilterChipsState extends State<_FilterChips>
-    with TickerProviderStateMixin {
-  late final List<AnimationController> _controllers;
-  late final List<Animation<double>> _slides;
-  late final List<Animation<double>> _fades;
-
-  @override
-  void initState() {
-    super.initState();
-
-    final entries = widget.sources;
-    final count = entries.length;
-
-    _controllers = List.generate(
-      count,
-      (i) => AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 350),
-      ),
-    );
-
-    _slides = List.generate(
-      count,
-      (i) => Tween<double>(begin: -16, end: 0).animate(
-        CurvedAnimation(
-          parent: _controllers[i],
-          curve: Curves.easeOutCubic,
-        ),
-      ),
-    );
-
-    _fades = List.generate(
-      count,
-      (i) => Tween<double>(begin: 0, end: 1).animate(
-        CurvedAnimation(
-          parent: _controllers[i],
-          curve: Curves.easeOut,
-        ),
-      ),
-    );
-
-    for (var i = 0; i < count; i++) {
-      Future.delayed(Duration(milliseconds: i * 100), () {
-        if (mounted) _controllers[i].forward();
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    for (final c in _controllers) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final entries = widget.sources;
+    final entries = sources;
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         for (var i = 0; i < entries.length; i++) ...[
           if (i > 0) const SizedBox(width: 12),
-          AnimatedBuilder(
-            animation: _controllers[i],
-            builder: (context, _) {
-              return Transform.translate(
-                offset: Offset(0, _slides[i].value),
-                child: Opacity(
-                  opacity: _fades[i].value,
-                  child: _FilterIconButton(
-                    icon: _iconFor(entries[i].id as String),
-                    selected: entries[i].id == widget.currentSourceId,
-                    onTap: () => widget.onSelected(entries[i].id as String),
-                    colors: widget.colors,
-                  ),
-                ),
-              );
-            },
+          _FilterIconButton(
+            icon: _iconFor(entries[i].id as String),
+            selected: entries[i].id == currentSourceId,
+            onTap: () => onSelected(entries[i].id as String),
+            colors: colors,
           ),
         ],
       ],
@@ -712,7 +513,7 @@ class _FilterIconButton extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  GRID TRACK TILE (new design: full image, bottom gradient + blur overlay)
+//  GRID TRACK TILE
 // ═══════════════════════════════════════════════════════════════════════════
 
 class _TrackTileGrid extends StatefulWidget {
@@ -747,7 +548,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
         height: 160,
         child: Stack(
           children: [
-            // === FULL IMAGE (160x160) ===
             ClipSmoothRect(
               radius: SmoothBorderRadius(
                 cornerRadius: 40,
@@ -783,8 +583,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               ),
             ),
 
-            // === PROGRESSIVE BLUR OVERLAY (bottom half) ===
-            // Blurred duplicate of image, masked to bottom half
             if (track.artworkUrl != null && track.artworkUrl!.isNotEmpty)
               ClipSmoothRect(
                 radius: SmoothBorderRadius(
@@ -797,9 +595,9 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [
-                        Color(0x00000000), // top: transparent
-                        Color(0x00000000), // middle: transparent  
-                        Color(0xFF000000), // bottom: opaque
+                        Color(0x00000000),
+                        Color(0x00000000),
+                        Color(0xFF000000),
                       ],
                       stops: [0.0, 0.4, 1.0],
                     ).createShader(bounds);
@@ -819,7 +617,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                 ),
               ),
 
-            // === BOTTOM GRADIENT OVERLAY (dark) ===
             ClipSmoothRect(
               radius: SmoothBorderRadius(
                 cornerRadius: 40,
@@ -833,10 +630,10 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Color(0x00000000),   // top: transparent
-                      Color(0x00000000),   // upper middle: transparent
-                      Color(0x80000000),   // lower middle: 50% black
-                      Color(0xCC000000),   // bottom: 80% black
+                      Color(0x00161616),
+                      Color(0x00161616),
+                      Color(0x80161616),
+                      Color(0xCC161616),
                     ],
                     stops: [0.0, 0.35, 0.65, 1.0],
                   ),
@@ -844,7 +641,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               ),
             ),
 
-            // === PLAYING OVERLAY ===
             if (widget.isPlaying)
               ClipSmoothRect(
                 radius: SmoothBorderRadius(
@@ -864,7 +660,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                 ),
               ),
 
-            // === TOP-RIGHT: ADD TO PLAYLIST BUTTON ===
             Positioned(
               top: 8,
               right: 8,
@@ -900,7 +695,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               ),
             ),
 
-            // === BOTTOM-LEFT: TITLE ===
             Positioned(
               left: 16,
               bottom: 24,
@@ -917,7 +711,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               ),
             ),
 
-            // === BOTTOM-LEFT: ARTIST ===
             Positioned(
               left: 16,
               bottom: 12,
@@ -934,7 +727,6 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               ),
             ),
 
-            // === BOTTOM-RIGHT: DURATION ===
             if (duration != null)
               Positioned(
                 right: 16,
@@ -962,7 +754,7 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  LIST TRACK TILE (original design)
+//  LIST TRACK TILE
 // ═══════════════════════════════════════════════════════════════════════════
 
 class _TrackTileList extends StatelessWidget {
