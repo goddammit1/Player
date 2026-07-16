@@ -326,3 +326,50 @@ class SearchViewModeNotifier extends StateNotifier<SearchViewMode> {
     state = mode;
   }
 }
+
+/// История поисковых запросов (новые сверху). Хранится в SharedPreferences,
+/// дедупликация без учёта регистра, максимум [_maxItems] записей.
+final searchHistoryProvider =
+    StateNotifierProvider<SearchHistoryNotifier, List<String>>(
+  (ref) => SearchHistoryNotifier(),
+);
+
+class SearchHistoryNotifier extends StateNotifier<List<String>> {
+  static const _key = 'search_history_v1';
+  static const _maxItems = 12;
+
+  SearchHistoryNotifier() : super(const []) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getStringList(_key) ?? const [];
+  }
+
+  Future<void> _persist() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_key, state);
+  }
+
+  Future<void> add(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return;
+    state = [
+      q,
+      ...state.where((e) => e.toLowerCase() != q.toLowerCase()),
+    ].take(_maxItems).toList();
+    await _persist();
+  }
+
+  Future<void> remove(String query) async {
+    state = state.where((e) => e != query).toList();
+    await _persist();
+  }
+
+  Future<void> clear() async {
+    state = const [];
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_key);
+  }
+}

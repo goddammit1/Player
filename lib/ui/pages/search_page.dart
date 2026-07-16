@@ -115,6 +115,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
     final currentSourceId = state.sourceId;
     final colors = ref.watch(animatedPaletteProvider);
     final viewMode = ref.watch(searchViewModeProvider);
+    final history = ref.watch(searchHistoryProvider);
 
     return Scaffold(
       backgroundColor: colors.background,
@@ -137,10 +138,15 @@ class _SearchPageState extends ConsumerState<SearchPage>
                     searchCtl: searchCtl,
                     onPop: _popWithAnimation,
                     onChanged: () => setState(() {}),
+                    onSubmit: (q) {
+                      searchCtl.search(q);
+                      ref.read(searchHistoryProvider.notifier).add(q);
+                    },
                   ),
                 ),
 
                 // === FILTERS ===
+                if (!(state.results.isEmpty && !state.loading && history.isNotEmpty))
                 SliverToBoxAdapter(
                   child: AnimatedBuilder(
                     animation: _contentAnim,
@@ -190,7 +196,29 @@ class _SearchPageState extends ConsumerState<SearchPage>
                   ),
 
                 // === CONTENT: GRID OR LIST ===
-                if (state.results.isEmpty && !state.loading)
+                if (state.results.isEmpty &&
+                    !state.loading &&
+                    history.isNotEmpty)
+                  SliverToBoxAdapter(
+                    child: _SearchHistory(
+                      history: history,
+                      colors: colors,
+                      onTapQuery: (q) {
+                        _controller.text = q;
+                        _controller.selection =
+                            TextSelection.collapsed(offset: q.length);
+                        _focus.unfocus();
+                        searchCtl.search(q);
+                        ref.read(searchHistoryProvider.notifier).add(q);
+                        setState(() {});
+                      },
+                      onRemove: (q) =>
+                          ref.read(searchHistoryProvider.notifier).remove(q),
+                      onClear: () =>
+                          ref.read(searchHistoryProvider.notifier).clear(),
+                    ),
+                  )
+                else if (state.results.isEmpty && !state.loading)
                   SliverFillRemaining(
                     hasScrollBody: false,
                     child: _EmptyState(colors: colors),
@@ -290,6 +318,7 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
   final dynamic searchCtl;
   final VoidCallback onPop;
   final VoidCallback onChanged;
+  final ValueChanged<String> onSubmit;
 
   _SearchBarDelegate({
     required this.barAnim,
@@ -301,6 +330,7 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
     required this.searchCtl,
     required this.onPop,
     required this.onChanged,
+    required this.onSubmit,
   });
 
   @override
@@ -354,7 +384,7 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
                   contentPadding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 onChanged: (_) => onChanged(),
-                onSubmitted: (q) => searchCtl.search(q),
+                onSubmitted: onSubmit,
               ),
             ),
             if (state.loading)
@@ -417,6 +447,98 @@ class _EmptyState extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SEARCH HISTORY
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _SearchHistory extends StatelessWidget {
+  const _SearchHistory({
+    required this.history,
+    required this.colors,
+    required this.onTapQuery,
+    required this.onRemove,
+    required this.onClear,
+  });
+
+  final List<String> history;
+  final dynamic colors;
+  final ValueChanged<String> onTapQuery;
+  final ValueChanged<String> onRemove;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final q in history)
+          _HistoryTile(
+            query: q,
+            colors: colors,
+            onTap: () => onTapQuery(q),
+            onRemove: () => onRemove(q),
+          ),
+      ],
+    );
+  }
+}
+
+class _HistoryTile extends StatelessWidget {
+  const _HistoryTile({
+    required this.query,
+    required this.colors,
+    required this.onTap,
+    required this.onRemove,
+  });
+
+  final String query;
+  final dynamic colors;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          child: Row(
+            children: [
+              Icon(
+                Icons.history_rounded,
+                size: 20,
+                color: colors.textTertiary,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  query,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: Icon(
+                  Icons.close_rounded,
+                  size: 18,
+                  color: colors.textTertiary,
+                ),
+                onPressed: onRemove,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
