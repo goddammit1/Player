@@ -395,9 +395,11 @@ class MuzmoSource implements TrackSource {
         if (i >= tracks.length) return;
         final t = tracks[i];
         try {
+          // 10 сек: при первом старте findArtwork ждёт init prefs + до двух
+          // сетевых запросов (Genius -> iTunes), 6 сек на медленной сети мало.
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 6));
+              .timeout(const Duration(seconds: 10));
           if (url != null && url.isNotEmpty) {
             tracks[i] = t.copyWith(artworkUrl: url);
             scheduleNotify();

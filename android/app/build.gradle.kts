@@ -69,3 +69,9 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // VolumeProviderCompat + MediaSessionCompat для remote volume
+    // (управление громкостью в фоне и на локскрине через MediaSession).
+    implementation("androidx.media:media:1.7.0")
+}

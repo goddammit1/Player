@@ -135,6 +135,12 @@ class ArtworkProvider {
 
   /// Получить URL обложки для трека. Возвращает `null`, если ничего не
   /// нашли (или всё упало). Никогда не кидает исключений наружу.
+  ///
+  /// Кэширование:
+  /// - Нашли URL → кэшируем URL (в RAM + prefs).
+  /// - API явно вернул пустой результат → кэшируем '' в prefs (не дёргаем снова).
+  /// - Ошибка сети / таймаут → кэшируем '' только в RAM до перезапуска
+  ///   (prefs не трогаем, чтобы повторить попытку при следующем старте).
   Future<String?> findArtwork(String artist, String title) async {
     final key = _key(artist, title);
 
@@ -153,11 +159,17 @@ class ArtworkProvider {
     _logTokenStatusOnce();
 
     // 3) Сеть. Сначала Genius, потом iTunes.
+    // _fetchGenius/_fetchItunes возвращают:
+    //   - непустую строку  → нашли
+    //   - ''               → API ответил, но ничего не нашёл (можно кэшировать)
+    //   - null             → ошибка / таймаут (не кэшировать в prefs)
     String? url;
+    bool networkError = false;
     try {
       url = await _fetchGenius(artist, title);
     } catch (e) {
       debugPrint('[ArtworkProvider] Genius threw: $e');
+      networkError = true;
     }
     final geniusFound = url != null && url.isNotEmpty;
     if (!geniusFound) {
@@ -165,22 +177,37 @@ class ArtworkProvider {
         url = await _fetchItunes(artist, title);
       } catch (e) {
         debugPrint('[ArtworkProvider] iTunes threw: $e');
+        networkError = true;
       }
     }
     debugPrint(
       '[ArtworkProvider] "$artist - $title" -> '
-      '${geniusFound ? 'GENIUS' : (url != null && url.isNotEmpty ? 'ITUNES' : 'NONE')}'
+      '${geniusFound ? 'GENIUS' : (url != null && url.isNotEmpty ? 'ITUNES' : (networkError ? 'ERROR' : 'NONE'))}'
       '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
     );
 
+    final found = url != null && url.isNotEmpty;
+    if (found) {
+      // Нашли — кэшируем везде.
+      _memCache[key] = url;
+      unawaited(
+        _prefs?.setString('$_prefsPrefix$key', url) ?? Future.value(),
+      );
+      return url;
+    }
 
-    final toStore = url ?? '';
-    _memCache[key] = toStore;
-    // Best-effort persist — не ждём ради скорости поиска.
-    unawaited(
-      _prefs?.setString('$_prefsPrefix$key', toStore) ?? Future.value(),
-    );
-    return toStore.isEmpty ? null : toStore;
+    if (!networkError) {
+      // API ответил «не нашёл» — кэшируем '' в prefs, чтобы не дёргать снова.
+      _memCache[key] = '';
+      unawaited(
+        _prefs?.setString('$_prefsPrefix$key', '') ?? Future.value(),
+      );
+    } else {
+      // Ошибка сети / таймаут — кэшируем '' только в RAM до перезапуска.
+      // При следующем старте приложения попробуем снова.
+      _memCache[key] = '';
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------
