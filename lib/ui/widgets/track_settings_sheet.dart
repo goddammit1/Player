@@ -125,10 +125,10 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
 
             const SizedBox(height: 8),
 
-            // ── Volume slider ──
+            // ── Boost slider ──
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _VolumeSlider(
+              child: _BoostSlider(
                 player: player,
                 colors: colors,
               ),
@@ -340,20 +340,20 @@ class _ActionButton extends StatelessWidget {
 // VOLUME SLIDER
 // =============================================================================
 
-class _VolumeSlider extends ConsumerStatefulWidget {
-  const _VolumeSlider({required this.player, required this.colors});
+class _BoostSlider extends ConsumerStatefulWidget {
+  const _BoostSlider({required this.player, required this.colors});
 
   final PlayerService player;
   final AppColors colors;
 
   @override
-  ConsumerState<_VolumeSlider> createState() => _VolumeSliderState();
+  ConsumerState<_BoostSlider> createState() => _BoostSliderState();
 }
 
-class _VolumeSliderState extends ConsumerState<_VolumeSlider>
+class _BoostSliderState extends ConsumerState<_BoostSlider>
     with SingleTickerProviderStateMixin {
   /// Локальный override во время drag/tap — чтобы UI не «мерцал», пока
-  /// системная громкость и стрим догоняют жест.
+  /// стрим буста догоняет жест.
   double? _dragFraction;
 
   late final AnimationController _thumbAnim = AnimationController(
@@ -368,23 +368,23 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
     super.dispose();
   }
 
-  /// UI-громкость 0.0..2.0 → фракция слайдера 0.0..1.0.
-  double _fractionFromUiVolume(double uiVol) =>
-      (uiVol / 2.0).clamp(0.0, 1.0);
+  /// Буст в дБ (0..maxBoostDb) → фракция слайдера 0.0..1.0.
+  double _fractionFromBoost(double db) =>
+      (db / PlayerService.maxBoostDb).clamp(0.0, 1.0);
 
   void _apply(double fraction) {
-    widget.player.setUiVolume(fraction * 2.0);
+    widget.player.setBoost(fraction * PlayerService.maxBoostDb);
   }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<double>(
-      stream: widget.player.uiVolumeStream,
-      initialData: widget.player.uiVolume,
+      stream: widget.player.boostDbStream,
+      initialData: widget.player.boostDb,
       builder: (context, snap) {
-        final uiVol = snap.data ?? 1.0;
-        final fraction = _dragFraction ?? _fractionFromUiVolume(uiVol);
-        final pct = (fraction * 2 * 100).round();
+        final boostDb = snap.data ?? 0.0;
+        final fraction = _dragFraction ?? _fractionFromBoost(boostDb);
+        final db = fraction * PlayerService.maxBoostDb;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -393,7 +393,7 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Volume',
+                  'Boost',
                   style: TextStyle(
                     color: widget.colors.textPrimary,
                     fontSize: 16,
@@ -401,7 +401,7 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
                   ),
                 ),
                 Text(
-                  '$pct%',
+                  db < 0.05 ? 'Off' : '+${db.toStringAsFixed(1)} dB',
                   style: TextStyle(
                     color: widget.colors.textPrimary,
                     fontSize: 14,
@@ -442,7 +442,7 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
                   },
                   child: CustomPaint(
                     size: const Size(double.infinity, 40),
-                    painter: _VolumePainter(
+                    painter: _BoostPainter(
                       fraction: fraction,
                       thumbAnim: _thumbAnim,
                       colors: widget.colors,
@@ -458,8 +458,8 @@ class _VolumeSliderState extends ConsumerState<_VolumeSlider>
   }
 }
 
-class _VolumePainter extends CustomPainter {
-  _VolumePainter({
+class _BoostPainter extends CustomPainter {
+  _BoostPainter({
     required this.fraction,
     required this.thumbAnim,
     required this.colors,
@@ -549,10 +549,10 @@ class _VolumePainter extends CustomPainter {
     final thumbPaint = Paint()..color = colors.elevatedHi;
     canvas.drawRRect(thumbRect, thumbPaint);
 
-    _drawVolumeIcon(canvas, size, fraction, colors, iconX);
+    _drawBoostIcon(canvas, size, fraction, colors, iconX);
   }
 
-  void _drawVolumeIcon(
+  void _drawBoostIcon(
     Canvas canvas,
     Size size,
     double fraction,
@@ -561,13 +561,9 @@ class _VolumePainter extends CustomPainter {
   ) {
     final IconData iconData;
     if (fraction <= 0.005) {
-      iconData = Icons.volume_off_rounded;
-    } else if (fraction < 0.25) {
-      iconData = Icons.volume_mute_rounded;
-    } else if (fraction < 0.5) {
-      iconData = Icons.volume_down_rounded;
-    } else {
       iconData = Icons.volume_up_rounded;
+    } else {
+      iconData = Icons.graphic_eq_rounded;
     }
 
     final iconStr = String.fromCharCode(iconData.codePoint);
@@ -589,7 +585,7 @@ class _VolumePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_VolumePainter old) {
+  bool shouldRepaint(_BoostPainter old) {
     return old.fraction != fraction ||
         old.thumbAnim.value != thumbAnim.value ||
         old.colors != colors;

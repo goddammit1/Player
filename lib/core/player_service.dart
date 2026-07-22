@@ -2,15 +2,10 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
-import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener;
-import 'package:flutter/services.dart'
-    show HapticFeedback, MethodCall, MethodChannel;
-import 'package:flutter/widgets.dart'
-    show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/track.dart';
@@ -21,37 +16,25 @@ import 'youtube_cache.dart';
 // ignore: avoid_print
 void _log(String msg) => print('[PlayerService] $msg');
 
-class PlayerService extends BaseAudioHandler
-    with SeekHandler, WidgetsBindingObserver {
-  // ===== VOLUME & GAIN =====
+class PlayerService extends BaseAudioHandler with SeekHandler {
+  // ===== BOOST =====
+  //
+  // Обычная громкость полностью отдана системному регулятору
+  // (STREAM_MUSIC) — мы её не трогаем. Единственное, чем управляет
+  // приложение, — это "буст": усиление поверх системного уровня через
+  // AndroidLoudnessEnhancer. Эффект встроен в AudioPipeline плеера,
+  // который работает в фоновом аудиосервисе, поэтому буст сохраняется,
+  // когда приложение свёрнуто, без какой-либо возни с lifecycle.
 
-  static const MethodChannel _volumeKeysChannel =
-      MethodChannel('player/volume_keys');
-  static const double _volumeStep = 0.05;
-  static const String _uiVolumeKey = 'ui_volume_v1';
+  static const String _boostDbKey = 'boost_db_v1';
 
-  /// Делений remote-шкалы MediaSession (0..200% с шагом 5%).
-  /// Должно совпадать с REMOTE_VOLUME_MAX в MainActivity.kt.
-  static const int _remoteVolumeMax = 40;
+  /// Потолок буста в децибелах. 0 dB = без усиления.
+  static const double maxBoostDb = 12.0;
 
-  /// Удалось ли перевести MediaSession в remote-режим громкости.
-  bool _remoteVolumeActive = false;
-
-  /// Системная громкость на момент входа в плеер.
-  /// Восстанавливается при detached/stop.
-  double? _savedSysVol;
-
-  /// Gain в децибелах. 0 dB = без изменений.
-  double _gainDb = 0.0;
-  double get gainDb => _gainDb;
-
-  /// UI-громкость 0.0..2.0.
-  /// 0.0..1.0 — синхронизирована с системной (STREAM_MUSIC).
-  /// 1.0..2.0 — системная = 1.0, поверх накладывается AndroidLoudnessEnhancer.
-  final BehaviorSubject<double> _uiVolume =
-      BehaviorSubject<double>.seeded(1.0);
-  Stream<double> get uiVolumeStream => _uiVolume.stream;
-  double get uiVolume => _uiVolume.value;
+  /// Текущий буст в дБ (0..maxBoostDb).
+  final BehaviorSubject<double> _boostDb = BehaviorSubject<double>.seeded(0.0);
+  Stream<double> get boostDbStream => _boostDb.stream;
+  double get boostDb => _boostDb.value;
 
   late final AndroidLoudnessEnhancer _loudnessEnhancer;
   late final AudioPlayer _player;
@@ -117,196 +100,51 @@ class PlayerService extends BaseAudioHandler
       },
     );
 
-    // Пока юзер в плеере, системная громкость всегда max, а наша
-    // 0..200% шкала — единственный источник истины:
-    // 0..1 — громкость движка, 1..2 — LoudnessEnhancer.
-    WidgetsBinding.instance.addObserver(this);
-    _volumeKeysChannel.setMethodCallHandler(_onVolumeKey);
-    unawaited(_initSystemVolume());
+    unawaited(_initBoost());
   }
 
-  Future<void> _initSystemVolume() async {
+  // ===== BOOST METHODS =====
+
+  Future<void> _initBoost() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getDouble(_uiVolumeKey);
-      await _enterPlayerVolumeMode();
-      await setUiVolume(saved ?? 1.0);
+      final saved = prefs.getDouble(_boostDbKey) ?? 0.0;
+      await setBoost(saved);
     } catch (e) {
-      _log('system volume init failed: $e');
+      _log('boost init failed: $e');
     }
   }
 
-  /// resumed — запоминаем системную громкость и выкручиваем STREAM_MUSIC
-  /// на max; detached — возвращаем как было.
-  ///
-  /// На paused (свернули приложение / заблокировали экран) НИЧЕГО не
-  /// делаем: музыка продолжает играть, STREAM_MUSIC остаётся на max,
-  /// а кнопки громкости идут через remote VolumeProvider MediaSession.
-  /// Раньше здесь возвращалась системная громкость — из-за этого вся
-  /// схема 0..200% разваливалась в фоне.
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    switch (state) {
-      case AppLifecycleState.resumed:
-        unawaited(
-          _enterPlayerVolumeMode().then((_) => setUiVolume(uiVolume)),
-        );
-      case AppLifecycleState.detached:
-        unawaited(_restoreSystemVolume());
-      default:
-        break;
-    }
-  }
-
-  Future<void> _enterPlayerVolumeMode() async {
-    try {
-      _savedSysVol ??= await FlutterVolumeController.getVolume();
-      await FlutterVolumeController.setVolume(1.0);
-      FlutterVolumeController.updateShowSystemUI(false);
-    } catch (e) {
-      _log('_enterPlayerVolumeMode failed: $e');
-    }
-  }
-
-  Future<void> _restoreSystemVolume() async {
-    final v = _savedSysVol;
-    _savedSysVol = null;
-    if (v == null) return;
-    try {
-      await FlutterVolumeController.setVolume(v);
-    } catch (e) {
-      _log('_restoreSystemVolume failed: $e');
-    }
-  }
-
-  Future<dynamic> _onVolumeKey(MethodCall call) async {
-    switch (call.method) {
-      // Форграунд: перехват в MainActivity.dispatchKeyEvent.
-      case 'up':
-        await nudgeVolume(_volumeStep);
-      case 'down':
-        await nudgeVolume(-_volumeStep);
-      // Фон/локскрин: remote VolumeProvider у MediaSession.
-      case 'adjust':
-        final dir = (call.arguments as int?) ?? 0;
-        if (dir != 0) await nudgeVolume(dir * _volumeStep);
-      case 'setTo':
-        final raw = (call.arguments as int?) ?? 0;
-        await setUiVolume(raw / _remoteVolumeMax * 2.0);
-    }
-    return null;
-  }
-
-  /// Шаг громкости от физических кнопок (см. MainActivity.dispatchKeyEvent).
-  Future<void> nudgeVolume(double delta) =>
-      setUiVolume(_uiVolume.value + delta);
-
-  /// Вызывается audio_service когда MediaController.sendCustomAction шлёт
-  /// команду со стороны VolumeProvider (фон/локскрин).
-  /// Этот путь работает в background, в отличие от MethodChannel.
-  @override
-  Future<dynamic> customAction(String name,
-      [Map<String, dynamic>? extras]) async {
-    switch (name) {
-      case 'vol_adjust':
-        final dir = (extras?['direction'] as int?) ?? 0;
-        if (dir != 0) await nudgeVolume(dir * _volumeStep);
-      case 'vol_set':
-        final raw = (extras?['volume'] as int?) ?? 0;
-        await setUiVolume(raw / _remoteVolumeMax * 2.0);
-    }
-    return null;
-  }
-
-  Future<void> _persistUiVolume(double v) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble(_uiVolumeKey, v);
-    } catch (_) {}
-  }
-
-  int get _uiVolumeAsRemote =>
-      (uiVolume / 2.0 * _remoteVolumeMax).round().clamp(0, _remoteVolumeMax);
-
-  /// Переводит MediaSession в remote-режим громкости (см. MainActivity).
-  /// После этого кнопки громкости работают в фоне и на локскрине.
-  /// Сессия появляется только после старта аудиосервиса, поэтому зовём
-  /// при каждом запуске воспроизведения, пока не получится.
-  Future<void> _ensureRemoteVolume() async {
-    if (_remoteVolumeActive) return;
-    try {
-      final ok = await _volumeKeysChannel.invokeMethod<bool>(
-        'enableRemoteVolume',
-        {'current': _uiVolumeAsRemote},
-      );
-      _remoteVolumeActive = ok ?? false;
-      _log('remote volume ${_remoteVolumeActive ? 'enabled' : 'not ready yet'}');
-    } catch (e) {
-      _log('enableRemoteVolume failed: $e');
-    }
-  }
-
-  /// Синхронизируем позицию remote-шкалы, чтобы системный индикатор
-  /// громкости совпадал с нашей 0..200%.
-  Future<void> _syncRemoteVolume() async {
-    if (!_remoteVolumeActive) return;
-    try {
-      await _volumeKeysChannel.invokeMethod(
-        'syncRemoteVolume',
-        {'current': _uiVolumeAsRemote},
-      );
-    } catch (_) {}
-  }
-
-  // ===== VOLUME & GAIN METHODS =====
-
-  Future<void> setVolume(double volume) async {
-    await _player.setVolume(volume.clamp(0.0, 1.0));
-  }
-
-  Future<void> setGain(double db) async {
-    _gainDb = db;
+  /// Единственная точка управления бустом (слайдер в UI).
+  /// Значение в дБ, 0..maxBoostDb. Персистится в prefs и переживает
+  /// перезапуск приложения; в фоне держится самим audio pipeline.
+  Future<void> setBoost(double db) async {
+    final clamped = db.clamp(0.0, maxBoostDb);
+    _boostDb.add(clamped);
     try {
       await _loudnessEnhancer.setEnabled(true);
-      await _loudnessEnhancer.setTargetGain(db);
-      _log('setGain($db dB) OK');
+      await _loudnessEnhancer.setTargetGain(clamped);
+      _log('setBoost($clamped dB) OK');
     } catch (e) {
-      _log('setGain FAILED: $e');
+      _log('setBoost FAILED: $e');
     }
+    unawaited(_persistBoost(clamped));
   }
 
-
-  Future<void> setVolumeAndGain(double volume, double gainDb) async {
-    await setVolume(volume);
-    await setGain(gainDb);
+  Future<void> _persistBoost(double db) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_boostDbKey, db);
+    } catch (_) {}
   }
 
-  /// Единая точка входа для громкости (слайдер UI и физкнопки).
-  /// Системная громкость при активной сессии всегда 1.0.
-  /// 0.0..1.0 — громкость движка, gain = 0.
-  /// 1.0..2.0 — движок на 1.0, gain 0..+6 dB (≈ x2).
-  Future<void> setUiVolume(double v) async {
-    v = v.clamp(0.0, 2.0);
-    final prev = _uiVolume.value;
-    _uiVolume.add(v);
-
-    if (v <= 1.0) {
-      await _player.setVolume(v);
-      if (_gainDb != 0.0) {
-        await setGain(0.0);
-      }
-    } else {
-      await _player.setVolume(1.0);
-      final gainDb = ((v - 1.0) * 6.0).clamp(0.0, 6.0);
-      await setGain(gainDb);
-    }
-
-    // Haptic на пересечении границы 100%.
-    if ((prev <= 1.0) != (v <= 1.0)) {
-      unawaited(HapticFeedback.selectionClick());
-    }
-    unawaited(_persistUiVolume(v));
-    unawaited(_syncRemoteVolume());
+  /// Повторно применяем буст к эффекту — на случай, если при смене
+  /// аудио-сессии эффект был пересоздан.
+  Future<void> _reapplyBoost() async {
+    try {
+      await _loudnessEnhancer.setEnabled(true);
+      await _loudnessEnhancer.setTargetGain(_boostDb.value);
+    } catch (_) {}
   }
 
   // ===== Авто-переход при завершении трека =====
@@ -314,23 +152,23 @@ class PlayerService extends BaseAudioHandler
   void _onTrackFinished() {
     switch (_loopMode.value) {
       case LoopMode.one:
-        _log('LoopMode.one → replay index=$_currentIndex');
+        _log('LoopMode.one \u2192 replay index=$_currentIndex');
         _playIndex(_currentIndex);
       case LoopMode.all:
         final next = _currentIndex + 1;
         if (next < _queue.length) {
-          _log('LoopMode.all → next index=$next');
+          _log('LoopMode.all \u2192 next index=$next');
           _playIndex(next);
         } else if (_queue.isNotEmpty) {
-          _log('LoopMode.all → wrap to index=0');
+          _log('LoopMode.all \u2192 wrap to index=0');
           _playIndex(0);
         }
       case LoopMode.off:
         if (_currentIndex + 1 < _queue.length) {
-          _log('LoopMode.off → next index=${_currentIndex + 1}');
+          _log('LoopMode.off \u2192 next index=${_currentIndex + 1}');
           _playIndex(_currentIndex + 1);
         } else {
-          _log('LoopMode.off → end of queue, stopping');
+          _log('LoopMode.off \u2192 end of queue, stopping');
         }
     }
   }
@@ -448,9 +286,8 @@ class PlayerService extends BaseAudioHandler
           ' starting playback');
       await _player.play();
 
-      // Аудиосервис и его MediaSession уже точно живы — включаем
-      // remote volume, чтобы кнопки работали в фоне/на локскрине.
-      unawaited(_ensureRemoteVolume());
+      // На случай пересоздания аудио-сессии повторно применяем буст.
+      unawaited(_reapplyBoost());
 
       _warmArtwork(_currentIndex);
       _schedulePrefetchNext(myGen);
@@ -531,7 +368,6 @@ class PlayerService extends BaseAudioHandler
       return;
     }
     await _player.play();
-    unawaited(_ensureRemoteVolume());
   }
 
   void _warmArtwork(int index) {
@@ -559,8 +395,6 @@ class PlayerService extends BaseAudioHandler
   @override
   Future<void> stop() async {
     await _player.stop();
-    // Сессия закрывается — возвращаем пользователю его системную громкость.
-    unawaited(_restoreSystemVolume());
     await super.stop();
   }
 
