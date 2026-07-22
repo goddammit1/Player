@@ -74,8 +74,17 @@ class PlayerApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // ИСПОЛЬЗУЕМ animatedPaletteProvider ВМЕСТО currentPaletteProvider
     final colors = ref.watch(animatedPaletteProvider);
+
+    // Навбар Android следует за фоном динамической темы.
+    // setSystemUIOverlayStyle применяет стиль максимум раз за кадр — дёшево
+    // даже при пересборке во время анимации палитры.
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: colors.background,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ));
 
     final base = ThemeData(
       brightness: Brightness.dark,

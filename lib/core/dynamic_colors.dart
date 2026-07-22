@@ -1,6 +1,5 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
 
 @immutable
@@ -340,22 +339,6 @@ class _PaletteExtractor {
 //  Provider
 // ═══════════════════════════════════════════════════════════════════════════
 
-final dynamicPaletteProvider =
-    FutureProvider.family<DynamicPalette, String>((ref, imageUrl) async {
-  if (imageUrl.isEmpty) {
-    return DynamicPalette.empty;
-  }
-
-  try {
-    final palette = await PaletteGenerator.fromImageProvider(
-      NetworkImage(imageUrl),
-      maximumColorCount: 32,
-      timeout: const Duration(seconds: 5),
-    );
-
-    return DynamicPalette.fromPalette(palette);
-  } catch (e) {
-    debugPrint('[DynamicPalette] Failed: $e');
-    return DynamicPalette.empty;
-  }
-});
+// Провайдер dynamicPaletteProvider удалён: он нигде не использовался.
+// Палитра темы строится в global_theme_provider.dart через
+// AppColors.fromDynamicPalette(DynamicPalette.fromPalette(...)).

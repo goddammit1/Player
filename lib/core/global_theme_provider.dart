@@ -1,10 +1,13 @@
-import 'dart:async';
+import 'package:audio_service/audio_service.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
-import 'package:audio_service/audio_service.dart';
 
-import 'providers.dart';  // для playerServiceProvider
+import 'appearance_provider.dart';
+import 'dynamic_colors.dart';
+import 'providers.dart' show playerServiceProvider;
 
 // ── Media item stream ──────────────────────────────────────────────────────
 
@@ -13,85 +16,137 @@ final _mediaItemProvider = StreamProvider<MediaItem?>((ref) {
   return player.mediaItem;
 });
 
-// ── Async palette from URL ─────────────────────────────────────────────────
-
-final _asyncPaletteProvider = FutureProvider.family<PaletteGenerator, String>((ref, url) async {
-  if (url.isEmpty) throw Exception('Empty URL');
-  return await PaletteGenerator.fromImageProvider(
-    NetworkImage(url),
-    maximumColorCount: 24,
+// ── Palette from artwork URL ───────────────────────────────────────────────
+//
+// autoDispose: палитры старых обложек освобождаются, как только на них никто
+// не подписан (подписку на текущий URL держит CurrentPaletteNotifier).
+// size: PaletteGenerator квантует уменьшенную копию картинки — тот же
+// результат, но без десятков миллисекунд jank в main isolate.
+// CachedNetworkImageProvider: общий кэш с cached_network_image, которым
+// обложки уже загружены в UI — без повторного похода в сеть.
+final _appColorsForUrlProvider =
+    FutureProvider.autoDispose.family<AppColors, String>((ref, url) async {
+  final palette = await PaletteGenerator.fromImageProvider(
+    CachedNetworkImageProvider(url),
+    size: const Size(200, 200),
+    maximumColorCount: 32,
     timeout: const Duration(seconds: 5),
   );
+  return AppColors.fromDynamicPalette(DynamicPalette.fromPalette(palette));
 });
 
 // ── Current palette (instant, no animation) ────────────────────────────────
 
-final currentPaletteProvider = Provider<AppColors>((ref) {
-  final mode = ref.watch(appThemeModeProvider);
-  if (mode == AppThemeMode.fixed) return AppColors.fixed;
-
-  final mediaItem = ref.watch(_mediaItemProvider);
-  final url = mediaItem.value?.artUri?.toString();
-  if (url == null || url.isEmpty) return AppColors.fixed;
-
-  final paletteAsync = ref.watch(_asyncPaletteProvider(url));
-  return paletteAsync.when(
-    data: (palette) => AppColors.fromPalette(palette),
-    loading: () => AppColors.fixed,
-    error: (_, _) => AppColors.fixed,
-  );
+final currentPaletteProvider =
+    StateNotifierProvider<CurrentPaletteNotifier, AppColors>((ref) {
+  return CurrentPaletteNotifier(ref);
 });
 
-// ── Animated palette — StateNotifierProvider (совместим с существующим кодом) ─
-
-final animatedPaletteProvider = StateNotifierProvider<AnimatedPaletteNotifier, AppColors>((ref) {
-  return AnimatedPaletteNotifier(ref);
-});
-
-class AnimatedPaletteNotifier extends StateNotifier<AppColors> {
-  AnimatedPaletteNotifier(this._ref) : super(AppColors.fixed) {
-    _init();
+/// Мгновенная (неанимированная) палитра.
+///
+/// Держит last-good значение: пока палитра нового трека считается (или упала
+/// с ошибкой), остаёмся на предыдущей — без «вспышки» чёрной fixed-темы при
+/// каждой смене трека.
+class CurrentPaletteNotifier extends StateNotifier<AppColors> {
+  CurrentPaletteNotifier(this._ref) : super(AppColors.fixed) {
+    _ref.listen(appThemeModeProvider, (_, _) => _recompute());
+    _ref.listen(_mediaItemProvider, (_, _) => _recompute());
+    _recompute();
   }
 
   final Ref _ref;
-  Timer? _debounceTimer;
-  AppColors? _targetColors;
-  AppColors _startColors = AppColors.fixed;
-  DateTime? _animationStart;
-  static const _duration = Duration(milliseconds: 1000);
+  ProviderSubscription<AsyncValue<AppColors>>? _paletteSub;
+  String? _activeUrl;
 
-  void _init() {
-    _ref.listen(currentPaletteProvider, (previous, next) {
-      if (previous == next) return;
+  void _recompute() {
+    final mode = _ref.read(appThemeModeProvider);
+    final url = mode == AppThemeMode.dynamic
+        ? (_ref.read(_mediaItemProvider).value?.artUri?.toString() ?? '')
+        : '';
 
-      _startColors = state;
-      _targetColors = next;
-      _animationStart = DateTime.now();
+    if (url == _activeUrl) return;
+    _activeUrl = url;
 
-      _debounceTimer?.cancel();
-      _animate();
-    });
-  }
+    _paletteSub?.close();
+    _paletteSub = null;
 
-  void _animate() {
-    if (_targetColors == null) return;
-
-    final elapsed = DateTime.now().difference(_animationStart!);
-    final t = (elapsed.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
-    final eased = Curves.easeInOutCubic.transform(t);
-
-    state = AppColors.lerp(_startColors, _targetColors!, eased);
-
-    if (t < 1.0) {
-      _debounceTimer = Timer(const Duration(milliseconds: 16), _animate);
-    } else {
-      state = _targetColors!;
+    if (url.isEmpty) {
+      state = AppColors.fixed;
+      return;
     }
+
+    // Открытая подписка держит autoDispose-запись текущего URL живой —
+    // аналог keepAlive для активного трека.
+    _paletteSub = _ref.listen(
+      _appColorsForUrlProvider(url),
+      (_, asyncColors) {
+        // data → новая палитра; loading/error → остаёмся на last-good.
+        asyncColors.whenData((colors) => state = colors);
+      },
+      fireImmediately: true,
+    );
   }
 
   @override
   void dispose() {
-    _debounceTimer?.cancel();
+    _paletteSub?.close();
+    super.dispose();
+  }
+}
+
+// ── Animated palette ───────────────────────────────────────────────────────
+
+final animatedPaletteProvider =
+    StateNotifierProvider<AnimatedPaletteNotifier, AppColors>((ref) {
+  return AnimatedPaletteNotifier(ref);
+});
+
+/// Плавный переход между палитрами.
+///
+/// Ticker вместо Timer(16ms): тики синхронизированы с vsync — ровно одно
+/// обновление на реальный кадр, без дрейфа таймера и без лишних срабатываний,
+/// когда кадры не рисуются.
+class AnimatedPaletteNotifier extends StateNotifier<AppColors> {
+  AnimatedPaletteNotifier(this._ref)
+      : super(_ref.read(currentPaletteProvider)) {
+    _ticker = Ticker(_onTick);
+    _ref.listen(currentPaletteProvider, (previous, next) {
+      if (next == (_target ?? state)) return;
+      _start = state;
+      _target = next;
+      _ticker.stop();
+      _ticker.start();
+    });
+  }
+
+  final Ref _ref;
+  late final Ticker _ticker;
+  AppColors _start = AppColors.fixed;
+  AppColors? _target;
+  static const _duration = Duration(milliseconds: 1000);
+
+  void _onTick(Duration elapsed) {
+    final target = _target;
+    if (target == null) {
+      _ticker.stop();
+      return;
+    }
+
+    final t =
+        (elapsed.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+    if (t >= 1.0) {
+      _ticker.stop();
+      _target = null;
+      state = target;
+      return;
+    }
+
+    state = AppColors.lerp(_start, target, Curves.easeInOutCubic.transform(t));
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
     super.dispose();
   }
 }
@@ -132,75 +187,26 @@ class AppColors {
     isDynamic: false,
   );
 
-  /// Выбирает самый насыщенный цвет из палитры обложки
-  factory AppColors.fromPalette(PaletteGenerator palette) {
-    // Собираем все доступные swatches
-    final allSwatches = [
-      palette.vibrantColor,
-      palette.lightVibrantColor,
-      palette.darkVibrantColor,
-      palette.dominantColor,
-      palette.mutedColor,
-      palette.darkMutedColor,
-      palette.lightMutedColor,
-    ].whereType<PaletteColor>().toList();
-
-    if (allSwatches.isEmpty) {
-      return AppColors.fixed;
-    }
-
-    // Находим цвет с максимальной насыщенностью (HSV saturation)
-    Color mostSaturated = allSwatches.first.color;
-    double maxSaturation = _saturation(mostSaturated);
-
-    for (final swatch in allSwatches) {
-      final sat = _saturation(swatch.color);
-      if (sat > maxSaturation) {
-        maxSaturation = sat;
-        mostSaturated = swatch.color;
-      }
-    }
-
-    // Если самый насыщенный слишком тусклый — берём vibrantColor как fallback
-    if (maxSaturation < 0.3) {
-      mostSaturated = palette.vibrantColor?.color ?? mostSaturated;
-    }
-
-    final hsl = HSLColor.fromColor(mostSaturated);
-    final baseHue = hsl.hue;
-    final baseSat = (hsl.saturation * 0.9).clamp(0.35, 0.75);
-
-    final elevated = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 0.80).clamp(0.0, 0.65), 0.20).toColor();
-    final accent = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 1.0).clamp(0.0, 0.75), 0.55).toColor();
-    final gradientTop = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 0.85).clamp(0.0, 0.60), 0.18).toColor();
-    final gradientBottom = HSLColor.fromAHSL(1.0, baseHue, (baseSat * 0.50).clamp(0.0, 0.40), 0.03).toColor();
-    final midBackground = Color.lerp(gradientTop, gradientBottom, 0.6)!;
-
+  /// Строит палитру приложения из [DynamicPalette] — гибридного экстрактора
+  /// (ArchiveTune + ViTune + ViViMusic) из dynamic_colors.dart.
+  /// Прежний упрощённый экстрактор «самый насыщенный swatch» удалён —
+  /// источник цветов теперь один.
+  factory AppColors.fromDynamicPalette(DynamicPalette p) {
     return AppColors._(
-      background: midBackground,
-      elevated: elevated,
-      elevatedVariant: _darken(elevated, 0.05),
-      elevatedHi: accent,
-      elevatedProgressBar: accent.withValues(alpha: 0.5),
-      outline: _lighten(elevated, 0.15),
-      textPrimary: const Color(0xFFF9F8F8),
+      background: Color.lerp(p.gradientTop, p.gradientBottom, 0.6)!,
+      elevated: p.elevated,
+      elevatedVariant: _darken(p.elevated, 0.05),
+      elevatedHi: p.accent,
+      elevatedProgressBar: p.accent.withValues(alpha: 0.5),
+      outline: _lighten(p.elevated, 0.15),
+      textPrimary: p.primary,
       textSecondary: const Color(0xB3F9F8F8),
       textTertiary: const Color(0x80F9F8F8),
-      accent: accent,
-      gradientTop: gradientTop,
-      gradientBottom: gradientBottom,
+      accent: p.accent,
+      gradientTop: p.gradientTop,
+      gradientBottom: p.gradientBottom,
       isDynamic: true,
     );
-  }
-
-  /// HSV saturation of a color (0.0 - 1.0)
-  static double _saturation(Color color) {
-    final hsl = HSLColor.fromColor(color);
-    final s = hsl.saturation;
-    final l = hsl.lightness;
-    final v = l + s * (l < 0.5 ? l : 1.0 - l);
-    final sv = v == 0 ? 0.0 : 2 * (1.0 - l / v);
-    return sv.clamp(0.0, 1.0);
   }
 
   final Color background;
@@ -223,7 +229,8 @@ class AppColors {
       elevated: Color.lerp(a.elevated, b.elevated, t)!,
       elevatedVariant: Color.lerp(a.elevatedVariant, b.elevatedVariant, t)!,
       elevatedHi: Color.lerp(a.elevatedHi, b.elevatedHi, t)!,
-      elevatedProgressBar: Color.lerp(a.elevatedProgressBar, b.elevatedProgressBar, t)!,
+      elevatedProgressBar:
+          Color.lerp(a.elevatedProgressBar, b.elevatedProgressBar, t)!,
       outline: Color.lerp(a.outline, b.outline, t)!,
       textPrimary: Color.lerp(a.textPrimary, b.textPrimary, t)!,
       textSecondary: Color.lerp(a.textSecondary, b.textSecondary, t)!,
@@ -235,13 +242,52 @@ class AppColors {
     );
   }
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppColors &&
+          background == other.background &&
+          elevated == other.elevated &&
+          elevatedVariant == other.elevatedVariant &&
+          elevatedHi == other.elevatedHi &&
+          elevatedProgressBar == other.elevatedProgressBar &&
+          outline == other.outline &&
+          textPrimary == other.textPrimary &&
+          textSecondary == other.textSecondary &&
+          textTertiary == other.textTertiary &&
+          accent == other.accent &&
+          gradientTop == other.gradientTop &&
+          gradientBottom == other.gradientBottom &&
+          isDynamic == other.isDynamic;
+
+  @override
+  int get hashCode => Object.hash(
+        background,
+        elevated,
+        elevatedVariant,
+        elevatedHi,
+        elevatedProgressBar,
+        outline,
+        textPrimary,
+        textSecondary,
+        textTertiary,
+        accent,
+        gradientTop,
+        gradientBottom,
+        isDynamic,
+      );
+
   static Color _darken(Color c, double amount) {
     final hsl = HSLColor.fromColor(c);
-    return hsl.withLightness((hsl.lightness - amount).clamp(0.0, 1.0)).toColor();
+    return hsl
+        .withLightness((hsl.lightness - amount).clamp(0.0, 1.0))
+        .toColor();
   }
 
   static Color _lighten(Color c, double amount) {
     final hsl = HSLColor.fromColor(c);
-    return hsl.withLightness((hsl.lightness + amount).clamp(0.0, 1.0)).toColor();
+    return hsl
+        .withLightness((hsl.lightness + amount).clamp(0.0, 1.0))
+        .toColor();
   }
 }
