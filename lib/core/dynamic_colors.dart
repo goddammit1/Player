@@ -2,9 +2,14 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:palette_generator/palette_generator.dart';
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  Domain model — single seed, hue never changes
+// ═══════════════════════════════════════════════════════════════════════════
+
 @immutable
 class DynamicPalette {
   const DynamicPalette({
+    required this.seed,
     required this.primary,
     required this.elevated,
     required this.accent,
@@ -12,41 +17,24 @@ class DynamicPalette {
     required this.gradientBottom,
   });
 
+  /// The original colour extracted from the artwork.
+  /// Its hue is preserved exactly in all derived colours.
+  final Color seed;
+
+  /// Near-white text.
   final Color primary;
+
+  /// Dark surface.
   final Color elevated;
+
+  /// Accent (Play button). Same hue as seed, adjusted for WCAG only.
   final Color accent;
+
   final Color gradientTop;
   final Color gradientBottom;
 
-  // ── ArchiveTune + ViTune hybrid extraction ────────────────────────────
-  // Возвращает null для серых / почти-серых обложек: у них нет надёжного
-  // hue (HSL даёт hue = 0, то есть красный), поэтому вызывающий код должен
-  // откатиться на фиксированную тему, а не выдумывать оттенок.
-  static DynamicPalette? fromPalette(PaletteGenerator palette) {
-    return _PaletteExtractor(palette).extract();
-  }
-
-  // ── Fallback: simplified from dominant ──────────────────────────────────
-  factory DynamicPalette.fromDominant(Color dominant) {
-    final hsl = HSLColor.fromColor(dominant);
-    final baseHue = hsl.hue;
-    final baseSat = (hsl.saturation * 0.6).clamp(0.15, 0.50);
-
-    final elevated = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.7, 0.20).toColor();
-    final accent = HSLColor.fromAHSL(1.0, baseHue, baseSat, 0.55).toColor();
-    final gradientTop = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.8, 0.18).toColor();
-    final gradientBottom = HSLColor.fromAHSL(1.0, baseHue, baseSat * 0.3, 0.03).toColor();
-
-    return DynamicPalette(
-      primary: const Color(0xFFF9F8F8),
-      elevated: elevated,
-      accent: accent,
-      gradientTop: gradientTop,
-      gradientBottom: gradientBottom,
-    );
-  }
-
   static const empty = DynamicPalette(
+    seed: Color(0xFF747474),
     primary: Color(0xFFF9F8F8),
     elevated: Color(0xFF212124),
     accent: Color(0xFF747474),
@@ -58,6 +46,7 @@ class DynamicPalette {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is DynamicPalette &&
+          seed == other.seed &&
           primary == other.primary &&
           elevated == other.elevated &&
           accent == other.accent &&
@@ -65,20 +54,147 @@ class DynamicPalette {
           gradientBottom == other.gradientBottom;
 
   @override
-  int get hashCode => Object.hash(primary, elevated, accent, gradientTop, gradientBottom);
+  int get hashCode => Object.hash(seed, primary, elevated, accent, gradientTop, gradientBottom);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Hybrid: ArchiveTune extraction + ViTune HSL comfort + ViViMusic vibrancy check
+//  Role configuration
 // ═══════════════════════════════════════════════════════════════════════════
 
-class _PaletteExtractor {
-  final PaletteGenerator palette;
+@immutable
+class PaletteRole {
+  const PaletteRole({
+    required this.targetSaturation,
+    required this.targetLightness,
+    this.minContrast,
+    this.contrastAgainst,
+    this.lightnessStep = 0.02,
+    this.lightnessMin = 0.05,
+    this.lightnessMax = 0.95,
+  });
 
-  _PaletteExtractor(this.palette);
+  final double targetSaturation;
+  final double targetLightness;
+  final double? minContrast;
+  final Color? contrastAgainst;
+  final double lightnessStep;
+  final double lightnessMin;
+  final double lightnessMax;
+}
 
-  DynamicPalette? extract() {
-    // 1. Collect swatches ArchiveTune-style (7 types, priority order)
+@immutable
+class PaletteRoles {
+  const PaletteRoles({
+    required this.primary,
+    required this.elevated,
+    required this.accent,
+    required this.gradientTop,
+    required this.gradientBottom,
+  });
+
+  final PaletteRole primary;
+  final PaletteRole elevated;
+  final PaletteRole accent;
+  final PaletteRole gradientTop;
+  final PaletteRole gradientBottom;
+}
+
+class _DefaultRoles implements PaletteRoles {
+  const _DefaultRoles();
+
+  @override
+  PaletteRole get primary => const PaletteRole(
+        targetSaturation: 0.0,
+        targetLightness: 0.97,
+      );
+
+  @override
+  PaletteRole get elevated => const PaletteRole(
+        targetSaturation: 0.40,
+        targetLightness: 0.18,
+        minContrast: 4.5,
+        contrastAgainst: Color(0xFFF9F8F8),
+        lightnessStep: 0.02,
+        lightnessMin: 0.05,
+        lightnessMax: 0.30,
+      );
+
+  @override
+  PaletteRole get accent => const PaletteRole(
+        targetSaturation: 0.75,
+        targetLightness: 0.55,
+        minContrast: 4.5,
+        contrastAgainst: Color(0xFFF9F8F8),
+        lightnessStep: 0.02,
+        lightnessMin: 0.40,
+        lightnessMax: 0.5,
+      );
+
+  @override
+  PaletteRole get gradientTop => const PaletteRole(
+        targetSaturation: 0.45,
+        targetLightness: 0.14,
+      );
+
+  @override
+  PaletteRole get gradientBottom => const PaletteRole(
+        targetSaturation: 0.30,
+        targetLightness: 0.03,
+      );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Single-seed extractor
+//  Strategy: most frequent non-monochrome colour, hue locked.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class PaletteExtractor {
+  PaletteExtractor({
+    this.minSaturationLight = 0.08,   // value > 0.80 (pastels)
+    this.minSaturationMedium = 0.12,  // value > 0.50
+    this.minSaturationDark = 0.18,    // value <= 0.50
+    this.enhanceSaturationFactor = 3.0,
+    this.greyscaleSaturationThreshold = 0.15,
+    this.roles = const _DefaultRoles(),
+  });
+
+  // --- Colourfulness thresholds (adaptive by brightness) ---
+  // Lower = more colours pass, but risk of noisy hue.
+  // These are intentionally low: we trust population over saturation.
+
+  final double minSaturationLight;
+  final double minSaturationMedium;
+  final double minSaturationDark;
+
+  // --- Enhancement ---
+
+  /// Gentle boost. We do NOT want to change the character of the colour,
+  /// just nudge it slightly more vivid.
+  final double enhanceSaturationFactor;
+
+  // --- Hard greyscale guard ---
+
+  /// Weighted saturation below which the cover is truly greyscale.
+  final double greyscaleSaturationThreshold;
+
+  // --- Roles ---
+
+  final PaletteRoles roles;
+
+  // --- Public API ---
+
+  DynamicPalette? fromPalette(PaletteGenerator palette) {
+    return _extract(palette);
+  }
+
+  DynamicPalette? fromDominant(Color dominant) {
+    if (_isNearGray(dominant)) return null;
+    return _buildFromSeed(dominant);
+  }
+
+  // --- Core extraction ---
+
+  DynamicPalette? _extract(PaletteGenerator palette) {
     final allSwatches = [
       palette.vibrantColor,
       palette.lightVibrantColor,
@@ -89,187 +205,130 @@ class _PaletteExtractor {
       palette.lightMutedColor,
     ].whereType<PaletteColor>().toList();
 
-    // 2. Remove duplicates by RGB
-    final seenRgb = <int>{};
-    final uniqueSwatches = <PaletteColor>[];
-    for (final swatch in allSwatches) {
-      if (seenRgb.add(swatch.color.toARGB32())) {
-        uniqueSwatches.add(swatch);
-      }
+    if (allSwatches.isEmpty) return null;
+
+    final totalPopulation = math.max(
+      1,
+      allSwatches.fold<int>(0, (sum, s) => sum + s.population),
+    );
+
+    // ── 1. Filter: non-monochrome colours ────────────────────────────────
+    // A colour is "non-monochrome" if it has enough saturation for its
+    // brightness level. This catches pastels (light pink) that strict
+    // thresholds would miss.
+    final nonMono = allSwatches
+        .where((s) => _isNonMonochrome(s.color))
+        .toList();
+
+    // ── 2. Hard greyscale guard ──────────────────────────────────────────
+    if (nonMono.isEmpty) {
+      final weightedSat = allSwatches.fold<double>(0.0, (sum, s) {
+        final hsv = _toHsv(s.color);
+        return sum + hsv.saturation * s.population;
+      }) / totalPopulation;
+
+      if (weightedSat < greyscaleSaturationThreshold) return null;
+
+      // Last resort: most saturated of all
+      final mostSat = _mostSaturated(allSwatches);
+      if (_isNearGray(mostSat.color)) return null;
+      return _buildFromSeed(_enhance(mostSat.color));
     }
 
-    // 3. Rank by weight (ArchiveTune: population * vibrancy_bonus)
-    final ranked = uniqueSwatches.toList()
-      ..sort((a, b) => _calculateWeight(b).compareTo(_calculateWeight(a)));
+    // ── 3. Pick seed: most frequent non-monochrome ───────────────────────
+    // Sort by population (descending). The first one is our seed.
+    nonMono.sort((a, b) => b.population.compareTo(a.population));
+    final seed = _enhance(nonMono.first.color);
 
-    // 4. Two-tier color collection.
-    //    Сначала строгий отбор (яркие, насыщенные цвета). Если обложка
-    //    приглушённая и строгий проход пуст — повторяем с relaxed-порогом,
-    //    чтобы тусклый, но реально присутствующий цвет всё же попал в тему.
-    var availableColors = _collectColors(ranked, minSaturation: 0.25);
-    if (availableColors.isEmpty) {
-      availableColors = _collectColors(ranked, minSaturation: _greyFloor);
-    }
-
-    // 5. Нет ни одного цвета выше grey-floor → обложка реально серая,
-    //    откатываемся на фиксированную тему (null наверх). weightedSat как
-    //    критерий убран: усреднение по площади топило мелкие явные акценты.
-    if (availableColors.isEmpty) return null;
-
-    // 6. Single-seed: берём самый насыщенный («заметный») цвет и строим всю
-    //    палитру из его hue. Accent + поверхности + градиент в одной гамме,
-    //    поэтому кнопка Play не конфликтует с остальным интерфейсом.
-    final seed = _mostColorfulSeed(availableColors);
-
-    // Финальная страховка: если даже выбранный seed по факту серый — fixed.
-    if (_isNearGray(seed)) return null;
-
-    return _buildMonochrome(seed);
+    return _buildFromSeed(seed);
   }
 
-  // Grey-floor: ниже этой насыщенности цвет считаем нейтральным (серым).
-  static const double _greyFloor = 0.12;
+  // --- Helpers ---
 
-  // Собирает до 6 уникальных цветов с насыщенностью выше [minSaturation],
-  // усиливая их живость (ArchiveTune-style).
-  List<Color> _collectColors(
-    List<PaletteColor> ranked, {
-    required double minSaturation,
-  }) {
-    final colors = <Color>[];
-    for (final swatch in ranked) {
-      final color = swatch.color;
-      final hsv = _toHsv(color);
-      // Пропускаем нейтральные и пере/недо-экспонированные swatch'и.
-      if (hsv[1] <= minSaturation || hsv[2] <= 0.2 || hsv[2] >= 0.9) continue;
-
-      final satFactor = hsv[1] > 0.3 ? 1.25 : 1.05;
-      final enhanced = _enhanceVividness(color, satFactor);
-
-      if (!_isSimilarToAny(enhanced, colors)) {
-        colors.add(enhanced);
-      }
-      if (colors.length >= 6) break;
-    }
-    return colors;
+  PaletteColor _mostSaturated(List<PaletteColor> swatches) {
+    return swatches.reduce((a, b) {
+      final sa = _toHsv(a.color).saturation;
+      final sb = _toHsv(b.color).saturation;
+      return sa >= sb ? a : b;
+    });
   }
 
-  // Самый насыщенный кандидат — визуально самый «цепляющий».
-  Color _mostColorfulSeed(List<Color> colors) {
-    return colors.reduce((a, b) => _toHsv(a)[1] >= _toHsv(b)[1] ? a : b);
-  }
+  // --- Non-monochrome check (adaptive) ---
 
-  // ── ArchiveTune: weight calculation ────────────────────────────────────
-  double _calculateWeight(PaletteColor swatch) {
-    final hsv = _toHsv(swatch.color);
-    final saturation = hsv[1];
-    final brightness = hsv[2];
-    final vibrancyBonus = (saturation > 0.3 && brightness >= 0.2 && brightness <= 0.9) ? 1.3 : 1.0;
-    return swatch.population * vibrancyBonus;
-  }
-
-  // ── ArchiveTune: vividness enhancement ─────────────────────────────────
-  Color _enhanceVividness(Color color, double saturationFactor) {
+  bool _isNonMonochrome(Color color) {
     final hsv = _toHsv(color);
-    hsv[1] = (hsv[1] * saturationFactor).clamp(0.0, 1.0);
-    hsv[2] = (hsv[2] * 1.02).clamp(0.32, 0.88);
-    return _fromHsv(hsv);
+    final minSat = hsv.value > 0.80
+        ? minSaturationLight
+        : hsv.value > 0.50
+            ? minSaturationMedium
+            : minSaturationDark;
+    return hsv.saturation >= minSat && hsv.value > 0.05;
   }
 
-  // ── ArchiveTune: similarity check ──────────────────────────────────────
-  bool _isSimilarColor(Color a, Color b) {
-    final hsv1 = _toHsv(a);
-    final hsv2 = _toHsv(b);
+  // --- Enhancement (gentle, preserves character) ---
 
-    final hueDiffRaw = (hsv1[0] - hsv2[0]).abs();
-    final hueDiff = math.min(hueDiffRaw, 360 - hueDiffRaw);
-    final satDiff = (hsv1[1] - hsv2[1]).abs();
-    final valDiff = (hsv1[2] - hsv2[2]).abs();
-
-    if (hueDiff < 12 && satDiff < 0.12 && valDiff < 0.12) return true;
-
-    const threshold = 28;
-    final r1 = (a.r * 255).round();
-    final g1 = (a.g * 255).round();
-    final b1 = (a.b * 255).round();
-    final r2 = (b.r * 255).round();
-    final g2 = (b.g * 255).round();
-    final b2 = (b.b * 255).round();
-
-    return (r1 - r2).abs() < threshold &&
-        (g1 - g2).abs() < threshold &&
-        (b1 - b2).abs() < threshold;
+  Color _enhance(Color color) {
+    final hsv = _toHsv(color);
+    final newSat = (hsv.saturation * enhanceSaturationFactor).clamp(0.0, 1.0);
+    return _fromHsv(_HsvColor(hsv.hue, newSat, hsv.value));
   }
 
-  bool _isSimilarToAny(Color color, List<Color> colors) {
-    return colors.any((c) => _isSimilarColor(color, c));
-  }
+  // --- Palette builder: hue locked, only lightness/saturation vary ---
 
-  // ── Single-seed monochrome palette ─────────────────────────
-  // One hue for everything; roles differ only by saturation/lightness, so the
-  // accent (Play button) stays in the same family as the background.
-  DynamicPalette _buildMonochrome(Color seed) {
+  DynamicPalette _buildFromSeed(Color seed) {
     final hsl = HSLColor.fromColor(seed);
     final hue = hsl.hue;
-    // Нижнюю границу не поднимаем: серый seed уже отсеян в extract(),
-    // а тусклые (но цветные) обложки не должны получать фантомную насыщенность.
-    final baseSat = hsl.saturation.clamp(0.05, 0.85);
+    final seedSat = hsl.saturation;
 
-    Color at(double sat, double light) => HSLColor.fromAHSL(
-          1.0,
-          hue,
-          sat.clamp(0.0, 1.0),
-          light.clamp(0.0, 1.0),
-        ).toColor();
+    Color resolve(PaletteRole role) {
+      // targetSaturation is a fraction of the seed's saturation.
+      // e.g. seedSat=0.30 (pastel pink), role.targetSaturation=0.85
+      // → resultSat=0.255 (still pastel, not neon)
+      final sat = (seedSat * role.targetSaturation).clamp(0.0, 1.0);
+      var light = role.targetLightness.clamp(role.lightnessMin, role.lightnessMax);
+      var candidate = HSLColor.fromAHSL(1.0, hue, sat, light).toColor();
 
-    // elevatedHi (accent, кнопка Play) → контраст к белому >= 8:1.
-    // elevated (поверхности)          → контраст к белому >= 12:1.
-    // Lightness как в устраивавшей версии; поднимаем только насыщенность,
-    // и то мягким floor'ом — «тускло» было про сочность, не про яркость.
-    final accentSat = math.max(baseSat, 0.45);
-    final elevatedSat = math.max(baseSat * 0.6, 0.28);
-    final accent = _darkenToContrast(hue, accentSat, targetRatio: 8.0);
-    final elevated = _darkenToContrast(hue, elevatedSat, targetRatio: 12.0);
+      // WCAG: adjust ONLY lightness, never hue or saturation direction.
+      final targetContrast = role.minContrast;
+      final against = role.contrastAgainst;
+      if (targetContrast != null && against != null) {
+        final currentContrast = _contrastRatio(candidate, against);
+        if (currentContrast < targetContrast) {
+          // Need more contrast: for dark surfaces darken,
+          // for light surfaces lighten. Since our UI is dark-themed,
+          // we usually need to darken for white text.
+          final needsDarken = light > 0.5;
+          if (needsDarken) {
+            while (light < role.lightnessMax - 0.001 &&
+                _contrastRatio(candidate, against) < targetContrast) {
+              light += role.lightnessStep;
+              candidate = HSLColor.fromAHSL(1.0, hue, sat, light).toColor();
+            }
+          } else {
+            while (light > role.lightnessMin + 0.001 &&
+                _contrastRatio(candidate, against) < targetContrast) {
+              light -= role.lightnessStep;
+              candidate = HSLColor.fromAHSL(1.0, hue, sat, light).toColor();
+            }
+          }
+        }
+      }
 
-    // Фон/градиент: floor насыщенности + лёгкий подъём lightness. На очень
-    // тёмном фоне (L 0.16/0.05) сатурация перцептивно не видна, поэтому
-    // одной насыщенности мало — чуть выводим фон из «мёртвой» зоны,
-    // оставляя его тёмным. Регуляторы: floor'ы 0.30/0.22 и L 0.20/0.08.
-    final gradientTopSat = math.max(baseSat * 0.50, 0.30);
-    final gradientBottomSat = math.max(baseSat * 0.35, 0.22);
+      return candidate;
+    }
 
     return DynamicPalette(
-      primary: const Color(0xFFF9F8F8),
-      elevated: elevated,
-      accent: accent,
-      gradientTop: at(gradientTopSat, 0.20),
-      gradientBottom: at(gradientBottomSat, 0.08),
+      seed: seed,
+      primary: resolve(roles.primary),
+      elevated: resolve(roles.elevated),
+      accent: resolve(roles.accent),
+      gradientTop: resolve(roles.gradientTop),
+      gradientBottom: resolve(roles.gradientBottom),
     );
   }
 
-  // Затемняет цвет заданного hue/saturation, пока контраст к белому не
-  // достигнет [targetRatio] (WCAG 2.x). Saturation фиксирована — без
-  // докрутки при затемнении, иначе цвет уходит в кислотный перебор.
-  Color _darkenToContrast(
-    double hue,
-    double saturation, {
-    required double targetRatio,
-    Color on = Colors.white,
-    double maxLightness = 0.62,
-    double minLightness = 0.05,
-    double step = 0.01,
-  }) {
-    var light = maxLightness;
-    var candidate = HSLColor.fromAHSL(1.0, hue, saturation, light).toColor();
-    while (light > minLightness &&
-        _contrastRatio(candidate, on) < targetRatio) {
-      light -= step;
-      candidate = HSLColor.fromAHSL(1.0, hue, saturation, light).toColor();
-    }
-    return candidate;
-  }
+  // --- WCAG 2.x ---
 
-  // ── WCAG 2.x relative luminance + contrast ratio ───────────────
   double _relativeLuminance(Color c) {
     double lin(double channel) => channel <= 0.03928
         ? channel / 12.92
@@ -285,38 +344,34 @@ class _PaletteExtractor {
     return (hi + 0.05) / (lo + 0.05);
   }
 
+  // --- Grey detection ---
+
   bool _isNearGray(Color color) {
     final hsv = _toHsv(color);
-    // Согласовано с _greyFloor: seed, прошедший relaxed-отбор (>0.12),
-    // не должен тут же отсеиваться порогом 0.15 — иначе тусклые, но реально
-    // присутствующие цвета всё равно уходили бы в fixed.
-    return hsv[1] < _greyFloor || hsv[2] < 0.08;
+    return hsv.saturation < 0.12 || hsv.value < 0.05;
   }
 
-  // ── HSV <-> HSL conversion (Flutter-compatible) ────────────────────────
-  List<double> _toHsv(Color color) {
-    final hsl = HSLColor.fromColor(color);
-    final s = hsl.saturation;
-    final l = hsl.lightness;
-    final v = l + s * math.min(l, 1 - l);
-    final sv = v == 0 ? 0.0 : 2 * (1 - l / v);
-    return [hsl.hue, sv.clamp(0.0, 1.0), v.clamp(0.0, 1.0)];
+  // --- HSV helpers ---
+
+  _HsvColor _toHsv(Color color) {
+    final hsv = HSVColor.fromColor(color);
+    return _HsvColor(hsv.hue, hsv.saturation, hsv.value);
   }
 
-  Color _fromHsv(List<double> hsv) {
-    final h = hsv[0];
-    final s = hsv[1];
-    final v = hsv[2];
-    final l = v * (1 - s / 2);
-    final sl = l == 0 || l == 1 ? 0.0 : (v - l) / math.min(l, 1 - l);
-    return HSLColor.fromAHSL(1.0, h, sl.clamp(0.0, 1.0), l.clamp(0.0, 1.0)).toColor();
+  Color _fromHsv(_HsvColor hsv) {
+    return HSVColor.fromAHSV(1.0, hsv.hue, hsv.saturation, hsv.value).toColor();
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Provider
+//  Immutable HSV triple
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Провайдер dynamicPaletteProvider удалён: он нигде не использовался.
-// Палитра темы строится в global_theme_provider.dart через
-// AppColors.fromDynamicPalette(DynamicPalette.fromPalette(...)).
+@immutable
+class _HsvColor {
+  const _HsvColor(this.hue, this.saturation, this.value);
+
+  final double hue;
+  final double saturation;
+  final double value;
+}

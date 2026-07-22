@@ -2,7 +2,6 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
-import 'dart:ui';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
@@ -278,6 +277,7 @@ class QueueSheet extends ConsumerWidget {
             ignoring: isClosed,
             child: Stack(
               children: [
+                // ── Scrim: solid dark overlay, no blur ────────────────────
                 Positioned.fill(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
@@ -288,15 +288,9 @@ class QueueSheet extends ConsumerWidget {
                       d.primaryVelocity ?? 0,
                       fromButton: false,
                     ),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(
-                        sigmaX: 4 * scrimOpacity,
-                        sigmaY: 4 * scrimOpacity,
-                      ),
-                      child: Container(
-                        color: Colors.black.withValues(alpha: scrimOpacity),
-                      ),
-                    )
+                    child: Container(
+                      color: Colors.black.withValues(alpha: scrimOpacity),
+                    ),
                   ),
                 ),
 
@@ -760,7 +754,7 @@ class _QueueListState extends State<_QueueList> {
                 ),
                 itemCount: all.length,
                 proxyDecorator: _proxyDecorator,
-                onReorder: (oldIndex, newIndex) {
+                onReorderItem: (oldIndex, newIndex) {
                   if (newIndex > oldIndex) newIndex -= 1;
                   widget.player.reorderQueueItem(oldIndex, newIndex);
                 },
@@ -1019,3 +1013,4 @@ class _DismissibleQueueTileState extends State<_DismissibleQueueTile> {
     );
   }
 }
+
