@@ -340,7 +340,10 @@ class SoundCloudSource implements TrackSource {
     List<Track> tracks,
     void Function(List<Track> updated) onUpdate,
   ) async {
-    const concurrency = 6;
+    // 3 вместо 6: в режиме «все источники» воркеры каждого источника
+    // работают параллельно, и 6+6 одновременных запросов к Genius
+    // стабильно ловили 429 (rate limit).
+    const concurrency = 3;
     var index = 0;
 
     Timer? notifyTimer;
@@ -358,11 +361,14 @@ class SoundCloudSource implements TrackSource {
         final t = tracks[i];
         if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) continue;
         try {
-          // 10 сек: при первом старте findArtwork ждёт init prefs + до двух
-          // сетевых запросов (Genius -> iTunes), 6 сек на медленной сети мало.
-          final url = await ArtworkProvider.instance
-              .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 10));
+          // Без внешнего .timeout(): раньше при медленной сети future
+          // «бросался» по таймауту, findArtwork доезжал до конца и клал
+          // URL в кэш, но текущая выдача уже не обновлялась — обложка
+          // «появлялась» только при следующем поиске. Сам findArtwork
+          // ограничен таймаутами Dio (5 сек connect/receive на запрос),
+          // так что воркер не зависнет.
+          final url =
+              await ArtworkProvider.instance.findArtwork(t.artist, t.title);
           if (url != null && url.isNotEmpty) {
             tracks[i] = t.copyWith(artworkUrl: url);
             scheduleNotify();

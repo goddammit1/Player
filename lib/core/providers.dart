@@ -176,14 +176,33 @@ class SearchController extends StateNotifier<SearchState> {
         List.generate(results.length, (i) => completed[i] ? results[i] : const []),
       );
 
+      // ВАЖНО: слияние строится из исходных (необогащённых) списков.
+      // Если обогащение обложками какого-то источника уже успело
+      // пропатчить state.results (например, обложки взялись из кэша
+      // мгновенно при повторном поиске), нельзя терять эти обложки —
+      // переносим уже известные artworkUrl в новый merged-список.
+      final knownArt = <String, String>{
+        for (final t in state.results)
+          if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty)
+            t.globalId: t.artworkUrl!,
+      };
+      final mergedWithArt = [
+        for (final t in merged)
+          if ((t.artworkUrl == null || t.artworkUrl!.isEmpty) &&
+              knownArt.containsKey(t.globalId))
+            t.copyWith(artworkUrl: knownArt[t.globalId])
+          else
+            t,
+      ];
+
       if (!firstResultShown) {
         firstResultShown = true;
         // Первый источник ответил — показываем результаты и убираем
         // индикатор загрузки. Остальные придут позже и доклеятся.
-        state = state.copyWith(results: merged, loading: false);
+        state = state.copyWith(results: mergedWithArt, loading: false);
       } else {
         // Последующие источники доклеиваются к уже показанным.
-        state = state.copyWith(results: merged);
+        state = state.copyWith(results: mergedWithArt);
       }
 
       // Запускаем обогащение обложками для треков этого источника.

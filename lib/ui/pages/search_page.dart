@@ -370,12 +370,16 @@ class _SearchPill extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
-                Text(
-                  query.isEmpty ? 'Search...' : query,
-                  style: TextStyle(
-                    color: query.isEmpty ? colors.textSecondary : colors.textPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+                Expanded(
+                  child: Text(
+                    query.isEmpty ? 'Search...' : query,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: query.isEmpty ? colors.textSecondary : colors.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -540,6 +544,14 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
     final colors = widget.colors;
     final duration = track.duration != null ? _formatDuration(track.duration!) : null;
 
+    // Ограничиваем размер декода: Genius нередко отдаёт оригинал
+    // 2000x2000+ (несколько МБ), а тут 20 плиток × 2 слоя. Полноразмерный
+    // декод давил на память — обложки вылетали из кэша и «мигали».
+    // Задаём только ширину, чтобы сохранить пропорции (16:9 у YouTube).
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final cellPx =
+        (((MediaQuery.of(context).size.width - 40) / 2) * dpr).round();
+
     return GestureDetector(
       onTap: widget.onTap,
       onLongPress: () => showTrackSettingsSheet(context, track: track),
@@ -560,6 +572,7 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                     ? CachedNetworkImage(
                         imageUrl: track.artworkUrl!,
                         fit: BoxFit.cover,
+                        memCacheWidth: cellPx,
                         placeholder: (context, url) => Container(
                           color: colors.elevated,
                         ),
@@ -611,6 +624,9 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                       child: CachedNetworkImage(
                         imageUrl: track.artworkUrl!,
                         fit: BoxFit.cover,
+                        // Слой всё равно блюрится sigma=12 —
+                        // четверти разрешения достаточно.
+                        memCacheWidth: cellPx ~/ 4,
                       ),
                     ),
                   ),

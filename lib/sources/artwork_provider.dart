@@ -138,9 +138,10 @@ class ArtworkProvider {
   ///
   /// Кэширование:
   /// - Нашли URL → кэшируем URL (в RAM + prefs).
-  /// - API явно вернул пустой результат → кэшируем '' в prefs (не дёргаем снова).
-  /// - Ошибка сети / таймаут → кэшируем '' только в RAM до перезапуска
-  ///   (prefs не трогаем, чтобы повторить попытку при следующем старте).
+  /// - Оба API явно вернули пустой результат → кэшируем '' в prefs
+  ///   (не дёргаем снова).
+  /// - Ошибка сети / таймаут / rate limit → НЕ кэшируем: следующий
+  ///   вызов повторит попытку.
   Future<String?> findArtwork(String artist, String title) async {
     final key = _key(artist, title);
 
@@ -162,23 +163,29 @@ class ArtworkProvider {
     // _fetchGenius/_fetchItunes возвращают:
     //   - непустую строку  → нашли
     //   - ''               → API ответил, но ничего не нашёл (можно кэшировать)
-    //   - null             → ошибка / таймаут (не кэшировать в prefs)
+    //   - null             → ошибка / таймаут / 429 (НЕ кэшировать)
     String? url;
     bool networkError = false;
     try {
       url = await _fetchGenius(artist, title);
     } catch (e) {
       debugPrint('[ArtworkProvider] Genius threw: $e');
-      networkError = true;
+      url = null;
     }
+    // null от _fetchGenius = ошибка (HTTP != 200, битый JSON, исключение).
+    // Пропуск Genius из-за отсутствия токена ошибкой не считаем.
+    if (url == null && _geniusToken.isNotEmpty) networkError = true;
     final geniusFound = url != null && url.isNotEmpty;
     if (!geniusFound) {
+      String? itunesUrl;
       try {
-        url = await _fetchItunes(artist, title);
+        itunesUrl = await _fetchItunes(artist, title);
       } catch (e) {
         debugPrint('[ArtworkProvider] iTunes threw: $e');
-        networkError = true;
+        itunesUrl = null;
       }
+      if (itunesUrl == null) networkError = true;
+      url = itunesUrl ?? url;
     }
     debugPrint(
       '[ArtworkProvider] "$artist - $title" -> '
@@ -197,16 +204,17 @@ class ArtworkProvider {
     }
 
     if (!networkError) {
-      // API ответил «не нашёл» — кэшируем '' в prefs, чтобы не дёргать снова.
+      // Оба API честно ответили «не нашёл» — кэшируем '' в prefs,
+      // чтобы не дёргать снова.
       _memCache[key] = '';
       unawaited(
         _prefs?.setString('$_prefsPrefix$key', '') ?? Future.value(),
       );
-    } else {
-      // Ошибка сети / таймаут — кэшируем '' только в RAM до перезапуска.
-      // При следующем старте приложения попробуем снова.
-      _memCache[key] = '';
     }
+    // При networkError НЕ кэшируем ничего. Раньше '' попадал в RAM до
+    // перезапуска, и после одного таймаута/429 трек оставался без
+    // обложки всю сессию — отсюда «то есть, то нет». Теперь следующий
+    // поиск просто повторит попытку.
     return null;
   }
 
@@ -242,20 +250,22 @@ class ArtworkProvider {
     final data = _asMap(resp.data);
     if (data == null) return null;
 
+    // 200 + пустая выдача = честное «не нашлось» ('' по контракту
+    // findArtwork), а не ошибка — можно кэшировать.
     final hits = (data['response']?['hits'] as List?) ?? const [];
-    if (hits.isEmpty) return null;
+    if (hits.isEmpty) return '';
 
 
     // Genius возвращает самый релевантный результат первым. Берём арт
     // песни (`song_art_image_url`), он почти всегда квадратный и
     // достаточного разрешения. Если его нет — fallback на header.
     final result = hits.first['result'] as Map<String, dynamic>?;
-    if (result == null) return null;
+    if (result == null) return '';
 
     final art =
         (result['song_art_image_url'] as String?) ??
         (result['header_image_url'] as String?);
-    if (art == null || art.isEmpty) return null;
+    if (art == null || art.isEmpty) return '';
 
     // Genius отдаёт оригинальное изображение — оно может быть любого
     // размера. Для квадратной обложки подставляем параметры resize,
@@ -291,11 +301,12 @@ class ArtworkProvider {
     if (data == null) return null;
 
 
+    // 200 + пустая выдача = честное «не нашлось», а не ошибка.
     final results = (data['results'] as List?) ?? const [];
-    if (results.isEmpty) return null;
+    if (results.isEmpty) return '';
 
     final raw = results.first['artworkUrl100'] as String?;
-    if (raw == null || raw.isEmpty) return null;
+    if (raw == null || raw.isEmpty) return '';
 
     // iTunes отдаёт 100x100. Поднимаем до 600x600 — обычная замена.
     return raw.replaceAll('100x100bb', '600x600bb');

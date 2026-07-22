@@ -102,62 +102,61 @@ class _PaletteExtractor {
     final ranked = uniqueSwatches.toList()
       ..sort((a, b) => _calculateWeight(b).compareTo(_calculateWeight(a)));
 
-    // 4. Extract unique colors with vibrancy check (ViViMusic-style)
-    final availableColors = <Color>[];
-
-    for (final swatch in ranked) {
-      final color = swatch.color;
-      // ViViMusic: skip non-vibrant
-      if (!_isVibrant(color)) continue;
-
-      final hsv = _toHsv(color);
-      final satFactor = hsv[1] > 0.3 ? 1.25 : 1.05;
-      final enhanced = _enhanceVividness(color, satFactor);
-
-      // ArchiveTune: uniqueness check
-      if (!_isSimilarToAny(enhanced, availableColors)) {
-        availableColors.add(enhanced);
-      }
-      if (availableColors.length >= 6) break;
+    // 4. Two-tier color collection.
+    //    Сначала строгий отбор (яркие, насыщенные цвета). Если обложка
+    //    приглушённая и строгий проход пуст — повторяем с relaxed-порогом,
+    //    чтобы тусклый, но реально присутствующий цвет всё же попал в тему.
+    var availableColors = _collectColors(ranked, minSaturation: 0.25);
+    if (availableColors.isEmpty) {
+      availableColors = _collectColors(ranked, minSaturation: _greyFloor);
     }
 
-    // 5. Greyscale detection (ArchiveTune)
-    final totalPopulation = allSwatches.fold<int>(0, (sum, s) => sum + s.population).clamp(1, 999999);
-    final weightedSat = allSwatches.fold<double>(0.0, (sum, s) {
-      final hsv = _toHsv(s.color);
-      return sum + hsv[1] * s.population;
-    }) / totalPopulation;
+    // 5. Нет ни одного цвета выше grey-floor → обложка реально серая,
+    //    откатываемся на фиксированную тему (null наверх). weightedSat как
+    //    критерий убран: усреднение по площади топило мелкие явные акценты.
+    if (availableColors.isEmpty) return null;
 
-    final dominantColor = availableColors.firstOrNull ?? Colors.grey;
-    final isGreyscale = weightedSat < 0.22 || _isNearGray(dominantColor);
+    // 6. Single-seed: берём самый насыщенный («заметный») цвет и строим всю
+    //    палитру из его hue. Accent + поверхности + градиент в одной гамме,
+    //    поэтому кнопка Play не конфликтует с остальным интерфейсом.
+    final seed = _mostColorfulSeed(availableColors);
 
-    // Серая / почти-серая обложка → фиксированная тема (null наверх).
-    if (isGreyscale) return null;
-
-    // 6. Single-seed: pick the brightest vibrant color and build the whole
-    //    palette from its hue. Accent + surfaces + gradient share one hue,
-    //    so the Play button never clashes with the rest of the interface.
-    final seed = _brightestSeed(availableColors, fallback: dominantColor);
-
-    // Второй guard: даже если детектор выше промахнулся (JPEG-шум задрал
-    // weightedSat), вымытый seed не даёт осмысленного оттенка — тоже fixed.
+    // Финальная страховка: если даже выбранный seed по факту серый — fixed.
     if (_isNearGray(seed)) return null;
 
     return _buildMonochrome(seed);
   }
 
-  // Pick the brightest (max HSV value) candidate as the single seed.
-  Color _brightestSeed(List<Color> colors, {required Color fallback}) {
-    if (colors.isEmpty) return fallback;
-    return colors.reduce((a, b) => _toHsv(a)[2] >= _toHsv(b)[2] ? a : b);
+  // Grey-floor: ниже этой насыщенности цвет считаем нейтральным (серым).
+  static const double _greyFloor = 0.12;
+
+  // Собирает до 6 уникальных цветов с насыщенностью выше [minSaturation],
+  // усиливая их живость (ArchiveTune-style).
+  List<Color> _collectColors(
+    List<PaletteColor> ranked, {
+    required double minSaturation,
+  }) {
+    final colors = <Color>[];
+    for (final swatch in ranked) {
+      final color = swatch.color;
+      final hsv = _toHsv(color);
+      // Пропускаем нейтральные и пере/недо-экспонированные swatch'и.
+      if (hsv[1] <= minSaturation || hsv[2] <= 0.2 || hsv[2] >= 0.9) continue;
+
+      final satFactor = hsv[1] > 0.3 ? 1.25 : 1.05;
+      final enhanced = _enhanceVividness(color, satFactor);
+
+      if (!_isSimilarToAny(enhanced, colors)) {
+        colors.add(enhanced);
+      }
+      if (colors.length >= 6) break;
+    }
+    return colors;
   }
 
-  // ── ViViMusic: vibrancy check before using color ───────────────────────
-  bool _isVibrant(Color color) {
-    final hsv = _toHsv(color);
-    final saturation = hsv[1];
-    final brightness = hsv[2];
-    return saturation > 0.25 && brightness > 0.2 && brightness < 0.9;
+  // Самый насыщенный кандидат — визуально самый «цепляющий».
+  Color _mostColorfulSeed(List<Color> colors) {
+    return colors.reduce((a, b) => _toHsv(a)[1] >= _toHsv(b)[1] ? a : b);
   }
 
   // ── ArchiveTune: weight calculation ────────────────────────────────────
@@ -223,35 +222,47 @@ class _PaletteExtractor {
           light.clamp(0.0, 1.0),
         ).toColor();
 
-    // Accent: keep it as bright as possible while white icons on top still
-    // meet the WCAG contrast target.
-    final accent = _accentForHue(hue, baseSat * 0.9);
+    // elevatedHi (accent, кнопка Play) → контраст к белому >= 8:1.
+    // elevated (поверхности)          → контраст к белому >= 12:1.
+    // Lightness как в устраивавшей версии; поднимаем только насыщенность,
+    // и то мягким floor'ом — «тускло» было про сочность, не про яркость.
+    final accentSat = math.max(baseSat, 0.45);
+    final elevatedSat = math.max(baseSat * 0.6, 0.28);
+    final accent = _darkenToContrast(hue, accentSat, targetRatio: 8.0);
+    final elevated = _darkenToContrast(hue, elevatedSat, targetRatio: 12.0);
+
+    // Фон/градиент: floor насыщенности + лёгкий подъём lightness. На очень
+    // тёмном фоне (L 0.16/0.05) сатурация перцептивно не видна, поэтому
+    // одной насыщенности мало — чуть выводим фон из «мёртвой» зоны,
+    // оставляя его тёмным. Регуляторы: floor'ы 0.30/0.22 и L 0.20/0.08.
+    final gradientTopSat = math.max(baseSat * 0.50, 0.30);
+    final gradientBottomSat = math.max(baseSat * 0.35, 0.22);
 
     return DynamicPalette(
       primary: const Color(0xFFF9F8F8),
-      elevated: at(baseSat * 0.45, 0.20),
+      elevated: elevated,
       accent: accent,
-      gradientTop: at(baseSat * 0.50, 0.16),
-      gradientBottom: at(baseSat * 0.35, 0.05),
+      gradientTop: at(gradientTopSat, 0.20),
+      gradientBottom: at(gradientBottomSat, 0.08),
     );
   }
 
-  // Darken the accent hue until white-on-accent reaches [minContrast] (WCAG).
-  // 4.5 is the AA target for normal text; drop to ~3.0 if you want the button
-  // brighter and only need large-icon contrast.
-  Color _accentForHue(
+  // Затемняет цвет заданного hue/saturation, пока контраст к белому не
+  // достигнет [targetRatio] (WCAG 2.x). Saturation фиксирована — без
+  // докрутки при затемнении, иначе цвет уходит в кислотный перебор.
+  Color _darkenToContrast(
     double hue,
     double saturation, {
+    required double targetRatio,
     Color on = Colors.white,
-    double minContrast = 4.5,
     double maxLightness = 0.62,
-    double minLightness = 0.30,
-    double step = 0.02,
+    double minLightness = 0.05,
+    double step = 0.01,
   }) {
     var light = maxLightness;
     var candidate = HSLColor.fromAHSL(1.0, hue, saturation, light).toColor();
     while (light > minLightness &&
-        _contrastRatio(candidate, on) < minContrast) {
+        _contrastRatio(candidate, on) < targetRatio) {
       light -= step;
       candidate = HSLColor.fromAHSL(1.0, hue, saturation, light).toColor();
     }
@@ -276,7 +287,10 @@ class _PaletteExtractor {
 
   bool _isNearGray(Color color) {
     final hsv = _toHsv(color);
-    return hsv[1] < 0.15 || hsv[2] < 0.08;
+    // Согласовано с _greyFloor: seed, прошедший relaxed-отбор (>0.12),
+    // не должен тут же отсеиваться порогом 0.15 — иначе тусклые, но реально
+    // присутствующие цвета всё равно уходили бы в fixed.
+    return hsv[1] < _greyFloor || hsv[2] < 0.08;
   }
 
   // ── HSV <-> HSL conversion (Flutter-compatible) ────────────────────────
