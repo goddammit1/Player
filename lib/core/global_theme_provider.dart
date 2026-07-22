@@ -32,7 +32,11 @@ final _appColorsForUrlProvider =
     maximumColorCount: 32,
     timeout: const Duration(seconds: 5),
   );
-  return AppColors.fromDynamicPalette(DynamicPalette.fromPalette(palette));
+  final dynamicPalette = DynamicPalette.fromPalette(palette);
+  // Серая / почти-серая обложка → остаёмся на фиксированной теме,
+  // не тонируя интерфейс фантомным красным (hue=0 у серого).
+  if (dynamicPalette == null) return AppColors.fixed;
+  return AppColors.fromDynamicPalette(dynamicPalette);
 });
 
 // ── Current palette (instant, no animation) ────────────────────────────────

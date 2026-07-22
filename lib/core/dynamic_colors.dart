@@ -19,7 +19,10 @@ class DynamicPalette {
   final Color gradientBottom;
 
   // ── ArchiveTune + ViTune hybrid extraction ────────────────────────────
-  factory DynamicPalette.fromPalette(PaletteGenerator palette) {
+  // Возвращает null для серых / почти-серых обложек: у них нет надёжного
+  // hue (HSL даёт hue = 0, то есть красный), поэтому вызывающий код должен
+  // откатиться на фиксированную тему, а не выдумывать оттенок.
+  static DynamicPalette? fromPalette(PaletteGenerator palette) {
     return _PaletteExtractor(palette).extract();
   }
 
@@ -74,7 +77,7 @@ class _PaletteExtractor {
 
   _PaletteExtractor(this.palette);
 
-  DynamicPalette extract() {
+  DynamicPalette? extract() {
     // 1. Collect swatches ArchiveTune-style (7 types, priority order)
     final allSwatches = [
       palette.vibrantColor,
@@ -128,111 +131,25 @@ class _PaletteExtractor {
     final dominantColor = availableColors.firstOrNull ?? Colors.grey;
     final isGreyscale = weightedSat < 0.22 || _isNearGray(dominantColor);
 
-    if (isGreyscale) {
-      return _buildGreyscalePalette(allSwatches);
-    }
+    // Серая / почти-серая обложка → фиксированная тема (null наверх).
+    if (isGreyscale) return null;
 
-    // 6. Generate up to 6 colors via hue shifts (ArchiveTune)
-    final seed = dominantColor;
-    final hueShifts = [25.0, -25.0, 55.0, -55.0, 120.0, -120.0, 180.0, 150.0, -150.0];
-    final valueTargets = [0.82, 0.74, 0.68, 0.6, 0.86, 0.7];
+    // 6. Single-seed: pick the brightest vibrant color and build the whole
+    //    palette from its hue. Accent + surfaces + gradient share one hue,
+    //    so the Play button never clashes with the rest of the interface.
+    final seed = _brightestSeed(availableColors, fallback: dominantColor);
 
-    final baseCandidates = ([...availableColors, seed]).toSet().toList();
-    var baseIndex = 0;
-    var targetIndex = 0;
+    // Второй guard: даже если детектор выше промахнулся (JPEG-шум задрал
+    // weightedSat), вымытый seed не даёт осмысленного оттенка — тоже fixed.
+    if (_isNearGray(seed)) return null;
 
-    while (availableColors.length < 6) {
-      final baseColor = baseCandidates[baseIndex % baseCandidates.length];
-      final hueShift = hueShifts[targetIndex % hueShifts.length];
-      final valueTarget = valueTargets[availableColors.length % valueTargets.length];
-
-      final derived = _tuneColor(
-        _hueShift(baseColor, hueShift),
-        saturationMin: 0.62,
-        saturationBoost: 1.08,
-        valueTarget: valueTarget,
-        valueMin: 0.38,
-        valueMax: 0.9,
-      );
-
-      if (!_isSimilarToAny(derived, availableColors)) {
-        availableColors.add(derived);
-      }
-
-      baseIndex++;
-      targetIndex++;
-      if (baseIndex > 40) break;
-    }
-
-    if (availableColors.isEmpty) {
-      availableColors.add(_tuneColor(
-        Colors.grey,
-        saturationMin: 0.62,
-        saturationBoost: 1.08,
-        valueTarget: 0.75,
-        valueMin: 0.38,
-        valueMax: 0.9,
-      ));
-    }
-
-    return _buildFromColors(availableColors);
+    return _buildMonochrome(seed);
   }
 
-  // ── Greyscale: ViTune-style greyscale with hue preservation ────────────
-  DynamicPalette _buildGreyscalePalette(List<PaletteColor> swatches) {
-    final baseSwatch = _swatchWithMaxPopulation(swatches);
-    final baseHsv = _toHsv(baseSwatch.color);
-    final baseBrightness = baseHsv.last;
-    final baseHue = baseHsv[0]; // Preserve hue even in greyscale
-
-    // ArchiveTune grey stops with slight hue tint
-    final greyStops = [
-      (baseBrightness * 1.2).clamp(0.06, 0.40),
-      (baseBrightness * 0.9).clamp(0.04, 0.28),
-      (baseBrightness * 0.6).clamp(0.02, 0.16),
-      (baseBrightness * 1.4).clamp(0.08, 0.44),
-    ];
-
-    final colors = greyStops.map((v) {
-      // ViTune: keep slight hue from original instead of pure grey
-      final sat = baseHsv[1] < 0.15 ? 0.0 : 0.05;
-      return HSLColor.fromAHSL(1.0, baseHue, sat, v).toColor();
-    }).toList();
-
-    return _buildFromColors(colors);
-  }
-
-  PaletteColor _swatchWithMaxPopulation(List<PaletteColor> swatches) {
-    return swatches.reduce((a, b) => a.population > b.population ? a : b);
-  }
-
-  // ── Build final palette: ViTune HSL comfort + ArchiveTune richness ──────
-  DynamicPalette _buildFromColors(List<Color> colors) {
-    // ArchiveTune: use first 4 colors for different roles
-    final top = colors[0];
-    final accent = colors.length > 1 ? colors[1] : top;
-    final mid = colors.length > 2 ? colors[2] : accent;
-    final bottom = colors.length > 3 ? colors[3] : mid;
-
-    // ViTune: HSL comfort limits for dark theme player
-    return DynamicPalette(
-      primary: const Color(0xFFF9F8F8),
-      elevated: _hslComfort(mid, saturationMax: 0.4, lightness: 0.20),
-      accent: _hslComfort(accent, saturationMax: 0.5, lightness: 0.55),
-      gradientTop: _hslComfort(top, saturationMax: 0.4, lightness: 0.18),
-      gradientBottom: _hslComfort(bottom, saturationMax: 0.2, lightness: 0.05),
-    );
-  }
-
-  // ── ViTune-style HSL comfort (predictable, controlled) ─────────────────
-  Color _hslComfort(Color color, {required double saturationMax, required double lightness}) {
-    final hsl = HSLColor.fromColor(color);
-    return HSLColor.fromAHSL(
-      1.0,
-      hsl.hue,
-      hsl.saturation.clamp(0.15, saturationMax),
-      lightness.clamp(0.03, 0.58),
-    ).toColor();
+  // Pick the brightest (max HSV value) candidate as the single seed.
+  Color _brightestSeed(List<Color> colors, {required Color fallback}) {
+    if (colors.isEmpty) return fallback;
+    return colors.reduce((a, b) => _toHsv(a)[2] >= _toHsv(b)[2] ? a : b);
   }
 
   // ── ViViMusic: vibrancy check before using color ───────────────────────
@@ -289,25 +206,72 @@ class _PaletteExtractor {
     return colors.any((c) => _isSimilarColor(color, c));
   }
 
-  Color _hueShift(Color color, double degrees) {
-    final hsv = _toHsv(color);
-    hsv[0] = ((hsv[0] + degrees) % 360 + 360) % 360;
-    return _fromHsv(hsv);
+  // ── Single-seed monochrome palette ─────────────────────────
+  // One hue for everything; roles differ only by saturation/lightness, so the
+  // accent (Play button) stays in the same family as the background.
+  DynamicPalette _buildMonochrome(Color seed) {
+    final hsl = HSLColor.fromColor(seed);
+    final hue = hsl.hue;
+    // Нижнюю границу не поднимаем: серый seed уже отсеян в extract(),
+    // а тусклые (но цветные) обложки не должны получать фантомную насыщенность.
+    final baseSat = hsl.saturation.clamp(0.05, 0.85);
+
+    Color at(double sat, double light) => HSLColor.fromAHSL(
+          1.0,
+          hue,
+          sat.clamp(0.0, 1.0),
+          light.clamp(0.0, 1.0),
+        ).toColor();
+
+    // Accent: keep it as bright as possible while white icons on top still
+    // meet the WCAG contrast target.
+    final accent = _accentForHue(hue, baseSat * 0.9);
+
+    return DynamicPalette(
+      primary: const Color(0xFFF9F8F8),
+      elevated: at(baseSat * 0.45, 0.20),
+      accent: accent,
+      gradientTop: at(baseSat * 0.50, 0.16),
+      gradientBottom: at(baseSat * 0.35, 0.05),
+    );
   }
 
-  Color _tuneColor(
-    Color color, {
-    required double saturationMin,
-    required double saturationBoost,
-    required double valueTarget,
-    required double valueMin,
-    required double valueMax,
+  // Darken the accent hue until white-on-accent reaches [minContrast] (WCAG).
+  // 4.5 is the AA target for normal text; drop to ~3.0 if you want the button
+  // brighter and only need large-icon contrast.
+  Color _accentForHue(
+    double hue,
+    double saturation, {
+    Color on = Colors.white,
+    double minContrast = 4.5,
+    double maxLightness = 0.62,
+    double minLightness = 0.30,
+    double step = 0.02,
   }) {
-    final hsv = _toHsv(color);
-    hsv[1] = math.max(hsv[1], saturationMin) * saturationBoost;
-    hsv[1] = hsv[1].clamp(0.0, 1.0);
-    hsv[2] = (hsv[2] * 0.85 + valueTarget * 0.15).clamp(valueMin, valueMax);
-    return _fromHsv(hsv);
+    var light = maxLightness;
+    var candidate = HSLColor.fromAHSL(1.0, hue, saturation, light).toColor();
+    while (light > minLightness &&
+        _contrastRatio(candidate, on) < minContrast) {
+      light -= step;
+      candidate = HSLColor.fromAHSL(1.0, hue, saturation, light).toColor();
+    }
+    return candidate;
+  }
+
+  // ── WCAG 2.x relative luminance + contrast ratio ───────────────
+  double _relativeLuminance(Color c) {
+    double lin(double channel) => channel <= 0.03928
+        ? channel / 12.92
+        : math.pow((channel + 0.055) / 1.055, 2.4).toDouble();
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  }
+
+  double _contrastRatio(Color a, Color b) {
+    final la = _relativeLuminance(a);
+    final lb = _relativeLuminance(b);
+    final hi = math.max(la, lb);
+    final lo = math.min(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
   }
 
   bool _isNearGray(Color color) {
