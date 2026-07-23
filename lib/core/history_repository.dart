@@ -88,6 +88,10 @@ class HistoryRepository {
       final arr = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
       _list = arr.map(HistoryEntry.fromJson).toList();
       _list.sort((a, b) => b.playedAt.compareTo(a.playedAt));
+      // Миграция: чистим дубли одного трека из старых версий,
+      // оставляем самую свежую запись.
+      final seen = <Object>{};
+      _list = _list.where((e) => seen.add(e.track.globalId)).toList();
       if (_list.length > _limit) {
         _list = _list.sublist(0, _limit);
       }
@@ -115,21 +119,17 @@ class HistoryRepository {
 
   /// Добавляет трек в начало истории.
   ///
-  /// Если последняя запись — тот же трек (например, LoopMode.one крутит
-  /// его по кругу), запись не дублируется, а обновляется её `playedAt`.
+  /// Трек хранится в истории только один раз: при повторном прослушивании
+  /// старая запись удаляется, а трек поднимается наверх со свежим `playedAt`.
   Future<void> add(Track track) async {
     await ensureLoaded();
     final now = DateTime.now();
-    if (_list.isNotEmpty && _list.first.track.globalId == track.globalId) {
-      _list = [
-        HistoryEntry(track: track, playedAt: now),
-        ..._list.sublist(1),
-      ];
-    } else {
-      _list = [HistoryEntry(track: track, playedAt: now), ..._list];
-      if (_list.length > _limit) {
-        _list = _list.sublist(0, _limit);
-      }
+    _list = [
+      HistoryEntry(track: track, playedAt: now),
+      ..._list.where((e) => e.track.globalId != track.globalId),
+    ];
+    if (_list.length > _limit) {
+      _list = _list.sublist(0, _limit);
     }
     _notifyAndSchedulePersist();
   }
