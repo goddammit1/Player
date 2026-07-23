@@ -1,10 +1,9 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:marquee/marquee.dart';
-import 'package:vibration/vibration.dart';
+import 'package:player/core/haptic_helper.dart';
 
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
@@ -155,122 +154,6 @@ Widget build(BuildContext context) {
         },
       ),
     );
-  }
-}
-
-// =====================================================================
-//  HAPTIC HELPER
-// =====================================================================
-
-class HapticHelper {
-  static bool _hasVibrator = false;
-  static bool _hasAmplitude = false;
-  static bool _checked = false;
-
-  static Future<void> _ensureChecked() async {
-    if (_checked) return;
-    _hasVibrator = await Vibration.hasVibrator();
-    _hasAmplitude = await Vibration.hasAmplitudeControl();
-    _checked = true;
-  }
-
-  /// Очень лёгкий микро-отклик — для progress bar steps
-  static Future<void> microTick({required WidgetRef ref}) async {
-    final enabled = ref.read(vibrationEnabledProvider);
-    if (!enabled) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.selectionClick();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 5, amplitude: 40);
-    } else {
-      await Vibration.vibrate(duration: 5);
-    }
-  }
-
-  /// Лёгкий отклик
-  static Future<void> light({required WidgetRef ref}) async {
-    final enabled = ref.read(vibrationEnabledProvider);
-    if (!enabled) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 80);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  /// Средний отклик
-  static Future<void> medium({required WidgetRef ref}) async {
-    final enabled = ref.read(vibrationEnabledProvider);
-    if (!enabled) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 20, amplitude: 140);
-    } else {
-      await Vibration.vibrate(duration: 20);
-    }
-  }
-
-  /// Сильный отклик — пересечение threshold
-  static Future<void> strong({required WidgetRef ref}) async {
-    final enabled = ref.read(vibrationEnabledProvider);
-    if (!enabled) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.heavyImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 30, amplitude: 220);
-    } else {
-      await Vibration.vibrate(duration: 40);
-    }
-  }
-
-  /// Слабый отклик — возврат
-  static Future<void> weak({required WidgetRef ref}) async {
-    final enabled = ref.read(vibrationEnabledProvider);
-    if (!enabled) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 50);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  /// Подтверждение удаления
-  static Future<void> confirmDelete({required WidgetRef ref}) async {
-    final enabled = ref.read(vibrationEnabledProvider);
-    if (!enabled) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(
-        pattern: [0, 30, 50, 20],
-        intensities: [0, 255, 0, 100],
-      );
-    } else {
-      await Vibration.vibrate(duration: 35);
-    }
   }
 }
 
@@ -483,7 +366,10 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   onPointerUp: _onPrevPointerUp,
                   onPointerCancel: _onPrevPointerCancel,
                   child: GestureDetector(
-                    onTap: widget.player.skipToPrevious,
+                    onTap: () {
+                      widget.player.skipToPrevious();
+                      HapticHelper.light();
+                    }, 
                     child: Material(
                       color: widget.colors.elevated,
                       borderRadius:
@@ -507,8 +393,10 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   onPointerUp: _onPlayPointerUp,
                   onPointerCancel: _onPlayPointerCancel,
                   child: GestureDetector(
-                    onTap: () =>
-                        playing ? widget.player.pause() : widget.player.play(),
+                    onTap: () {
+                      playing ? widget.player.pause() : widget.player.play();
+                      HapticHelper.medium();
+                    },   
                     child: Material(
                       color: widget.colors.elevatedHi,
                       borderRadius: BorderRadius.circular(
@@ -548,7 +436,10 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   onPointerUp: _onNextPointerUp,
                   onPointerCancel: _onNextPointerCancel,
                   child: GestureDetector(
-                    onTap: widget.player.skipToNext,
+                    onTap: () {
+                      HapticHelper.light();
+                      widget.player.skipToNext();
+                    },
                     child: Material(
                       color: widget.colors.elevated,
                       borderRadius:
@@ -974,7 +865,10 @@ class _BottomActionsState extends State<_BottomActions> {
               borderRadius: BorderRadius.circular(28),
               child: InkWell(
                 borderRadius: BorderRadius.circular(28),
-                onTap: widget.queueCtrl.openPart,
+                onTap: () {
+                  HapticHelper.tripleTick(); // ← тройной отклик
+                  widget.queueCtrl.openPart();
+                },
                 child: SizedBox(
                   height: 56,
                   child: Center(

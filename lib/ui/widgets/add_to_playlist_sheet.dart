@@ -1,55 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:vibration/vibration.dart';
 
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../../models/track.dart';
 import 'artwork.dart';
+import '../../core/haptic_helper.dart';
 
-// ============================================================
-// Haptic helper
-// ============================================================
-
-class HapticHelper {
-  static bool _hasVibrator = false;
-  static bool _hasAmplitude = false;
-  static bool _checked = false;
-
-  static Future<void> _ensureChecked() async {
-    if (_checked) return;
-    _hasVibrator = await Vibration.hasVibrator();
-    _hasAmplitude = await Vibration.hasAmplitudeControl();
-    _checked = true;
-  }
-
-  static Future<void> light() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 80);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  static Future<void> medium() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 20, amplitude: 140);
-    } else {
-      await Vibration.vibrate(duration: 20);
-    }
-  }
-}
 
 Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
   return showModalBottomSheet<void>(
@@ -57,6 +14,7 @@ Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
     showDragHandle: false,
+    useRootNavigator: true,
     builder: (sheetCtx) => _AddToPlaylistSheet(track: track),
   );
 }
@@ -69,35 +27,30 @@ class _AddToPlaylistSheet extends ConsumerStatefulWidget {
   ConsumerState<_AddToPlaylistSheet> createState() => _AddToPlaylistSheetState();
 }
 
-class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet>
-    with TickerProviderStateMixin {
-  
+class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
   final Set<String> _selectedIds = {};
   String _searchQuery = '';
   bool _searchFocused = false;
 
-  late final AnimationController _dragController;
-  static const double _collapsedRatio = 0.51;
-  static const double _expandedRatio = 0.95;
-
   final ScrollController _scrollController = ScrollController();
   final FocusNode _searchFocusNode = FocusNode();
-
-  // Отслеживаем состояние клавиатуры
-  bool _wasKeyboardOpen = false;
+  final DraggableScrollableController _sheetController = DraggableScrollableController();
 
   @override
   void initState() {
     super.initState();
-    _dragController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 250),
-    );
-
     _searchFocusNode.addListener(() {
-      if (_searchFocusNode.hasFocus) {
-        setState(() => _searchFocused = true);
-        _expand();
+      if (mounted) {
+        setState(() => _searchFocused = _searchFocusNode.hasFocus);
+        
+        // ← Раскрываем плашку при фокусе
+        if (_searchFocusNode.hasFocus) {
+          _sheetController.animateTo(
+            0.95,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutCubic,
+          );
+        }
       }
     });
   }
@@ -106,131 +59,37 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet>
   void dispose() {
     _searchFocusNode.dispose();
     _scrollController.dispose();
-    _dragController.dispose();
+    _sheetController.dispose();
     super.dispose();
-  }
-
-  void _expand() {
-    _dragController.animateTo(1.0,
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeOutCubic);
-  }
-
-  void _collapse() {
-    _dragController.animateTo(0.0,
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeOutCubic);
-  }
-
-  bool get _canDragDown {
-    return !_scrollController.hasClients || _scrollController.offset <= 0;
-  }
-
-  void _onVerticalDragUpdate(DragUpdateDetails details) {
-    if (!_canDragDown && details.primaryDelta! > 0) return;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final delta = details.primaryDelta! / screenHeight;
-    final range = _expandedRatio - _collapsedRatio;
-    _dragController.value = (_dragController.value - delta / range).clamp(0.0, 1.0);
-  }
-
-  void _onVerticalDragEnd(DragEndDetails details) {
-    final velocity = details.primaryVelocity ?? 0;
-    if (velocity < -400) {
-      _expand();
-    } else if (velocity > 500) {
-      if (_dragController.value > 0.5) {
-        _collapse();
-      } else {
-        Navigator.of(context).pop();
-      }
-    } else if (_dragController.value > 0.5) {
-      _expand();
-    } else if (_dragController.value > 0.15) {
-      _collapse();
-    } else {
-      Navigator.of(context).pop();
-    }
-  }
-
-  double _getSheetHeight(double screenHeight) {
-    final collapsed = screenHeight * _collapsedRatio;
-    final expanded = screenHeight * _expandedRatio;
-    return collapsed + (expanded - collapsed) * _dragController.value;
-  }
-
-  // Обработка жеста "назад" — снимаем фокус вместо закрытия панели
-  Future<bool> _onWillPop() async {
-    if (_searchFocusNode.hasFocus) {
-      _searchFocusNode.unfocus();
-      return false; // Не закрываем панель
-    }
-    return true; // Закрываем панель
   }
 
   @override
   Widget build(BuildContext context) {
     final asyncList = ref.watch(playlistsProvider);
     final colors = ref.watch(animatedPaletteProvider);
-    final screenHeight = MediaQuery.of(context).size.height;
     final bottomInset = MediaQuery.of(context).padding.bottom;
-    
-    // Отслеживаем клавиатуру через viewInsets
-    final viewInsets = MediaQuery.of(context).viewInsets;
-    final isKeyboardOpen = viewInsets.bottom > 0;
 
-    // Клавиатура только что закрылась
-    if (_wasKeyboardOpen && !isKeyboardOpen && _searchFocused) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          setState(() => _searchFocused = false);
-        }
-      });
-    }
-    _wasKeyboardOpen = isKeyboardOpen;
-
-    return PopScope(
-      canPop: false, // Prevents automatic popping so your function can run instead
-      onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return; // If it already popped, do nothing
-
-        // Await your existing function logic
-        final shouldPop = await _onWillPop(); 
-        
-        // Manually pop the screen if your function returns true
-        if (shouldPop && context.mounted) {
-          Navigator.of(context).pop(result);
-        }
-      },
-      child: AnimatedBuilder(
-        animation: _dragController,
-        builder: (context, child) {
-          return Container(
-            height: _getSheetHeight(screenHeight),
-            decoration: BoxDecoration(
-              color: colors.background,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            ),
-            child: child,
-          );
-        },
-        child: GestureDetector(
-          onVerticalDragUpdate: _onVerticalDragUpdate,
-          onVerticalDragEnd: _onVerticalDragEnd,
-          behavior: HitTestBehavior.translucent,
+    return DraggableScrollableSheet(
+      initialChildSize: 0.51,
+      minChildSize: 0.25,
+      maxChildSize: 0.95,
+      expand: false,
+      snap: true,
+      snapSizes: const [0.51, 0.95],
+      controller: _sheetController,
+      builder: (context, scrollController) {
+        return Container(
+          decoration: BoxDecoration(
+            color: colors.background,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // Drag handle
               GestureDetector(
-                onTap: () {
-                  if (_dragController.value > 0.5) {
-                    _collapse();
-                  } else {
-                    _expand();
-                  }
-                },
+                onTap: () {},
                 child: Center(
                   child: Container(
                     margin: const EdgeInsets.only(top: 12, bottom: 16),
@@ -299,9 +158,9 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet>
                     return _PlaylistGrid(
                       playlists: filtered,
                       selectedIds: _selectedIds,
-                      scrollController: _scrollController,
+                      scrollController: scrollController,
                       onToggle: (id) {
-                        HapticHelper.light();
+                        HapticHelper.light(ref: ref);
                         setState(() {
                           if (_selectedIds.contains(id)) {
                             _selectedIds.remove(id);
@@ -348,13 +207,13 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet>
               ),
             ],
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
   void _onDone(BuildContext context) {
-    HapticHelper.medium();
+    HapticHelper.medium(ref: ref);
     final repo = ref.read(playlistRepositoryProvider);
     final colors = ref.read(currentPaletteProvider);
 
@@ -416,7 +275,6 @@ class _PlaylistGrid extends StatelessWidget {
           textAlign: TextAlign.center,
           style: TextStyle(
             color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-
             fontSize: 14,
           ),
         ),
@@ -517,7 +375,7 @@ class _NewPlaylistTileState extends ConsumerState<_NewPlaylistTile> {
   }
 
   Future<void> _createNewPlaylist(BuildContext context, WidgetRef ref) async {
-    HapticHelper.light();
+    HapticHelper.light(ref: ref);
     final colors = ref.read(currentPaletteProvider);
     final controller = TextEditingController();
     final name = await showDialog<String>(
@@ -564,7 +422,7 @@ class _NewPlaylistTileState extends ConsumerState<_NewPlaylistTile> {
       widget.onCreated(p.id);
 
       if (context.mounted) {
-        HapticHelper.medium();
+        HapticHelper.medium(ref: ref);
       }
     }
   }

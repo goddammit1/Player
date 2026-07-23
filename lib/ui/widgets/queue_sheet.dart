@@ -1,7 +1,6 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:vibration/vibration.dart';
+import 'package:player/core/haptic_helper.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
@@ -44,109 +43,6 @@ String _formatDuration(Duration? d) {
   return '$minutes:$ss';
 }
 
-// ============================================================
-// Haptic helper через пакет vibration
-// ============================================================
-
-class HapticHelper {
-  static bool _hasVibrator = false;
-  static bool _hasAmplitude = false;
-  static bool _checked = false;
-
-  static Future<void> _ensureChecked() async {
-    if (_checked) return;
-    _hasVibrator = await Vibration.hasVibrator();
-    _hasAmplitude = await Vibration.hasAmplitudeControl();
-    _checked = true;
-  }
-
-  /// Очень лёгкий микро-отклик — для progress bar steps
-  static Future<void> microTick() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.selectionClick();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 5, amplitude: 40);
-    } else {
-      await Vibration.vibrate(duration: 5);
-    }
-  }
-
-  /// Лёгкий отклик
-  static Future<void> light() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 80);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  /// Средний отклик
-  static Future<void> medium() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 20, amplitude: 140);
-    } else {
-      await Vibration.vibrate(duration: 20);
-    }
-  }
-
-  /// Сильный отклик — пересечение threshold
-  static Future<void> strong() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.heavyImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 30, amplitude: 220);
-    } else {
-      await Vibration.vibrate(duration: 40);
-    }
-  }
-
-  /// Слабый отклик — возврат
-  static Future<void> weak() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 50);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  /// Подтверждение удаления
-  static Future<void> confirmDelete() async {
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(
-        pattern: [0, 30, 50, 20],
-        intensities: [0, 255, 0, 100],
-      );
-    } else {
-      await Vibration.vibrate(duration: 35);
-    }
-  }
-}
 
 class QueueSheetController extends ChangeNotifier {
   QueueSheetController({required this.vsync}) {
@@ -934,7 +830,7 @@ class _QueueTile extends StatelessWidget {
 // ============================================================
 // _DismissibleQueueTile — свайп с haptic feedback через vibration
 // ============================================================
-class _DismissibleQueueTile extends StatefulWidget {
+class _DismissibleQueueTile extends ConsumerStatefulWidget {
   const _DismissibleQueueTile({
     super.key,
     required this.index,
@@ -955,10 +851,10 @@ class _DismissibleQueueTile extends StatefulWidget {
   final bool enabled;
 
   @override
-  State<_DismissibleQueueTile> createState() => _DismissibleQueueTileState();
+  ConsumerState<_DismissibleQueueTile> createState() => _DismissibleQueueTileState();
 }
 
-class _DismissibleQueueTileState extends State<_DismissibleQueueTile> {
+class _DismissibleQueueTileState extends ConsumerState<_DismissibleQueueTile> {
   bool _hasVibrated = false;
 
   void _onUpdate(DismissUpdateDetails details) {
@@ -966,10 +862,10 @@ class _DismissibleQueueTileState extends State<_DismissibleQueueTile> {
 
     if (details.progress >= threshold && !_hasVibrated && widget.enabled) {
       _hasVibrated = true;
-      HapticHelper.strong();
+      HapticHelper.strong(ref: ref);
     } else if (details.progress < threshold && _hasVibrated) {
       _hasVibrated = false;
-      if (widget.enabled) HapticHelper.weak();
+      if (widget.enabled) HapticHelper.weak(ref: ref);
     }
   }
 
@@ -998,7 +894,7 @@ class _DismissibleQueueTileState extends State<_DismissibleQueueTile> {
         ),
       ),
       onDismissed: (_) {
-        if (widget.enabled) HapticHelper.confirmDelete();
+        if (widget.enabled) HapticHelper.confirmDelete(ref: ref);
         widget.onDismissed();
       },
       child: _QueueTile(
