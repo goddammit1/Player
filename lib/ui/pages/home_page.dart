@@ -7,8 +7,8 @@ import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
-import '../widgets/snack.dart';
 
+import 'history_page.dart';
 import 'playlist_page.dart';
 import 'search_history_page.dart';
 import 'settings_page.dart';
@@ -148,7 +148,12 @@ class _TopBar extends ConsumerWidget {
         children: [
           _CircleButton(
             icon: Icons.history_rounded,
-            onTap: () => showSnack(context, 'History — coming soon'),
+            // Та же системная анимация перехода, что и у Settings,
+            // но отражённая по горизонтали — страница прилетает слева
+            // (кнопка истории в левом углу).
+            onTap: () => Navigator.of(context).push(
+              _MirroredPageRoute(builder: (_) => const HistoryPage()),
+            ),
             colors: colors,
           ),
           const SizedBox(width: 10),
@@ -587,6 +592,42 @@ class _AddNewCard extends ConsumerWidget {
     if (!context.mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => PlaylistPage(playlistId: p.id)),
+    );
+  }
+}
+
+/// Маршрут со стандартной системной анимацией перехода (ровно такой же,
+/// как у Settings через MaterialPageRoute), но отражённой по горизонтали,
+/// чтобы страница прилетала слева, а не справа. Дважды применяем
+/// горизонтальный flip: внешний отражает геометрию перехода
+/// (right-slide → left-slide), внутренний возвращает контент в норму,
+/// чтобы текст и иконки не были зеркальными.
+class _MirroredPageRoute<T> extends MaterialPageRoute<T> {
+  _MirroredPageRoute({required super.builder});
+
+  static final Matrix4 _flipX = Matrix4.diagonal3Values(-1, 1, 1);
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final mirroredChild = Transform(
+      alignment: Alignment.center,
+      transform: _flipX,
+      child: child,
+    );
+    return Transform(
+      alignment: Alignment.center,
+      transform: _flipX,
+      child: super.buildTransitions(
+        context,
+        animation,
+        secondaryAnimation,
+        mirroredChild,
+      ),
     );
   }
 }

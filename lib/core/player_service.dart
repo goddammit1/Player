@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/track.dart';
 import '../sources/source_registry.dart';
+import 'history_repository.dart';
 import 'youtube_cache.dart';
 
 // print -> adb logcat (tag: flutter)
@@ -56,6 +57,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   bool _isLoading = false;
   bool get isLoading => _isLoading;
 
+  /// Кандидат в историю прослушивания. Записывается в HistoryRepository
+  /// только когда трек реально начал играть — позиция пересекла
+  /// [_historyThreshold] (см. подписку на positionStream в конструкторе).
+  Track? _pendingHistoryTrack;
+  static const Duration _historyThreshold = Duration(seconds: 1);
+
   PlayerService() {
     _loudnessEnhancer = AndroidLoudnessEnhancer();
 
@@ -97,6 +104,23 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       },
       onError: (Object e, StackTrace st) {
         _log('playerStateStream error: $e');
+      },
+    );
+
+    // История прослушивания: записываем pending-трек, только когда он
+    // реально начал играть (позиция пересекла _historyThreshold).
+    // Пропущенный до старта трек в историю не попадает.
+    _player.positionStream.listen(
+      (pos) {
+        final pending = _pendingHistoryTrack;
+        if (pending == null) return;
+        if (!_player.playing) return;
+        if (pos < _historyThreshold) return;
+        _pendingHistoryTrack = null;
+        unawaited(HistoryRepository.instance.add(pending));
+      },
+      onError: (Object e, StackTrace st) {
+        _log('positionStream error: $e');
       },
     );
 
@@ -244,6 +268,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
     final myGen = ++_loadGeneration;
     _isLoading = true;
+    _pendingHistoryTrack = null;
     _currentIndex = index;
     _currentIndexSubject.add(index);
     final track = _queue[index];
@@ -282,6 +307,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
       _isLoading = false;
       _consecutiveSkips = 0;
+      _pendingHistoryTrack = track;
       _log('[$myGen] setAudioSource OK (${sw.elapsedMilliseconds} ms total),'
           ' starting playback');
       await _player.play();

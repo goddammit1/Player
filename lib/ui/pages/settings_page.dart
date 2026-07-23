@@ -50,6 +50,7 @@ class SettingsPage extends ConsumerWidget {
           children: [
             _AppearanceSection(colors: colors),
             _SearchViewSection(colors: colors),
+            _HistorySection(colors: colors),
             _HapticsSection(colors: colors),
             _CacheTile(colors: colors),
             _AboutSection(colors: colors),
@@ -404,6 +405,124 @@ class _HapticsSection extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+// =====================================================================
+//  HISTORY SECTION
+// =====================================================================
+
+class _HistorySection extends ConsumerWidget {
+  const _HistorySection({required this.colors});
+  final dynamic colors;
+
+  static const _presets = [50, 100, 150, 200];
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final limit = ref.watch(historyLimitProvider);
+
+    return _Section(
+      title: 'History',
+      colors: colors,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Max entries',
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                height: 44,
+                decoration: BoxDecoration(
+                  color: colors.elevated,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: colors.outline, width: 1),
+                ),
+                child: Row(
+                  children: [
+                    for (var i = 0; i < _presets.length; i++) ...[
+                      if (i > 0)
+                        VerticalDivider(
+                          width: 1,
+                          thickness: 1,
+                          color: colors.outline,
+                          indent: 8,
+                          endIndent: 8,
+                        ),
+                      Expanded(
+                        child: _LimitOption(
+                          value: _presets[i],
+                          isSelected: limit == _presets[i],
+                          onTap: () => ref
+                              .read(historyLimitProvider.notifier)
+                              .setLimit(_presets[i]),
+                          colors: colors,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Keep up to $limit recently played tracks.',
+                style: TextStyle(
+                  color: colors.textTertiary,
+                  fontSize: 12,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+class _LimitOption extends StatelessWidget {
+  const _LimitOption({
+    required this.value,
+    required this.isSelected,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final int value;
+  final bool isSelected;
+  final VoidCallback onTap;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          alignment: Alignment.center,
+          child: Text(
+            '$value',
+            style: TextStyle(
+              color: isSelected ? colors.textPrimary : colors.textTertiary,
+              fontSize: 14,
+              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -7,6 +7,7 @@ import '../models/track.dart';
 import '../sources/muzmo_source.dart';
 import '../sources/soundcloud_source.dart';
 import '../sources/source_registry.dart';
+import 'history_repository.dart';
 import 'player_service.dart';
 import 'playlist_repository.dart';
 export 'appearance_provider.dart';
@@ -288,6 +289,42 @@ final playlistsProvider = StreamProvider<List<Playlist>>((ref) async* {
 final playlistRepositoryProvider = Provider<PlaylistRepository>((ref) {
   return PlaylistRepository.instance;
 });
+
+/// Поток истории прослушивания (новые сверху). UI слушает через
+/// `ref.watch(listenHistoryProvider)` и получает `AsyncValue<List<HistoryEntry>>`.
+final listenHistoryProvider = StreamProvider<List<HistoryEntry>>((ref) async* {
+  await HistoryRepository.instance.ensureLoaded();
+  yield HistoryRepository.instance.current;
+  yield* HistoryRepository.instance.stream;
+});
+
+/// Удобный доступ к репозиторию истории: для мутаций.
+final historyRepositoryProvider = Provider<HistoryRepository>((ref) {
+  return HistoryRepository.instance;
+});
+
+/// Лимит записей истории прослушивания. Persist живёт внутри
+/// [HistoryRepository] (ключ `history_limit_v1`), максимум —
+/// [HistoryRepository.maxLimit].
+final historyLimitProvider = StateNotifierProvider<HistoryLimitNotifier, int>(
+  (ref) => HistoryLimitNotifier(),
+);
+
+class HistoryLimitNotifier extends StateNotifier<int> {
+  HistoryLimitNotifier() : super(HistoryRepository.defaultLimit) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    await HistoryRepository.instance.ensureLoaded();
+    state = HistoryRepository.instance.limit;
+  }
+
+  Future<void> setLimit(int value) async {
+    await HistoryRepository.instance.setLimit(value);
+    state = HistoryRepository.instance.limit;
+  }
+}
 
 
 final vibrationEnabledProvider = StateNotifierProvider<VibrationNotifier, bool>(
