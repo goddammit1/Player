@@ -835,7 +835,7 @@ class _TrackTileList extends StatelessWidget {
                       ),
                   ],
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -852,7 +852,7 @@ class _TrackTileList extends StatelessWidget {
                           letterSpacing: 0,
                         ),
                       ),
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 2),
                       Text(
                         track.artist,
                         maxLines: 1,
@@ -860,7 +860,7 @@ class _TrackTileList extends StatelessWidget {
                         style: TextStyle(
                           color: colors.textSecondary,
                           fontWeight: FontWeight.w500,
-                          fontSize: 10,
+                          fontSize: 13,
                         ),
                       ),
                     ],

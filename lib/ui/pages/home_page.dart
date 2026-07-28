@@ -39,7 +39,7 @@ class HomePage extends ConsumerWidget {
                   const SliverToBoxAdapter(child: _TopBar()),
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
                       child: Text(
                         'Playlists',
                         style: TextStyle(
@@ -240,7 +240,7 @@ class _SearchPill extends StatelessWidget {
                 Text(
                   'Search',
                   style: TextStyle(
-                    color: colors.textPrimary,
+                    color: colors.textSecondary,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
