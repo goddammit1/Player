@@ -103,33 +103,78 @@ class _UpdateDialog extends StatefulWidget {
   State<_UpdateDialog> createState() => _UpdateDialogState();
 }
 
-class _UpdateDialogState extends State<_UpdateDialog> {
-  bool _downloading = false;
-  double _progress = 0;
+enum _Phase { idle, downloading, readyToInstall, installing }
 
-  Future<void> _downloadAndInstall() async {
+class _UpdateDialogState extends State<_UpdateDialog> {
+  _Phase _phase = _Phase.idle;
+  double _progress = 0;
+  String? _apkPath;
+
+  bool get _busy =>
+      _phase == _Phase.downloading || _phase == _Phase.installing;
+
+  void _showError(Object error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(error.toString()),
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+
+  Future<void> _download() async {
     setState(() {
-      _downloading = true;
+      _phase = _Phase.downloading;
       _progress = 0;
     });
 
     try {
-      await UpdateService.downloadAndInstall(
+      final path = await UpdateService.download(
         widget.result.release,
         onProgress: (progress) {
           if (!mounted) return;
           setState(() => _progress = progress.clamp(0, 1));
         },
       );
+      if (!mounted) return;
+      setState(() {
+        _apkPath = path;
+        _phase = _Phase.readyToInstall;
+      });
+      // Скачали один раз — сразу пробуем поставить.
+      await _install();
     } catch (error) {
       if (!mounted) return;
-      setState(() => _downloading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error.toString()),
-          duration: const Duration(seconds: 5),
-        ),
-      );
+      setState(() => _phase = _Phase.idle);
+      _showError(error);
+    }
+  }
+
+  Future<void> _install() async {
+    final path = _apkPath;
+    if (path == null) {
+      // Файла нет (кэш очищен) — качаем заново.
+      await _download();
+      return;
+    }
+
+    setState(() => _phase = _Phase.installing);
+    try {
+      final outcome = await UpdateService.install(path);
+      if (!mounted) return;
+      // В обоих случаях возвращаемся в readyToInstall: либо система
+      // открыла установщик, либо увела в настройки за разрешением.
+      // APK уже скачан, повторное скачивание не нужно.
+      setState(() => _phase = _Phase.readyToInstall);
+      if (outcome == InstallOutcome.permissionRequired) {
+        _showError(
+          'Разрешите установку из этого источника, затем нажмите «Установить».',
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _phase = _Phase.readyToInstall);
+      _showError(error);
     }
   }
 
@@ -140,6 +185,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     final notes = release.notes.isEmpty
         ? 'No release notes were provided.'
         : release.notes;
+
+    final readyToInstall = _phase == _Phase.readyToInstall;
+    final actionLabel = readyToInstall ? 'Установить' : 'Скачать и установить';
+    final actionIcon = readyToInstall
+        ? Icons.install_mobile_rounded
+        : Icons.download_rounded;
 
     return AlertDialog(
       backgroundColor: colors.elevated,
@@ -166,7 +217,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 ),
               ),
             ),
-            if (_downloading) ...[
+            if (_phase == _Phase.downloading) ...[
               const SizedBox(height: 20),
               LinearProgressIndicator(
                 value: _progress > 0 ? _progress : null,
@@ -180,19 +231,32 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                     : 'Starting download...',
                 style: TextStyle(color: colors.textTertiary, fontSize: 12),
               ),
+            ] else if (readyToInstall) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Загружено. Если установщик не открылся — разрешите установку '
+                'из этого источника и нажмите «Установить».',
+                style: TextStyle(color: colors.textTertiary, fontSize: 12),
+              ),
+            ] else if (_phase == _Phase.installing) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Открываю установщик…',
+                style: TextStyle(color: colors.textTertiary, fontSize: 12),
+              ),
             ],
           ],
         ),
       ),
       actions: [
         TextButton(
-          onPressed: _downloading ? null : () => Navigator.of(context).pop(),
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
           child: const Text('Later'),
         ),
         FilledButton.icon(
-          onPressed: _downloading ? null : _downloadAndInstall,
-          icon: const Icon(Icons.download_rounded),
-          label: const Text('Download and install'),
+          onPressed: _busy ? null : (readyToInstall ? _install : _download),
+          icon: Icon(actionIcon),
+          label: Text(actionLabel),
         ),
       ],
     );

@@ -4,179 +4,50 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/history_repository.dart';
 import '../../core/providers.dart';
 import '../widgets/artwork.dart';
+import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
+import 'settings_page.dart';
 
 /// Страница истории прослушивания.
 ///
-/// Список записей «новые сверху», сгруппированный по дням
-/// (Today / Yesterday / дата). Тап — играть трек, свайп — удалить запись,
-/// long press — меню трека. Кнопка в шапке очищает всю историю.
-class HistoryPage extends ConsumerWidget {
+/// Хронологический список треков с поиском, группировкой по дням/часам,
+/// возможностью очистки всей истории и управления воспроизведением.
+class HistoryPage extends ConsumerStatefulWidget {
   const HistoryPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = ref.watch(animatedPaletteProvider);
-    final async = ref.watch(listenHistoryProvider);
-    final history = async.value ?? const <HistoryEntry>[];
-
-    return Scaffold(
-      backgroundColor: colors.background,
-      appBar: AppBar(
-        backgroundColor: colors.background,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(
-            Icons.chevron_left_rounded,
-            size: 28,
-            color: colors.textPrimary,
-          ),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Text(
-          'History',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 20,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0,
-          ),
-        ),
-        actions: [
-          if (history.isNotEmpty)
-            IconButton(
-              icon: Icon(Icons.delete_sweep_rounded, color: colors.textPrimary),
-              onPressed: () => _confirmClear(context, ref, colors),
-            ),
-        ],
-      ),
-      body: history.isEmpty
-          ? Center(
-              child: Text(
-                'No listening history yet',
-                style: TextStyle(color: colors.textSecondary, fontSize: 15),
-              ),
-            )
-          : _HistoryList(history: history, colors: colors),
-    );
-  }
-
-  Future<void> _confirmClear(
-    BuildContext context,
-    WidgetRef ref,
-    dynamic colors,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: colors.elevated,
-        title: Text(
-          'Clear history',
-          style: TextStyle(color: colors.textPrimary),
-        ),
-        content: Text(
-          'Remove all listening history? This cannot be undone.',
-          style: TextStyle(color: colors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      await ref.read(historyRepositoryProvider).clear();
-    }
-  }
+  ConsumerState<HistoryPage> createState() => _HistoryPageState();
 }
 
-class _HistoryList extends ConsumerWidget {
-  const _HistoryList({required this.history, required this.colors});
-
-  final List<HistoryEntry> history;
-  final dynamic colors;
+class _HistoryPageState extends ConsumerState<HistoryPage> {
+  final TextEditingController _searchCtl = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  String _query = '';
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Плоский список: заголовки дней, под ними подзаголовки-часы,
-    // внутри часа — записи (новые сверху).
-    final items = <_RowItem>[];
-    String? lastDayLabel;
-    String? lastHourLabel;
-    for (final entry in history) {
-      final dayLabel = _dayLabel(entry.playedAt);
-      if (dayLabel != lastDayLabel) {
-        items.add(_RowItem.forHeader(dayLabel));
-        lastDayLabel = dayLabel;
-        lastHourLabel = null;
+  void initState() {
+    super.initState();
+    _searchCtl.addListener(() {
+      final q = _searchCtl.text;
+      if (q != _query) {
+        setState(() => _query = q);
       }
-      final hourLabel = _hourLabel(entry.playedAt);
-      if (hourLabel != lastHourLabel) {
-        items.add(_RowItem.forHourHeader(hourLabel));
-        lastHourLabel = hourLabel;
-      }
-      items.add(_RowItem.forEntry(entry));
-    }
-
-    return ListView.builder(
-      padding: EdgeInsets.only(
-        top: 4,
-        bottom: 16 + MediaQuery.of(context).padding.bottom,
-      ),
-      itemCount: items.length,
-      itemBuilder: (context, i) {
-        final item = items[i];
-        if (item.isDayHeader) {
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-            child: Text(
-              item.header!.toUpperCase(),
-              style: TextStyle(
-                color: colors.textTertiary,
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1,
-              ),
-            ),
-          );
-        }
-        if (item.isHourHeader) {
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
-            child: Text(
-              item.hourHeader!,
-              style: TextStyle(
-                color: colors.textSecondary,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.5,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-          );
-        }
-        final entry = item.entry!;
-        return _HistoryTile(
-          entry: entry,
-          colors: colors,
-          onTap: () => _play(ref, entry),
-          onDismissed: () =>
-              ref.read(historyRepositoryProvider).remove(entry),
-        );
-      },
-    );
+    });
   }
 
-  void _play(WidgetRef ref, HistoryEntry entry) {
-    ref.read(playerServiceProvider).setQueue([entry.track]);
+  @override
+  void dispose() {
+    _searchCtl.dispose();
+    _searchFocus.dispose();
+    super.dispose();
   }
+
+  // ---- Форматирование дат ----
+
+  static const _monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
 
   String _dayLabel(DateTime dt) {
     final now = DateTime.now();
@@ -185,16 +56,428 @@ class _HistoryList extends ConsumerWidget {
     final diff = today.difference(day).inDays;
     if (diff == 0) return 'Today';
     if (diff == 1) return 'Yesterday';
-    final dd = day.day.toString().padLeft(2, '0');
-    final mm = day.month.toString().padLeft(2, '0');
-    return '$dd.$mm.${day.year}';
+    return '${_monthNames[day.month - 1]} ${day.day}, ${day.year}';
   }
 
   String _hourLabel(DateTime dt) {
-    final h = dt.hour.toString().padLeft(2, '0');
-    return '$h:00';
+    return '${dt.hour}:00';
+  }
+
+  String _durationText(Duration? d) {
+    if (d == null) return '--:--';
+    final totalSeconds = d.inSeconds;
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+    final ss = seconds.toString().padLeft(2, '0');
+    if (hours > 0) {
+      final mm = minutes.toString().padLeft(2, '0');
+      return '$hours:$mm:$ss';
+    }
+    return '$minutes:$ss';
+  }
+
+  // ---- Фильтрация ----
+
+  List<HistoryEntry> _filtered(List<HistoryEntry> all) {
+    if (_query.trim().isEmpty) return all;
+    final q = _query.trim().toLowerCase();
+    return all.where((e) {
+      return e.track.title.toLowerCase().contains(q) ||
+          e.track.artist.toLowerCase().contains(q);
+    }).toList();
+  }
+
+  // ---- Очистка истории ----
+
+  Future<void> _confirmClear(AppColors colors) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.elevatedVariant,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          'Clear history',
+          style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Remove all listening history? This cannot be undone.',
+          style: TextStyle(color: colors.textSecondary, fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: colors.textSecondary),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              'Clear',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await ref.read(historyRepositoryProvider).clear();
+    }
+  }
+
+  // ---- Воспроизведение ----
+
+  void _play(HistoryEntry entry) {
+    ref.read(playerServiceProvider).setQueue([entry.track]);
+  }
+
+  // ===================================================================
+  //  BUILD
+  // ===================================================================
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ref.watch(animatedPaletteProvider);
+    final async = ref.watch(listenHistoryProvider);
+    final allHistory = async.value ?? const <HistoryEntry>[];
+    final history = _filtered(allHistory);
+
+    return Stack(
+      children: [
+        Scaffold(
+          backgroundColor: colors.background,
+          // ── Верхняя панель ──
+          appBar: AppBar(
+            backgroundColor: colors.background,
+            surfaceTintColor: Colors.transparent,
+            elevation: 0,
+            toolbarHeight: 88,
+            automaticallyImplyLeading: false,
+            titleSpacing: 0,
+            title: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+              child: Row(
+                children: [
+                  _CircleButton(
+                    icon: Icons.arrow_back_rounded,
+                    onTap: () => Navigator.of(context).pop(),
+                    colors: colors,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _SearchPill(
+                      colors: colors,
+                      controller: _searchCtl,
+                      focusNode: _searchFocus,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  _CircleButton(
+                    icon: Icons.settings_rounded,
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const SettingsPage()),
+                      );
+                    },
+                    colors: colors,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // ── Тело ──
+          body: allHistory.isEmpty
+              ? Center(
+                  child: Text(
+                    'No listening history yet',
+                    style: TextStyle(color: colors.textSecondary, fontSize: 15),
+                  ),
+                )
+              : _HistoryBody(
+                  history: history,
+                  allHistory: allHistory,
+                  query: _query,
+                  colors: colors,
+                  dayLabel: _dayLabel,
+                  hourLabel: _hourLabel,
+                  durationText: _durationText,
+                  onPlay: _play,
+                  onClear: () => _confirmClear(colors),
+                ),
+        ),
+        const NowPlayingOverlay(),
+      ],
+    );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  КРУГЛАЯ КНОПКА (как в search_page.dart)
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 60,
+          height: 60,
+          child: Icon(icon, color: colors.textPrimary, size: 20),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ПОИСКОВАЯ ПИЛЮЛЯ
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _SearchPill extends StatelessWidget {
+  const _SearchPill({
+    required this.colors,
+    required this.controller,
+    required this.focusNode,
+  });
+
+  final AppColors colors;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      borderRadius: BorderRadius.circular(32),
+      child: SizedBox(
+        height: 60,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Played before?',
+                    hintStyle: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    isCollapsed: true,
+                  ),
+                  cursorColor: colors.accent,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ТЕЛО СПИСКА (скроллируемая область)
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _HistoryBody extends StatelessWidget {
+  const _HistoryBody({
+    required this.history,
+    required this.allHistory,
+    required this.query,
+    required this.colors,
+    required this.dayLabel,
+    required this.hourLabel,
+    required this.durationText,
+    required this.onPlay,
+    required this.onClear,
+  });
+
+  final List<HistoryEntry> history;
+  final List<HistoryEntry> allHistory;
+  final String query;
+  final AppColors colors;
+  final String Function(DateTime) dayLabel;
+  final String Function(DateTime) hourLabel;
+  final String Function(Duration?) durationText;
+  final void Function(HistoryEntry) onPlay;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    if (history.isEmpty && query.isNotEmpty) {
+      // Поиск не дал результатов
+      return _buildHeader(context, showClear: false, children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 48),
+          child: Center(
+            child: Text(
+              'Nothing found',
+              style: TextStyle(color: colors.textSecondary, fontSize: 14),
+            ),
+          ),
+        ),
+      ]);
+    }
+
+    // Строим группированный список
+    final items = <_RowItem>[];
+    String? lastDayLabel;
+    String? lastHourLabel;
+    for (final entry in history) {
+      final dl = dayLabel(entry.playedAt);
+      if (dl != lastDayLabel) {
+        items.add(_RowItem.forHeader(dl));
+        lastDayLabel = dl;
+        lastHourLabel = null;
+      }
+      final hl = hourLabel(entry.playedAt);
+      if (hl != lastHourLabel) {
+        items.add(_RowItem.forHourHeader(hl));
+        lastHourLabel = hl;
+      }
+      items.add(_RowItem.forEntry(entry));
+    }
+
+    final listChildren = <Widget>[];
+    for (final item in items) {
+      if (item.isDayHeader) {
+        listChildren.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+            child: Text(
+              item.header!,
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        );
+      } else if (item.isHourHeader) {
+        listChildren.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+            child: Text(
+              item.hourHeader!,
+              style: TextStyle(
+                color: colors.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        );
+      } else {
+        final entry = item.entry!;
+        listChildren.add(
+          _HistoryTile(
+            entry: entry,
+            colors: colors,
+            durationText: durationText,
+            onTap: () => onPlay(entry),
+            onDismissed: () {},
+          ),
+        );
+      }
+    }
+
+    return _buildHeader(
+      context,
+      showClear: allHistory.isNotEmpty,
+      children: listChildren,
+    );
+  }
+
+  Widget _buildHeader(
+    BuildContext context, {
+    required bool showClear,
+    required List<Widget> children,
+  }) {
+    return ListView(
+      padding: EdgeInsets.only(
+        top: 4,
+        bottom: 120 + MediaQuery.of(context).padding.bottom,
+      ),
+      children: [
+        // ── Заголовок HISTORY + кнопка Clear ──
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 12, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'HISTORY',
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ),
+              if (showClear)
+                TextButton.icon(
+                  onPressed: onClear,
+                  icon: Icon(
+                    Icons.delete_rounded,
+                    color: colors.textSecondary,
+                    size: 18,
+                  ),
+                  label: Text(
+                    'Clear',
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        ...children,
+      ],
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ROW ITEM — элемент группировки
+// ═══════════════════════════════════════════════════════════════════════════
 
 class _RowItem {
   const _RowItem.forHeader(this.header)
@@ -215,16 +498,22 @@ class _RowItem {
   bool get isHourHeader => hourHeader != null;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  КАРТОЧКА ТРЕКА
+// ═══════════════════════════════════════════════════════════════════════════
+
 class _HistoryTile extends StatelessWidget {
   const _HistoryTile({
     required this.entry,
     required this.colors,
+    required this.durationText,
     required this.onTap,
     required this.onDismissed,
   });
 
   final HistoryEntry entry;
-  final dynamic colors;
+  final AppColors colors;
+  final String Function(Duration?) durationText;
   final VoidCallback onTap;
   final VoidCallback onDismissed;
 
@@ -236,7 +525,11 @@ class _HistoryTile extends StatelessWidget {
         '${track.globalId}_${entry.playedAt.millisecondsSinceEpoch}',
       ),
       direction: DismissDirection.endToStart,
-      onDismissed: (_) => onDismissed(),
+      onDismissed: (_) {
+        // Удаление через репозиторий произойдёт в родителе при необходимости,
+        // но здесь оставляем onDismissed для обратной совместимости.
+        onDismissed();
+      },
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 24),
@@ -253,7 +546,7 @@ class _HistoryTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              Artwork(url: track.artworkUrl, size: 48, borderRadius: 8),
+              Artwork(url: track.artworkUrl, size: 52, borderRadius: 10),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -267,17 +560,18 @@ class _HistoryTile extends StatelessWidget {
                       style: TextStyle(
                         color: colors.textPrimary,
                         fontWeight: FontWeight.w700,
-                        fontSize: 14,
+                        fontSize: 15,
                         letterSpacing: 0,
                       ),
                     ),
+                    const SizedBox(height: 2),
                     Text(
                       track.artist,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: colors.textSecondary,
-                        fontSize: 12,
+                        fontSize: 13,
                       ),
                     ),
                   ],
@@ -285,10 +579,10 @@ class _HistoryTile extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                _durationText(track.duration),
+                durationText(track.duration),
                 style: TextStyle(
                   color: colors.textSecondary,
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
@@ -298,19 +592,5 @@ class _HistoryTile extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  String _durationText(Duration? d) {
-    if (d == null) return '--:--';
-    final totalSeconds = d.inSeconds;
-    final hours = totalSeconds ~/ 3600;
-    final minutes = (totalSeconds % 3600) ~/ 60;
-    final seconds = totalSeconds % 60;
-    final ss = seconds.toString().padLeft(2, '0');
-    if (hours > 0) {
-      final mm = minutes.toString().padLeft(2, '0');
-      return '$hours:$mm:$ss';
-    }
-    return '$minutes:$ss';
   }
 }

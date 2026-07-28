@@ -125,7 +125,7 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                           ignoring: t < 0.9,
                           child: Opacity(
                             opacity: fullOpacity,
-                            child: ColoredBox(
+                            child: Material(
                               color: colors.background,
                               child: SafeArea(
                                 child: PlayerContent(onClose: _collapse),

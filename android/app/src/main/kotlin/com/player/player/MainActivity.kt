@@ -50,8 +50,8 @@ class MainActivity : AudioServiceActivity() {
                 }
 
                 try {
-                    installApk(path)
-                    result.success(null)
+                    val status = installApk(path)
+                    result.success(status)
                 } catch (error: Throwable) {
                     result.error("INSTALL_FAILED", error.message, null)
                 }
@@ -64,7 +64,14 @@ class MainActivity : AudioServiceActivity() {
         applyHighRefreshRate()
     }
 
-    private fun installApk(path: String) {
+    /**
+     * Возвращает "installStarted", если установщик открыт, или
+     * "permissionRequired", если пользователя увели в настройки за
+     * разрешением. Важно: во втором случае мы НЕ бросаем исключение —
+     * скачанный APK остаётся на месте, и Dart-слой просто предложит
+     * нажать «Установить» повторно, без нового скачивания.
+     */
+    private fun installApk(path: String): String {
         val apk = File(path)
         require(apk.exists() && apk.length() > 0L) { "Downloaded APK was not found." }
 
@@ -77,9 +84,7 @@ class MainActivity : AudioServiceActivity() {
                     Uri.parse("package:$packageName")
                 ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
-            throw IllegalStateException(
-                "Allow installation from this app, then tap Download and install again."
-            )
+            return "permissionRequired"
         }
 
         val apkUri = FileProvider.getUriForFile(
@@ -93,6 +98,7 @@ class MainActivity : AudioServiceActivity() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         startActivity(intent)
+        return "installStarted"
     }
 
     private fun applyHighRefreshRate() {

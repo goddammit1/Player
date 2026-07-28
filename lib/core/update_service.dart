@@ -33,6 +33,8 @@ class UpdateCheckResult {
   final bool updateAvailable;
 }
 
+enum InstallOutcome { started, permissionRequired }
+
 class UpdateService {
   UpdateService._();
 
@@ -100,7 +102,10 @@ class UpdateService {
     );
   }
 
-  static Future<void> downloadAndInstall(
+  /// Скачивает APK один раз и кэширует его во временной папке.
+  /// Если файл этого же релиза уже загружен — переиспользуем его,
+  /// чтобы возврат из системных настроек не запускал скачивание заново.
+  static Future<String> download(
     AppRelease release, {
     required void Function(double progress) onProgress,
   }) async {
@@ -111,14 +116,26 @@ class UpdateService {
     }
 
     final tempDirectory = await getTemporaryDirectory();
+    final sep = Platform.pathSeparator;
     final apk = File(
-      '${tempDirectory.path}${Platform.pathSeparator}player-update.apk',
+      '${tempDirectory.path}${sep}player-update-${release.version}.apk',
     );
-    if (await apk.exists()) await apk.delete();
+
+    // Уже скачан валидный APK этого релиза — не качаем повторно.
+    if (await apk.exists() && await apk.length() > 0) {
+      onProgress(1);
+      return apk.path;
+    }
+
+    // Чистим устаревшие/битые файлы.
+    final legacy = File('${tempDirectory.path}${sep}player-update.apk');
+    if (await legacy.exists()) await legacy.delete();
+    final partial = File('${apk.path}.part');
+    if (await partial.exists()) await partial.delete();
 
     await _dio.download(
       release.apkUrl,
-      apk.path,
+      partial.path,
       deleteOnError: true,
       options: Options(
         followRedirects: true,
@@ -129,11 +146,33 @@ class UpdateService {
       },
     );
 
-    if (!await apk.exists() || await apk.length() == 0) {
+    if (!await partial.exists() || await partial.length() == 0) {
       throw StateError('The downloaded APK is empty.');
     }
 
-    await _installChannel.invokeMethod<void>('installApk', {'path': apk.path});
+    // Переименовываем только полностью скачанный файл — так в кэше
+    // никогда не окажется обрезанный APK, пригодный для переиспользования.
+    await partial.rename(apk.path);
+    return apk.path;
+  }
+
+  /// Запускает установку уже скачанного APK. Возвращает [InstallOutcome]:
+  /// либо установщик открыт, либо система увела за разрешением
+  /// «Установка неизвестных приложений» (файл при этом сохранён).
+  static Future<InstallOutcome> install(String apkPath) async {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError(
+        'In-app installation is available only on Android.',
+      );
+    }
+
+    final status = await _installChannel.invokeMethod<String>(
+      'installApk',
+      {'path': apkPath},
+    );
+    return status == 'permissionRequired'
+        ? InstallOutcome.permissionRequired
+        : InstallOutcome.started;
   }
 
   static int _compareVersions(String left, String right) {

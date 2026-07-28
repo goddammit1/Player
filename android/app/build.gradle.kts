@@ -54,13 +54,17 @@ android {
 
     buildTypes {
         release {
-            // Подписываем постоянным release-ключом, если есть key.properties.
-            // Иначе откатываемся на debug-подпись (для CI без секретов).
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            // Всегда подписываем постоянным release-ключом.
+            // Если key.properties нет — намеренно роняем сборку, чтобы
+            // случайно не раздать debug-подписанный APK: у debug-keystore
+            // на каждой машине свой сертификат, и такой APK не встанет
+            // поверх у пользователей (INSTALL_FAILED_UPDATE_INCOMPATIBLE).
+            if (!keystorePropertiesFile.exists()) {
+                throw GradleException(
+                    "android/key.properties не найден. Release-сборка требует постоянный release-keystore."
+                )
             }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
