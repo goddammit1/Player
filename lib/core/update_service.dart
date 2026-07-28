@@ -55,6 +55,23 @@ class UpdateService {
 
   static Future<UpdateCheckResult> check() async {
     final packageInfo = await PackageInfo.fromPlatform();
+
+    // На iOS in-app обновления не поддерживаются (используется App Store).
+    // Возвращаем фиктивный результат без попытки стучаться в GitHub API.
+    if (Platform.isIOS) {
+      return UpdateCheckResult(
+        currentVersion: packageInfo.version,
+        release: const AppRelease(
+          version: '',
+          name: '',
+          notes: '',
+          apkUrl: '',
+          pageUrl: '',
+        ),
+        updateAvailable: false,
+      );
+    }
+
     final response = await _dio.get<Map<String, dynamic>>(
       'https://api.github.com/repos/$repository/releases/latest',
     );

@@ -1,0 +1,91 @@
+# Codemagic CI/CD конфигурация для Flutter-проекта Player
+# Документация: https://docs.codemagic.io/yaml-quick-start/
+#
+# Триггер: пуш любого тега → сборка Android (APK) + iOS (.ipa для TestFlight).
+# iOS-сборка требует Apple Developer Account + App Store Connect API ключ.
+#
+# Переменные окружения (задать в Codemagic UI → App settings → Environment variables):
+#   APP_STORE_CONNECT_KEY_ID       — Key ID из App Store Connect
+#   APP_STORE_CONNECT_ISSUER_ID    — Issuer ID из App Store Connect
+#   APP_STORE_CONNECT_PRIVATE_KEY  — содержимое .p8 ключа (base64 или raw)
+#   MATCH_PASSWORD                 — пароль для fastlane match (опционально, если нужен code signing через match)
+#
+# Для минимальной сборки без code signing можно закомментировать секции signing / publishing.
+
+workflows:
+  # ── Сборка при пуше тега ──────────────────────────────────────────
+  player-release:
+    name: Player Release
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      groups:
+        - player_credentials   # создай группу в Codemagic и положи туда ключи
+      vars:
+        FLUTTER_VERSION: 3.x   # Codemagic сам подхватит, можно не менять
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: '*'
+          include: true
+    scripts:
+      # 1. Настройка iOS code signing (если есть APP_STORE_CONNECT_*)
+      - name: Set up iOS code signing
+        script: |
+          if [ -n "$APP_STORE_CONNECT_PRIVATE_KEY" ]; then
+            echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/appstore.p8
+            cat <<EOF > ~/private_keys
+            {
+              "key_id": "$APP_STORE_CONNECT_KEY_ID",
+              "issuer_id": "$APP_STORE_CONNECT_ISSUER_ID",
+              "key_filepath": "/tmp/appstore.p8"
+            }
+            EOF
+          fi
+      # 2. flutter pub get
+      - name: Flutter pub get
+        script: flutter pub get
+      # 3. dart analyze (проверка перед сборкой)
+      - name: Dart analyze
+        script: dart analyze
+      # 4. Сборка Android APK
+      - name: Build Android APK
+        script: flutter build apk --release
+      # 5. Сборка iOS (без code signing — .app бандл; или с signing — .ipa)
+      - name: Build iOS
+        script: |
+          flutter build ios --release --no-codesign
+          # Если code signing настроен:
+          # flutter build ipa --release \
+          #   --export-method app-store \
+          #   --apple-signing-key "$APP_STORE_CONNECT_KEY_ID" \
+          #   --apple-signing-key-issuer "$APP_STORE_CONNECT_ISSUER_ID" \
+          #   --apple-signing-key-filepath /tmp/appstore.p8
+    artifacts:
+      - build/app/outputs/flutter-apk/app-release.apk
+      - build/ios/iphoneos/Runner.app
+      # Если собираешь ipa, заменить строку выше на:
+      # - build/ios/ipa/*.ipa
+  # ── Только Android (лёгкая проверка PR) ────────────────────────────
+  player-android-check:
+    name: Android PR Check
+    instance_type: linux_x2
+    max_build_duration: 30
+    environment:
+      flutter: stable
+    triggering:
+      events:
+        - pull_request
+    scripts:
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Dart analyze
+        script: dart analyze
+      - name: Build Android APK (debug)
+        script: flutter build apk --debug
+    artifacts:
+      - build/app/outputs/flutter-apk/app-debug.apk
