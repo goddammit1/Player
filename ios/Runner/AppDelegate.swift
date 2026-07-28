@@ -1,9 +1,8 @@
 import Flutter
 import UIKit
-import audio_service
 
 @main
-@objc class AppDelegate: AudioServiceActivity {
+@objc class AppDelegate: FlutterAppDelegate {
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
