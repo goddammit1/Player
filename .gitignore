@@ -66,3 +66,4 @@ app.*.map.json
 analyze_result.txt
 muzmo_cookies.tmp
 muzmo_search.html
+/Runner.app/
