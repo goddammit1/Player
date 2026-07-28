@@ -102,7 +102,7 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
         ),
         content: Text(
           'Remove all listening history? This cannot be undone.',
-          style: TextStyle(color: colors.textSecondary, fontSize: 14),
+          style: TextStyle(color: colors.textSecondary, fontSize: 16),
         ),
         actions: [
           TextButton(
@@ -192,7 +192,7 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
               ? Center(
                   child: Text(
                     'No listening history yet',
-                    style: TextStyle(color: colors.textSecondary, fontSize: 15),
+                    style: TextStyle(color: colors.textSecondary, fontSize: 16),
                   ),
                 )
               : _HistoryBody(
@@ -266,37 +266,41 @@ class _SearchPill extends StatelessWidget {
     return Material(
       color: colors.elevated,
       borderRadius: BorderRadius.circular(32),
-      child: SizedBox(
-        height: 60,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  focusNode: focusNode,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Played before?',
-                    hintStyle: TextStyle(
-                      color: colors.textSecondary,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(32),
+        onTap: focusNode.requestFocus, 
+        child: SizedBox(
+          height: 60,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    style: TextStyle(
+                      color: colors.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    isCollapsed: true,
+                    decoration: InputDecoration(
+                      hintText: 'Played before?',
+                      hintStyle: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      isCollapsed: true,
+                    ),
+                    cursorColor: colors.accent,
                   ),
-                  cursorColor: colors.accent,
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -341,7 +345,7 @@ class _HistoryBody extends StatelessWidget {
           child: Center(
             child: Text(
               'Nothing found',
-              style: TextStyle(color: colors.textSecondary, fontSize: 14),
+              style: TextStyle(color: colors.textSecondary, fontSize: 16),
             ),
           ),
         ),
@@ -372,13 +376,13 @@ class _HistoryBody extends StatelessWidget {
       if (item.isDayHeader) {
         listChildren.add(
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
               item.header!,
               style: TextStyle(
                 color: colors.textPrimary,
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
+                fontSize: 20,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
@@ -386,12 +390,12 @@ class _HistoryBody extends StatelessWidget {
       } else if (item.isHourHeader) {
         listChildren.add(
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
             child: Text(
               item.hourHeader!,
               style: TextStyle(
                 color: colors.textSecondary,
-                fontSize: 12,
+                fontSize: 16,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -431,17 +435,16 @@ class _HistoryBody extends StatelessWidget {
       children: [
         // ── Заголовок HISTORY + кнопка Clear ──
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 12, 8),
+          padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
           child: Row(
             children: [
               Expanded(
                 child: Text(
-                  'HISTORY',
+                  'History',
                   style: TextStyle(
                     color: colors.textPrimary,
-                    fontSize: 28,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0,
+                    fontSize: 32,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -457,8 +460,8 @@ class _HistoryBody extends StatelessWidget {
                     'Clear',
                     style: TextStyle(
                       color: colors.textSecondary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                   style: TextButton.styleFrom(
@@ -560,7 +563,7 @@ class _HistoryTile extends StatelessWidget {
                       style: TextStyle(
                         color: colors.textPrimary,
                         fontWeight: FontWeight.w700,
-                        fontSize: 15,
+                        fontSize: 16,
                         letterSpacing: 0,
                       ),
                     ),
