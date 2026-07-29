@@ -5,7 +5,9 @@ import '../../core/providers.dart';
 import 'search_page.dart';
 
 class SearchHistoryPage extends ConsumerStatefulWidget {
-  const SearchHistoryPage({super.key});
+  final String? initialQuery;
+
+  const SearchHistoryPage({super.key, this.initialQuery});
 
   @override
   ConsumerState<SearchHistoryPage> createState() => _SearchHistoryPageState();
@@ -62,6 +64,10 @@ class _SearchHistoryPageState extends ConsumerState<SearchHistoryPage>
         reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
       ),
     );
+    
+    if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
+      _controller.text = widget.initialQuery!;
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
