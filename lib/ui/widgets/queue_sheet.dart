@@ -774,8 +774,7 @@ class _QueueTile extends StatelessWidget {
                       style: TextStyle(
                         color: colors.textPrimary,
                         fontWeight: FontWeight.w700,
-                        fontSize: 14,
-                        letterSpacing: 0,
+                        fontSize: 16,
                       ),
                     ),
                     Text(
@@ -784,7 +783,7 @@ class _QueueTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: colors.textSecondary,
-                        fontSize: 12,
+                        fontSize: 13,
                       ),
                     ),
                   ],

@@ -122,7 +122,7 @@ class _DefaultRoles implements PaletteRoles {
   @override
   PaletteRole get accent => const PaletteRole(
         targetSaturation: 0.70,
-        targetLightness: 0.60,
+        targetLightness: 0.50,
         minContrast: 4.5,
         contrastAgainst: Color(0xFFF9F8F8),
         lightnessStep: 0.02,

@@ -73,19 +73,20 @@ class _SearchPageState extends ConsumerState<SearchPage>
     }
   }
 
-  void _goToSearchHistory() {
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            const SearchHistoryPage(),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return child;
-        },
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-      ),
-    );
-  }
+    void _goToSearchHistory() {
+      final state = ref.read(searchProvider); // берём текущий state
+      Navigator.of(context).push(
+        PageRouteBuilder(
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              SearchHistoryPage(initialQuery: state.query), // ← передаём query
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return child;
+          },
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+        ),
+      );
+    }
 
   @override
   Widget build(BuildContext context) {

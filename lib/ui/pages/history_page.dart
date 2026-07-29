@@ -376,7 +376,7 @@ class _HistoryBody extends StatelessWidget {
       if (item.isDayHeader) {
         listChildren.add(
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
             child: Text(
               item.header!,
               style: TextStyle(
