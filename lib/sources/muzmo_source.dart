@@ -10,6 +10,7 @@ import 'package:just_audio/just_audio.dart';
 
 import '../models/track.dart';
 import 'artwork_provider.dart';
+import 'offline_audio_source.dart' as offline;
 import 'track_source.dart';
 import '../core/youtube_cache.dart';
 
@@ -531,6 +532,10 @@ class MuzmoSource implements TrackSource {
 
   @override
   Future<AudioSource> createAudioSource(Track track) async {
+    // Офлайн: если трек уже в кэше — играем локальный файл, не лезем в сеть.
+    final offlineSource = await offline.createOfflineAudioSource(track);
+    if (offlineSource != null) return offlineSource;
+
     final url = await resolveStreamUrl(track);
     // Заранее проходим 302 до прямой CDN-ссылки — см. [_resolveCdnUrl].
     final directUrl = await _resolveCdnUrl(url);
