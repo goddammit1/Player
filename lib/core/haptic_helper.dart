@@ -13,9 +13,23 @@ class HapticHelper {
   static bool _hasAmplitude = false;
   static bool _checked = false;
 
+  static Future<void> initialize() async {
+    if (_checked) return;
+    try {
+      _hasVibrator = await Vibration.hasVibrator();
+      if (_hasVibrator) {
+        _hasAmplitude = await Vibration.hasAmplitudeControl();
+      }
+    } catch (_) {
+      _hasVibrator = false;
+      _hasAmplitude = false;
+    }
+    _checked = true;
+  }
+
   static Future<void> _ensureChecked() async {
     if (_checked) return;
-    _checked = true;
+    await initialize();
   }
 
   /// Проверяет, включена ли вибрация в настройках.

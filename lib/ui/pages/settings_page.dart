@@ -390,7 +390,7 @@ class _HapticsSection extends ConsumerWidget {
           ),
           subtitle: Text(
             enabled
-                ? 'Haptic feedback on progress bar and queue interactions.'
+                ? 'Haptic feedback on playback controls, progress bar and queue interactions.'
                 : 'Haptic feedback is disabled.',
             style: TextStyle(color: colors.textSecondary),
           ),

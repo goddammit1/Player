@@ -856,6 +856,12 @@ class _DismissibleQueueTile extends ConsumerStatefulWidget {
 class _DismissibleQueueTileState extends ConsumerState<_DismissibleQueueTile> {
   bool _hasVibrated = false;
 
+  @override
+  void dispose() {
+    _hasVibrated = false;
+    super.dispose();
+  }
+
   void _onUpdate(DismissUpdateDetails details) {
     const threshold = 0.35;
 

@@ -214,16 +214,16 @@ class _TitleScroller extends StatelessWidget {
   }
 }
 
-class _Controls extends StatefulWidget {
+class _Controls extends ConsumerStatefulWidget {
   const _Controls({required this.player, required this.colors});
   final PlayerService player;
   final AppColors colors;
 
   @override
-  State<_Controls> createState() => _ControlsState();
+  ConsumerState<_Controls> createState() => _ControlsState();
 }
 
-class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
+class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMixin {
   late final AnimationController _playAnim = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 500),
@@ -368,7 +368,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   child: GestureDetector(
                     onTap: () {
                       widget.player.skipToPrevious();
-                      HapticHelper.light();
+                      HapticHelper.light(ref: ref);
                     }, 
                     child: Material(
                       color: widget.colors.elevated,
@@ -395,7 +395,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   child: GestureDetector(
                     onTap: () {
                       playing ? widget.player.pause() : widget.player.play();
-                      HapticHelper.medium();
+                      HapticHelper.medium(ref: ref);
                     },   
                     child: Material(
                       color: widget.colors.elevatedHi,
@@ -437,7 +437,7 @@ class _ControlsState extends State<_Controls> with TickerProviderStateMixin {
                   onPointerCancel: _onNextPointerCancel,
                   child: GestureDetector(
                     onTap: () {
-                      HapticHelper.light();
+                      HapticHelper.light(ref: ref);
                       widget.player.skipToNext();
                     },
                     child: Material(
@@ -782,7 +782,7 @@ class _ProgressPainter extends CustomPainter {
 //  BOTTOM ACTION BAR
 // =====================================================================
 
-class _BottomActions extends StatefulWidget {
+class _BottomActions extends ConsumerStatefulWidget {
   const _BottomActions({
     required this.player,
     required this.item,
@@ -795,10 +795,10 @@ class _BottomActions extends StatefulWidget {
   final AppColors colors;
 
   @override
-  State<_BottomActions> createState() => _BottomActionsState();
+  ConsumerState<_BottomActions> createState() => _BottomActionsState();
 }
 
-class _BottomActionsState extends State<_BottomActions> {
+class _BottomActionsState extends ConsumerState<_BottomActions> {
   bool _queueDragged = false;
   double _startFingerY = 0;
   double _startValue = 0;
@@ -866,7 +866,7 @@ class _BottomActionsState extends State<_BottomActions> {
               child: InkWell(
                 borderRadius: BorderRadius.circular(28),
                 onTap: () {
-                  HapticHelper.tripleTick(); // ← тройной отклик
+                  HapticHelper.tripleTick(ref: ref); // ← тройной отклик
                   widget.queueCtrl.openPart();
                 },
                 child: SizedBox(

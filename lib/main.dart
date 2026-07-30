@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/haptic_helper.dart';
 import 'core/player_service.dart';
 import 'core/playlist_repository.dart';
 import 'core/providers.dart';
@@ -26,6 +27,22 @@ Future<void> main() async {
       // === ЗАГРУЗКА ЛИМИТОВ КЭША ===
       await YoutubeCache.loadLimits();
       // ===============================
+
+      // === ИНИЦИАЛИЗАЦИЯ HAPTIC FEEDBACK ===
+      await HapticHelper.initialize();
+      // =====================================
+
+      // === НАСТРОЙКА RAM-КЭША ОБЛОЖЕК ===
+      // По умолчанию Flutter ImageCache держит 1000 картинок / 100 МБ.
+      // При длинной очереди и больших обложках это приводит к вытеснению
+      // даже недавно показанных артов. Привязываем лимит к дисковому
+      // лимиту обложек: RAM = ~25% от дискового, но не более 128 МБ.
+      final imageCache = PaintingBinding.instance.imageCache;
+      final maxArtworkBytes = YoutubeCache.maxArtworkCacheMB * 1024 * 1024;
+      final maxRamBytes = (maxArtworkBytes / 4).clamp(0, 128 * 1024 * 1024);
+      imageCache.maximumSize = 1500;
+      imageCache.maximumSizeBytes = maxRamBytes.toInt();
+      // ==================================
 
       SystemChrome.setSystemUIOverlayStyle(
         const SystemUiOverlayStyle(
