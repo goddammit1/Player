@@ -250,13 +250,13 @@ class PlaylistPage extends ConsumerWidget {
                   else
                     SliverPadding(
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
-                      sliver: SliverList.builder(
+                      sliver: SliverReorderableList(
                         itemCount: p.tracks.length,
                         itemBuilder: (context, i) {
                           final t = p.tracks[i];
                           final isDisabled = SourceRegistry.instance.isDisabled(t.sourceId);
                           return Dismissible(
-                            key: ValueKey(t.globalId),
+                            key: ValueKey('dismiss:${p.id}:$i:${t.globalId}'),
                             direction: DismissDirection.endToStart,
                             background: Container(
                               alignment: Alignment.centerRight,
@@ -267,7 +267,7 @@ class PlaylistPage extends ConsumerWidget {
                                 color: Colors.redAccent,
                               ),
                             ),
-                            onDismissed: (_) => repo.removeTrack(p.id, t.globalId),
+                            onDismissed: (_) => repo.removeTrackAt(p.id, i),
                             child: ListTile(
                               contentPadding: const EdgeInsets.symmetric(horizontal: 0),
                               leading: _TrackArtworkWithOverlay(
@@ -299,8 +299,11 @@ class PlaylistPage extends ConsumerWidget {
                                   fontSize: 12,
                                 ),
                               ),
-                              trailing: isDisabled
-                                  ? IconButton(
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (isDisabled)
+                                    IconButton(
                                       icon: const Icon(
                                         Icons.find_replace_rounded,
                                         color: Colors.orange,
@@ -311,15 +314,30 @@ class PlaylistPage extends ConsumerWidget {
                                         context, ref, p, t,
                                       ),
                                     )
-                                  : (t.duration != null
-                                      ? Text(
-                                          _fmt(t.duration!),
-                                          style: TextStyle(
-                                            color: colors.textSecondary,
-                                            fontSize: 12,
-                                          ),
-                                        )
-                                      : null),
+                                  else if (t.duration != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 12),
+                                      child: Text(
+                                        _fmt(t.duration!),
+                                        style: TextStyle(
+                                          color: colors.textSecondary,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ReorderableDragStartListener(
+                                    index: i,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: Icon(
+                                        Icons.drag_handle_rounded,
+                                        color: colors.textTertiary,
+                                        size: 20,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                               onTap: isDisabled
                                   ? () => _showReplacementSheet(
                                         context, ref, p, t)
@@ -334,6 +352,23 @@ class PlaylistPage extends ConsumerWidget {
                             ),
                           );
                         },
+                        onReorder: (oldIndex, newIndex) {
+                          repo.reorderTracks(p.id, oldIndex, newIndex);
+                        },
+                        proxyDecorator: (child, index, animation) => AnimatedBuilder(
+                          animation: animation,
+                          builder: (context, child) {
+                            final elevationValue = Tween<double>(begin: 0, end: 6)
+                                .evaluate(animation);
+                            return Material(
+                              elevation: elevationValue,
+                              color: Colors.transparent,
+                              shadowColor: Colors.black.withValues(alpha: 0.2),
+                              child: child,
+                            );
+                          },
+                          child: child,
+                        ),
                       ),
                     ),
                 ],
@@ -383,7 +418,7 @@ class PlaylistPage extends ConsumerWidget {
                 title: Text('Export playlist', style: TextStyle(color: colors.textPrimary)),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
-                  await _exportPlaylist(context, p);
+                  await _exportPlaylist(context, ref, p);
                 },
               ),
               ListTile(
@@ -408,12 +443,28 @@ class PlaylistPage extends ConsumerWidget {
     );
   }
 
-  Future<void> _exportPlaylist(BuildContext context, Playlist p) async {
+  Future<void> _exportPlaylist(
+    BuildContext context,
+    WidgetRef ref,
+    Playlist p,
+  ) async {
+    final colors = ref.read(currentPaletteProvider);
     try {
       await PlaylistBackup.exportAndShare([p]);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Playlist exported',
+            style: TextStyle(color: colors.textPrimary),
+          ),
+          backgroundColor: colors.elevated,
+          duration: const Duration(seconds: 2),
+        ),
+      );
     } catch (e) {
       if (!context.mounted) return;
-      _showInfo(context, ref: null, title: 'Export failed', body: e.toString());
+      _showInfo(context, ref: ref, title: 'Export failed', body: e.toString());
     }
   }
 
@@ -517,7 +568,21 @@ class PlaylistPage extends ConsumerWidget {
             decoration: InputDecoration(
               hintText: 'Name',
               hintStyle: TextStyle(color: colors.textTertiary),
-              border: InputBorder.none,
+              filled: true,
+              fillColor: colors.background,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.outline),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.outline),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.textPrimary),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),
@@ -535,8 +600,9 @@ class PlaylistPage extends ConsumerWidget {
         );
       },
     );
-    if (name != null && name.isNotEmpty) {
-      ref.read(playlistRepositoryProvider).rename(p.id, name);
+    final trimmed = name?.trim() ?? '';
+    if (trimmed.isNotEmpty && trimmed != p.name) {
+      ref.read(playlistRepositoryProvider).rename(p.id, trimmed);
     }
   }
 }

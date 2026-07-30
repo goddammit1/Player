@@ -7,6 +7,9 @@ import 'package:share_plus/share_plus.dart';
 import '../models/playlist.dart';
 import 'playlist_repository.dart';
 
+/// Максимальная поддерживаемая версия формата бэкапа.
+const int _maxSupportedVersion = 1;
+
 /// Экспорт/импорт пользовательских плейлистов в один JSON-файл.
 ///
 /// Назначение — «бэкап, который переживёт удаление приложения»: файл
@@ -57,21 +60,36 @@ class PlaylistBackup {
     if (format != null && format != formatTag) {
       throw const FormatException('This file is not a playlist backup');
     }
+    final version = parsed['version'];
+    if (version != null) {
+      if (version is! int || version < 1 || version > _maxSupportedVersion) {
+        throw FormatException(
+          'Unsupported backup version: $version (max supported: $_maxSupportedVersion)',
+        );
+      }
+    }
     final rawList = parsed['playlists'];
     if (rawList is! List) {
       throw const FormatException('No playlists found in file');
     }
     final result = <Playlist>[];
+    var skippedCount = 0;
     for (final e in rawList) {
       if (e is Map) {
         try {
           result.add(Playlist.fromJson(e.cast<String, dynamic>()));
         } catch (_) {
+          skippedCount++;
           // Пропускаем отдельный битый плейлист, не валим весь импорт.
         }
+      } else {
+        skippedCount++;
       }
     }
     if (result.isEmpty) {
+      if (skippedCount > 0) {
+        throw FormatException('No valid playlists in file ($skippedCount skipped)');
+      }
       throw const FormatException('No valid playlists in file');
     }
     return result;
@@ -90,10 +108,18 @@ class PlaylistBackup {
         .first;
     final file = File('${dir.path}/playlists_backup_$stamp.json');
     await file.writeAsString(json);
-    await Share.shareXFiles(
-      [XFile(file.path, mimeType: 'application/json')],
-      subject: 'Player playlists backup',
-    );
+    try {
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: 'Player playlists backup',
+      );
+    } finally {
+      // Удаляем временный файл после завершения share-sheet.
+      // Игнорируем ошибки удаления — файл всё равно во временной директории.
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
     return playlists.length;
   }
 
@@ -106,7 +132,7 @@ class PlaylistBackup {
   }) async {
     final raw = await File(path).readAsString();
     final playlists = decode(raw);
-    return PlaylistRepository.instance.importPlaylists(
+    return await PlaylistRepository.instance.importPlaylists(
       playlists,
       strategy: strategy,
     );

@@ -23,9 +23,61 @@ class HomePage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(playlistsProvider);
-    final playlists = async.value ?? const <Playlist>[];
     final colors = ref.watch(animatedPaletteProvider);
 
+    return async.when(
+      data: (playlists) => _buildBody(context, ref, playlists, colors),
+      loading: () => _HomePageAnimator(
+        child: Scaffold(
+          backgroundColor: colors.background,
+          body: const Center(child: CircularProgressIndicator()),
+        ),
+      ),
+      error: (err, _) => _HomePageAnimator(
+        child: Scaffold(
+          backgroundColor: colors.background,
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.error_outline_rounded,
+                    color: colors.textSecondary,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Could not load playlists',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    err.toString(),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: colors.textSecondary, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(
+    BuildContext context,
+    WidgetRef ref,
+    List<Playlist> playlists,
+    AppColors colors,
+  ) {
     return _HomePageAnimator(
       child: Scaffold(
         backgroundColor: colors.background,
@@ -570,6 +622,21 @@ class _AddNewCard extends ConsumerWidget {
             decoration: InputDecoration(
               hintText: 'Name',
               hintStyle: TextStyle(color: colors.textTertiary),
+              filled: true,
+              fillColor: colors.background,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.outline),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.outline),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.textPrimary),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),

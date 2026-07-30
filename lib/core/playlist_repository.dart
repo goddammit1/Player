@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -123,6 +124,21 @@ class PlaylistRepository {
     if (changed) _notifyAndSchedulePersist();
   }
 
+  /// Добавляет трек сразу в несколько плейлистов одной транзакцией.
+  /// Это снижает количество rebuild'ов UI с N до 1.
+  void addTrackToMany(Iterable<String> ids, Track track) {
+    final idSet = ids.toSet();
+    if (idSet.isEmpty) return;
+
+    var changed = false;
+    _list = _list.map((p) {
+      if (!idSet.contains(p.id)) return p;
+      changed = true;
+      return p.copyWith(tracks: [...p.tracks, track]);
+    }).toList();
+    if (changed) _notifyAndSchedulePersist();
+  }
+
   /// Заменяет трек в плейлисте по `globalId` старого трека на новый.
   void replaceTrack(String playlistId, String oldGlobalId, Track newTrack) {
     var changed = false;
@@ -138,7 +154,25 @@ class PlaylistRepository {
     if (changed) _notifyAndSchedulePersist();
   }
 
+  /// Удаляет трек по индексу в плейлисте.
+  void removeTrackAt(String playlistId, int index) {
+    var changed = false;
+    _list = _list.map((p) {
+      if (p.id != playlistId) return p;
+      if (index < 0 || index >= p.tracks.length) return p;
+      final newTracks = List<Track>.of(p.tracks);
+      newTracks.removeAt(index);
+      changed = true;
+      return p.copyWith(tracks: newTracks);
+    }).toList();
+    if (changed) _notifyAndSchedulePersist();
+  }
+
   /// Удаляет первое вхождение трека по `globalId`.
+  ///
+  /// Устаревший метод: при дубликатах трека удаляет первое вхождение.
+  /// Используйте [removeTrackAt] для точного удаления.
+  @Deprecated('Use removeTrackAt to delete by exact index')
   void removeTrack(String playlistId, String trackGlobalId) {
     var changed = false;
     _list = _list.map((p) {
@@ -190,10 +224,11 @@ class PlaylistRepository {
   ///   две библиотеки).
   /// - [ImportStrategy.skip] — плейлист с конфликтующим `id`
   ///   пропускается, существующий остаётся нетронутым.
-  ImportResult importPlaylists(
+  Future<ImportResult> importPlaylists(
     List<Playlist> incoming, {
     required ImportStrategy strategy,
-  }) {
+  }) async {
+    await ensureLoaded();
     var added = 0;
     var replaced = 0;
     var skipped = 0;
@@ -243,5 +278,14 @@ class PlaylistRepository {
   Future<void> flush() async {
     _persistTimer?.cancel();
     await _persistNow();
+  }
+
+  /// Сбрасывает внутреннее состояние (для тестов и аварийного восстановления).
+  @visibleForTesting
+  void resetForTesting() {
+    _initFuture = null;
+    _prefs = null;
+    _list = [];
+    _controller.add(List.unmodifiable(_list));
   }
 }

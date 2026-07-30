@@ -9,6 +9,9 @@ import '../../core/haptic_helper.dart';
 
 
 Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
+  // Защита от двойного открытия sheet'а при быстром тапе.
+  final route = ModalRoute.of(context);
+  if (route == null || !route.isCurrent) return Future.value();
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: Colors.transparent,
@@ -213,13 +216,13 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
   }
 
   void _onDone(BuildContext context) {
+    if (_selectedIds.isEmpty) return;
+
     HapticHelper.medium(ref: ref);
     final repo = ref.read(playlistRepositoryProvider);
     final colors = ref.read(currentPaletteProvider);
 
-    for (final id in _selectedIds) {
-      repo.addTrack(id, widget.track);
-    }
+    repo.addTrackToMany(_selectedIds, widget.track);
 
     Navigator.of(context).pop();
 
@@ -398,7 +401,21 @@ class _NewPlaylistTileState extends ConsumerState<_NewPlaylistTile> {
             decoration: InputDecoration(
               hintText: 'My playlist',
               hintStyle: TextStyle(color: colors.textTertiary),
-              border: InputBorder.none,
+              filled: true,
+              fillColor: colors.background,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.outline),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.outline),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: colors.textPrimary),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),
@@ -416,9 +433,10 @@ class _NewPlaylistTileState extends ConsumerState<_NewPlaylistTile> {
       },
     );
 
-    if (name != null && name.isNotEmpty) {
+    final trimmed = name?.trim() ?? '';
+    if (trimmed.isNotEmpty) {
       final repo = ref.read(playlistRepositoryProvider);
-      final p = repo.create(name);
+      final p = repo.create(trimmed);
       widget.onCreated(p.id);
 
       if (context.mounted) {
