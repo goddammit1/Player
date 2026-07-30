@@ -87,7 +87,9 @@ class UpdateService {
         if (asset is! Map) continue;
         final name = asset['name']?.toString() ?? '';
         final url = asset['browser_download_url']?.toString() ?? '';
-        if (name.toLowerCase().endsWith('.apk') && url.isNotEmpty) {
+        // Only use the canonical fat APK so architecture and signing
+        // always match the locally built release artifact.
+        if (name.toLowerCase() == 'app-release.apk' && url.isNotEmpty) {
           apkUrl = url;
           break;
         }
@@ -95,7 +97,10 @@ class UpdateService {
     }
 
     if (apkUrl == null) {
-      throw StateError('The latest GitHub release does not contain an APK.');
+      throw StateError(
+        'The latest GitHub release does not contain app-release.apk. '
+        'Make sure the release artifact is named exactly app-release.apk.',
+      );
     }
 
     final tag = data['tag_name']?.toString().trim() ?? '';
