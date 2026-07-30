@@ -191,10 +191,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                               return _TrackTileGrid(
                                 track: t,
                                 isPlaying: isPlaying,
-                                onTap: () => player.setQueue(
-                                  state.results,
-                                  startIndex: i,
-                                ),
+                                onTap: () => _playTrack(t),
                                 colors: colors,
                               );
                             },
@@ -222,10 +219,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                                 duration: t.duration != null
                                     ? _formatDuration(t.duration!)
                                     : null,
-                                onTap: () => player.setQueue(
-                                  state.results,
-                                  startIndex: i,
-                                ),
+                                onTap: () => _playTrack(t),
                                 colors: colors,
                               );
                             },
@@ -248,6 +242,18 @@ class _SearchPageState extends ConsumerState<SearchPage>
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
     return '$m:$s';
+  }
+
+  /// Запускает воспроизведение трека, используя актуальный список
+  /// результатов и находя индекс по [globalId]. Это защищает от
+  /// неверного [startIndex], если список обновился между build и тапом
+  /// (например, подгрузились обложки или добавился источник).
+  void _playTrack(Track track) {
+    final player = ref.read(playerServiceProvider);
+    final results = ref.read(searchProvider).results;
+    final startIndex = results.indexWhere((t) => t.globalId == track.globalId);
+    if (startIndex == -1 || results.isEmpty) return;
+    player.setQueue(List.of(results), startIndex: startIndex);
   }
 }
 
@@ -628,6 +634,7 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                         // Слой всё равно блюрится sigma=12 —
                         // четверти разрешения достаточно.
                         memCacheWidth: cellPx ~/ 4,
+                        memCacheHeight: cellPx ~/ 4,
                       ),
                     ),
                   ),

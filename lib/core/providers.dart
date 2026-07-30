@@ -63,6 +63,11 @@ class SearchState {
 class SearchController extends StateNotifier<SearchState> {
   SearchController() : super(const SearchState());
 
+  /// Монотонный счётчик поколений поиска. Каждый новый запрос/смена
+  /// источника инкрементирует его, чтобы stale-колбэки от старых futures
+  /// не могли изменить актуальный state.
+  int _searchGeneration = 0;
+
   /// Текущий выбранный источник (или [kAllSourcesId]).
   String get sourceId => state.sourceId;
 
@@ -86,21 +91,25 @@ class SearchController extends StateNotifier<SearchState> {
       return;
     }
     final useSource = sourceId ?? state.sourceId;
+    final generation = ++_searchGeneration;
     state = state.copyWith(query: query, loading: true, error: null);
     final myQuery = query;
 
     // Хелпер: актуален ли ещё этот поиск (пользователь не сменил запрос
     // или источник за время сетевого запроса).
-    bool isStale() => state.query != myQuery || state.sourceId != useSource;
+    bool isStale() =>
+        _searchGeneration != generation ||
+        state.query != myQuery ||
+        state.sourceId != useSource;
 
     try {
       if (useSource == kAllSourcesId) {
-        await _searchAll(myQuery, isStale);
+        await _searchAll(myQuery, generation, isStale);
       } else {
-        await _searchOne(useSource, myQuery, isStale);
+        await _searchOne(useSource, myQuery, generation, isStale);
       }
     } catch (e) {
-      if (state.query != myQuery) return;
+      if (isStale()) return;
       state = state.copyWith(loading: false, error: e.toString());
     }
   }
@@ -109,13 +118,14 @@ class SearchController extends StateNotifier<SearchState> {
   Future<void> _searchOne(
     String sourceId,
     String query,
+    int generation,
     bool Function() isStale,
   ) async {
     final source = SourceRegistry.instance.require(sourceId);
     final results = await source.search(query);
     if (isStale()) return;
     state = state.copyWith(results: results, loading: false);
-    _enrichArtworks(source, results, query);
+    _enrichArtworks(source, results, query, generation);
   }
 
   /// Таймаут на один источник в режиме «all».
@@ -132,10 +142,16 @@ class SearchController extends StateNotifier<SearchState> {
   ///
   /// Финальная выдача объединяется round-robin: по одному треку из
   /// каждого источника по кругу — так список не забит одним источником.
-  Future<void> _searchAll(String query, bool Function() isStale) async {
+  Future<void> _searchAll(
+    String query,
+    int generation,
+    bool Function() isStale,
+  ) async {
     final sources = SourceRegistry.instance.searchable;
     if (sources.isEmpty) {
-      state = state.copyWith(results: const [], loading: false);
+      if (!isStale()) {
+        state = state.copyWith(results: const [], loading: false);
+      }
       return;
     }
 
@@ -207,7 +223,7 @@ class SearchController extends StateNotifier<SearchState> {
       }
 
       // Запускаем обогащение обложками для треков этого источника.
-      _enrichArtworks(sources[index], list, query);
+      _enrichArtworks(sources[index], list, query, generation);
     }
 
     // Все источники либо ответили, либо упали по таймауту.
@@ -239,7 +255,12 @@ class SearchController extends StateNotifier<SearchState> {
   /// Запускает фоновое обогащение обложками для треков источников,
   /// которые это поддерживают (Muzmo, SoundCloud). Для остальных —
   /// no-op.
-  void _enrichArtworks(dynamic source, List<Track> results, String query) {
+  void _enrichArtworks(
+    dynamic source,
+    List<Track> results,
+    String query,
+    int generation,
+  ) {
     // Обогащаем только треки этого источника (важно для режима «all»,
     // где в списке намешаны треки разных источников).
     final sourceTracks =
@@ -247,18 +268,28 @@ class SearchController extends StateNotifier<SearchState> {
     if (sourceTracks.isEmpty) return;
 
     if (source is MuzmoSource) {
-      source.enrichArtworksInBackground(sourceTracks, _patchResults(query));
+      source.enrichArtworksInBackground(
+        sourceTracks,
+        _patchResults(query, generation),
+      );
     } else if (source is SoundCloudSource) {
-      source.enrichArtworksInBackground(sourceTracks, _patchResults(query));
+      source.enrichArtworksInBackground(
+        sourceTracks,
+        _patchResults(query, generation),
+      );
     }
   }
 
   /// Возвращает колбэк, который вклеивает обновлённые треки обратно в
   /// общий список результатов по globalId, игнорируя устаревший поиск.
-  void Function(List<Track>) _patchResults(String query) {
+  ///
+  /// [generation] — поколение поиска, при смене которого патч
+  /// отбрасывается. Это защищает от ситуации, когда пользователь быстро
+  /// сменил фильтр, но query остался прежним.
+  void Function(List<Track>) _patchResults(String query, int generation) {
     return (updated) {
       // Игнорируем колбэки от устаревшего поиска.
-      if (state.query != query) return;
+      if (_searchGeneration != generation || state.query != query) return;
       // Вклеиваем обновлённые треки обратно в общий список по globalId,
       // сохраняя исходный порядок (важно для режима «all»).
       final byId = {for (final t in updated) t.globalId: t};
@@ -280,10 +311,25 @@ final searchProvider = StateNotifierProvider<SearchController, SearchState>((
 /// `ref.watch(playlistsProvider)` и получает `AsyncValue<List<Playlist>>`.
 final playlistsProvider = StreamProvider<List<Playlist>>((ref) async* {
   // Гарантируем, что данные подняты с диска до первого emit.
-  await PlaylistRepository.instance.ensureLoaded();
+  try {
+    await PlaylistRepository.instance.ensureLoaded();
+  } catch (e) {
+    // Перевыбрасываем ошибку, чтобы Riverpod перевёл AsyncValue в AsyncError.
+    // UI должен обрабатывать это состояние (см. HomePage).
+    throw PlaylistLoadException('Failed to load playlists: $e');
+  }
   yield PlaylistRepository.instance.current;
   yield* PlaylistRepository.instance.stream;
 });
+
+/// Ошибка загрузки плейлистов.
+class PlaylistLoadException implements Exception {
+  const PlaylistLoadException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
 
 /// Удобный доступ к репозиторию из UI: для мутаций.
 final playlistRepositoryProvider = Provider<PlaylistRepository>((ref) {

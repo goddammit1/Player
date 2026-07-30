@@ -24,6 +24,8 @@ Future<void> showTrackSettingsSheet(
   required Track track,
   MediaItem? currentMediaItem,
 }) {
+  // Защита от двойного открытия sheet'а при быстром тапе.
+  if (ModalRoute.of(context)?.isCurrent != true) return Future.value();
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: Colors.transparent,
