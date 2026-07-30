@@ -23,6 +23,7 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
   final TextEditingController _searchCtl = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   String _query = '';
+  String _queryNormalized = '';
 
   @override
   void initState() {
@@ -30,7 +31,10 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
     _searchCtl.addListener(() {
       final q = _searchCtl.text;
       if (q != _query) {
-        setState(() => _query = q);
+        setState(() {
+          _query = q;
+          _queryNormalized = q.trim().toLowerCase();
+        });
       }
     });
   }
@@ -60,7 +64,8 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
   }
 
   String _hourLabel(DateTime dt) {
-    return '${dt.hour}:00';
+    final h = dt.hour.toString().padLeft(2, '0');
+    return '$h:00';
   }
 
   String _durationText(Duration? d) {
@@ -80,8 +85,8 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
   // ---- Фильтрация ----
 
   List<HistoryEntry> _filtered(List<HistoryEntry> all) {
-    if (_query.trim().isEmpty) return all;
-    final q = _query.trim().toLowerCase();
+    if (_queryNormalized.isEmpty) return all;
+    final q = _queryNormalized;
     return all.where((e) {
       return e.track.title.toLowerCase().contains(q) ||
           e.track.artist.toLowerCase().contains(q);
@@ -133,6 +138,10 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
     ref.read(playerServiceProvider).setQueue([entry.track]);
   }
 
+  void _remove(HistoryEntry entry) {
+    ref.read(historyRepositoryProvider).remove(entry);
+  }
+
   // ===================================================================
   //  BUILD
   // ===================================================================
@@ -143,6 +152,44 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
     final async = ref.watch(listenHistoryProvider);
     final allHistory = async.value ?? const <HistoryEntry>[];
     final history = _filtered(allHistory);
+
+    Widget body;
+    if (async.isLoading && allHistory.isEmpty) {
+      body = Center(
+        child: CircularProgressIndicator(color: colors.accent),
+      );
+    } else if (async.hasError) {
+      body = Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Failed to load history:\n${async.error}',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: colors.textSecondary, fontSize: 16),
+          ),
+        ),
+      );
+    } else if (allHistory.isEmpty) {
+      body = Center(
+        child: Text(
+          'No listening history yet',
+          style: TextStyle(color: colors.textSecondary, fontSize: 16),
+        ),
+      );
+    } else {
+      body = _HistoryBody(
+        history: history,
+        allHistory: allHistory,
+        query: _query,
+        colors: colors,
+        dayLabel: _dayLabel,
+        hourLabel: _hourLabel,
+        durationText: _durationText,
+        onPlay: _play,
+        onDismissed: _remove,
+        onClear: () => _confirmClear(colors),
+      );
+    }
 
     return Stack(
       children: [
@@ -188,24 +235,7 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
             ),
           ),
           // ── Тело ──
-          body: allHistory.isEmpty
-              ? Center(
-                  child: Text(
-                    'No listening history yet',
-                    style: TextStyle(color: colors.textSecondary, fontSize: 16),
-                  ),
-                )
-              : _HistoryBody(
-                  history: history,
-                  allHistory: allHistory,
-                  query: _query,
-                  colors: colors,
-                  dayLabel: _dayLabel,
-                  hourLabel: _hourLabel,
-                  durationText: _durationText,
-                  onPlay: _play,
-                  onClear: () => _confirmClear(colors),
-                ),
+          body: body,
         ),
         const NowPlayingOverlay(),
       ],
@@ -266,41 +296,37 @@ class _SearchPill extends StatelessWidget {
     return Material(
       color: colors.elevated,
       borderRadius: BorderRadius.circular(32),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(32),
-        onTap: focusNode.requestFocus, 
-        child: SizedBox(
-          height: 60,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: controller,
-                    focusNode: focusNode,
-                    style: TextStyle(
-                      color: colors.textPrimary,
+      child: SizedBox(
+        height: 60,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Played before?',
+                    hintStyle: TextStyle(
+                      color: colors.textSecondary,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
-                    decoration: InputDecoration(
-                      hintText: 'Played before?',
-                      hintStyle: TextStyle(
-                        color: colors.textSecondary,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      isCollapsed: true,
-                    ),
-                    cursorColor: colors.accent,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    isCollapsed: true,
                   ),
+                  cursorColor: colors.accent,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -322,6 +348,7 @@ class _HistoryBody extends StatelessWidget {
     required this.hourLabel,
     required this.durationText,
     required this.onPlay,
+    required this.onDismissed,
     required this.onClear,
   });
 
@@ -333,26 +360,10 @@ class _HistoryBody extends StatelessWidget {
   final String Function(DateTime) hourLabel;
   final String Function(Duration?) durationText;
   final void Function(HistoryEntry) onPlay;
+  final void Function(HistoryEntry) onDismissed;
   final VoidCallback onClear;
 
-  @override
-  Widget build(BuildContext context) {
-    if (history.isEmpty && query.isNotEmpty) {
-      // Поиск не дал результатов
-      return _buildHeader(context, showClear: false, children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 48),
-          child: Center(
-            child: Text(
-              'Nothing found',
-              style: TextStyle(color: colors.textSecondary, fontSize: 16),
-            ),
-          ),
-        ),
-      ]);
-    }
-
-    // Строим группированный список
+  List<_RowItem> _buildItems() {
     final items = <_RowItem>[];
     String? lastDayLabel;
     String? lastHourLabel;
@@ -370,109 +381,119 @@ class _HistoryBody extends StatelessWidget {
       }
       items.add(_RowItem.forEntry(entry));
     }
-
-    final listChildren = <Widget>[];
-    for (final item in items) {
-      if (item.isDayHeader) {
-        listChildren.add(
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: Text(
-              item.header!,
-              style: TextStyle(
-                color: colors.textPrimary,
-                fontSize: 20,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        );
-      } else if (item.isHourHeader) {
-        listChildren.add(
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: Text(
-              item.hourHeader!,
-              style: TextStyle(
-                color: colors.textSecondary,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        );
-      } else {
-        final entry = item.entry!;
-        listChildren.add(
-          _HistoryTile(
-            entry: entry,
-            colors: colors,
-            durationText: durationText,
-            onTap: () => onPlay(entry),
-            onDismissed: () {},
-          ),
-        );
-      }
-    }
-
-    return _buildHeader(
-      context,
-      showClear: allHistory.isNotEmpty,
-      children: listChildren,
-    );
+    return items;
   }
 
-  Widget _buildHeader(
-    BuildContext context, {
-    required bool showClear,
-    required List<Widget> children,
-  }) {
-    return ListView(
-      padding: EdgeInsets.only(
-        top: 4,
-        bottom: 120 + MediaQuery.of(context).padding.bottom,
-      ),
-      children: [
+  @override
+  Widget build(BuildContext context) {
+    final items = _buildItems();
+
+    return CustomScrollView(
+      slivers: [
         // ── Заголовок HISTORY + кнопка Clear ──
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'History',
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 32,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              if (showClear)
-                TextButton.icon(
-                  onPressed: onClear,
-                  icon: Icon(
-                    Icons.delete_rounded,
-                    color: colors.textSecondary,
-                    size: 18,
-                  ),
-                  label: Text(
-                    'Clear',
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'History',
                     style: TextStyle(
-                      color: colors.textSecondary,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w500,
+                      color: colors.textPrimary,
+                      fontSize: 32,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
                 ),
-            ],
+                if (allHistory.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: onClear,
+                    icon: Icon(
+                      Icons.delete_rounded,
+                      color: colors.textSecondary,
+                      size: 18,
+                    ),
+                    label: Text(
+                      'Clear',
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
-        ...children,
+        // ── Пустой результат поиска ──
+        if (history.isEmpty && query.isNotEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Text(
+                'Nothing found',
+                style: TextStyle(color: colors.textSecondary, fontSize: 16),
+              ),
+            ),
+          )
+        else
+          // ── Группированный список ──
+          SliverPadding(
+            padding: EdgeInsets.only(
+              bottom: 120 + MediaQuery.of(context).padding.bottom,
+            ),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final item = items[index];
+                  if (item.isDayHeader) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      child: Text(
+                        item.header!,
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    );
+                  }
+                  if (item.isHourHeader) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      child: Text(
+                        item.hourHeader!,
+                        style: TextStyle(
+                          color: colors.textSecondary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    );
+                  }
+                  final entry = item.entry!;
+                  return _HistoryTile(
+                    entry: entry,
+                    colors: colors,
+                    durationText: durationText,
+                    onTap: () => onPlay(entry),
+                    onDismissed: () => onDismissed(entry),
+                  );
+                },
+                childCount: items.length,
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -528,11 +549,7 @@ class _HistoryTile extends StatelessWidget {
         '${track.globalId}_${entry.playedAt.millisecondsSinceEpoch}',
       ),
       direction: DismissDirection.endToStart,
-      onDismissed: (_) {
-        // Удаление через репозиторий произойдёт в родителе при необходимости,
-        // но здесь оставляем onDismissed для обратной совместимости.
-        onDismissed();
-      },
+      onDismissed: (_) => onDismissed(),
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 24),
