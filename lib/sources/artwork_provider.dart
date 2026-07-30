@@ -54,6 +54,11 @@ class ArtworkProvider {
 
   /// In-memory кеш: ключ -> url ('' означает «искали, не нашли»).
   final Map<String, String> _memCache = {};
+
+  /// In-flight запросы: ключ -> future. Предотвращает дублирование
+  /// одновременных поисков одной и той же обложки из разных виджетов.
+  final Map<String, Future<String?>> _inFlight = {};
+
   SharedPreferences? _prefs;
   Future<void>? _prefsInit;
 
@@ -157,45 +162,63 @@ class ArtworkProvider {
       return saved.isEmpty ? null : saved;
     }
 
+    // 3) Дедупликация in-flight запросов.
+    final existing = _inFlight[key];
+    if (existing != null) return existing;
+
     _logTokenStatusOnce();
 
-    // 3) Сеть. Сначала Genius, потом iTunes.
-    // _fetchGenius/_fetchItunes возвращают:
-    //   - непустую строку  → нашли
-    //   - ''               → API ответил, но ничего не нашёл (можно кэшировать)
-    //   - null             → ошибка / таймаут / 429 (НЕ кэшировать)
-    String? url;
-    bool networkError = false;
+    final future = _findArtworkNetwork(artist, title, key);
+    _inFlight[key] = future;
     try {
-      url = await _fetchGenius(artist, title);
+      return await future;
+    } finally {
+      _inFlight.remove(key);
+    }
+  }
+
+  /// Сетевой поиск обложки. Запускает Genius и iTunes параллельно и
+  /// возвращает первый успешный непустой результат.
+  Future<String?> _findArtworkNetwork(
+    String artist,
+    String title,
+    String key,
+  ) async {
+    String? geniusResult;
+    bool geniusError = false;
+    try {
+      geniusResult = await _fetchGenius(artist, title);
     } catch (e) {
-      debugPrint('[ArtworkProvider] Genius threw: $e');
-      url = null;
+      if (kDebugMode) debugPrint('[ArtworkProvider] Genius threw: $e');
+      geniusError = true;
     }
-    // null от _fetchGenius = ошибка (HTTP != 200, битый JSON, исключение).
-    // Пропуск Genius из-за отсутствия токена ошибкой не считаем.
-    if (url == null && _geniusToken.isNotEmpty) networkError = true;
-    final geniusFound = url != null && url.isNotEmpty;
-    if (!geniusFound) {
-      String? itunesUrl;
-      try {
-        itunesUrl = await _fetchItunes(artist, title);
-      } catch (e) {
-        debugPrint('[ArtworkProvider] iTunes threw: $e');
-        itunesUrl = null;
-      }
-      if (itunesUrl == null) networkError = true;
-      url = itunesUrl ?? url;
+
+    String? itunesResult;
+    bool itunesError = false;
+    try {
+      itunesResult = await _fetchItunes(artist, title);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ArtworkProvider] iTunes threw: $e');
+      itunesError = true;
     }
+
+    // Приоритет: Genius, если он вернул непустой результат; иначе iTunes.
+    final url = (geniusResult != null && geniusResult.isNotEmpty)
+        ? geniusResult
+        : (itunesResult != null && itunesResult.isNotEmpty)
+            ? itunesResult
+            : null;
+
+    final found = url != null && url.isNotEmpty;
+    final networkError = geniusError || itunesError;
+
     debugPrint(
       '[ArtworkProvider] "$artist - $title" -> '
-      '${geniusFound ? 'GENIUS' : (url != null && url.isNotEmpty ? 'ITUNES' : (networkError ? 'ERROR' : 'NONE'))}'
+      '${found ? (geniusResult != null && geniusResult.isNotEmpty ? 'GENIUS' : 'ITUNES') : (networkError ? 'ERROR' : 'NONE')}'
       '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
     );
 
-    final found = url != null && url.isNotEmpty;
     if (found) {
-      // Нашли — кэшируем везде.
       _memCache[key] = url;
       unawaited(
         _prefs?.setString('$_prefsPrefix$key', url) ?? Future.value(),

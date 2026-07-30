@@ -5,7 +5,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener;
+import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener, Size;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/track.dart';
@@ -408,11 +408,40 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  /// Предзагружает обложку в RAM-кэш с ограниченным разрешением.
+  /// Раньше использовался ImageConfiguration.empty — декодировался
+  /// полный размер. Теперь используем CachedNetworkImage с заданным
+  /// memCacheWidth/Height (200px), чтобы не грузить память и не
+  /// конкурировать с полноразмерными виджетами.
   void _precacheImage(String url) {
-    final provider = CachedNetworkImageProvider(url);
-    provider.resolve(ImageConfiguration.empty).addListener(
-      ImageStreamListener((_, _) {}),
+    unawaited(
+      _precacheImageWithSize(url, 200).catchError((_) {}),
     );
+  }
+
+  Future<void> _precacheImageWithSize(String url, int size) async {
+    final provider = CachedNetworkImageProvider(url);
+    final config = ImageConfiguration(
+      size: Size(size.toDouble(), size.toDouble()),
+    );
+    final stream = provider.resolve(config);
+    final completer = Completer<void>();
+    late ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (imageInfo, _) {
+        imageInfo.image.dispose();
+        completer.complete();
+      },
+      onError: (exception, stackTrace) {
+        completer.completeError(exception, stackTrace);
+      },
+    );
+    stream.addListener(listener);
+    try {
+      await completer.future;
+    } finally {
+      stream.removeListener(listener);
+    }
   }
 
   @override

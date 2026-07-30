@@ -63,6 +63,13 @@ class SoundCloudSource implements TrackSource {
   String? _clientId;
   Future<String?>? _clientIdFuture;
 
+  /// Счётчик неудачных попыток получить client_id подряд.
+  /// Сбрасывается при успешном извлечении.
+  int _clientIdFailedAttempts = 0;
+
+  /// Максимальное количество повторных попыток извлечь client_id.
+  static const int _maxClientIdAttempts = 3;
+
   @override
   String get id => 'soundcloud';
 
@@ -74,11 +81,41 @@ class SoundCloudSource implements TrackSource {
   // ═══════════════════════════════════════════════════════════════════
 
   /// Гарантирует наличие `client_id`. Возвращает null, если извлечь не
-  /// удалось (тогда поиск вернёт пустой список — best-effort).
+  /// удалось после [_maxClientIdAttempts] попыток (тогда поиск вернёт
+  /// пустой список — best-effort).
+  ///
+  /// Если предыдущая попытка вернула null, но лимит не исчерпан,
+  /// следующий вызов предпримет новую попытку.
   Future<String?> _ensureClientId() {
     if (_clientId != null) return Future.value(_clientId);
-    _clientIdFuture ??= _fetchClientId();
+
+    // Если future ещё не создана или предыдущая завершилась неудачей
+    // (но есть запас попыток) — запускаем новую попытку.
+    if (_clientIdFuture == null ||
+        (_clientIdFailedAttempts > 0 &&
+            _clientIdFailedAttempts < _maxClientIdAttempts)) {
+      _clientIdFuture = _fetchClientIdWithRetry();
+    }
     return _clientIdFuture!;
+  }
+
+  /// Извлекает client_id с лимитом повторных попыток и backoff'ом.
+  Future<String?> _fetchClientIdWithRetry() async {
+    while (_clientIdFailedAttempts < _maxClientIdAttempts) {
+      final result = await _fetchClientId();
+      if (result != null && result.isNotEmpty) {
+        _clientIdFailedAttempts = 0;
+        _clientId = result;
+        return result;
+      }
+      _clientIdFailedAttempts++;
+      if (_clientIdFailedAttempts >= _maxClientIdAttempts) break;
+      // Экспоненциальный backoff: 300мс, 600мс...
+      await Future.delayed(
+        Duration(milliseconds: 300 * _clientIdFailedAttempts),
+      );
+    }
+    return null;
   }
 
   /// Парсит главную страницу SoundCloud, находит ссылки на JS-бандлы и
@@ -340,10 +377,11 @@ class SoundCloudSource implements TrackSource {
     List<Track> tracks,
     void Function(List<Track> updated) onUpdate,
   ) async {
-    // 3 вместо 6: в режиме «все источники» воркеры каждого источника
-    // работают параллельно, и 6+6 одновременных запросов к Genius
-    // стабильно ловили 429 (rate limit).
-    const concurrency = 3;
+    // 2 вместо 3: в режиме «все источники» воркеры каждого источника
+    // работают параллельно, и 3+3 одновременных запросов к Genius
+    // уже достаточно. Меньше concurrency = меньше шанс 429 и
+    // меньше одновременных таймаутов, которые замедляют UI.
+    const concurrency = 2;
     var index = 0;
 
     Timer? notifyTimer;
@@ -367,12 +405,15 @@ class SoundCloudSource implements TrackSource {
           // «появлялась» только при следующем поиске. Сам findArtwork
           // ограничен таймаутами Dio (5 сек connect/receive на запрос),
           // так что воркер не зависнет.
-          final url =
-              await ArtworkProvider.instance.findArtwork(t.artist, t.title);
+          final url = await ArtworkProvider.instance
+              .findArtwork(t.artist, t.title)
+              .timeout(const Duration(seconds: 8));
           if (url != null && url.isNotEmpty) {
             tracks[i] = t.copyWith(artworkUrl: url);
             scheduleNotify();
           }
+        } on TimeoutException {
+          // best-effort: не кэшируем и не ломаем UI
         } catch (_) {
           // best-effort
         }
@@ -488,8 +529,8 @@ class SoundCloudSource implements TrackSource {
   Future<AudioSource> createAudioSource(Track track) async {
     final directUrl = await resolveStreamUrl(track);
 
-    final cacheFile = await YoutubeCache.instance.fileFor(
-      'soundcloud_${track.id}',
+    final cacheFile = await YoutubeCache.instance.fileForTrack(
+      track,
       extension: 'mp3',
     );
 

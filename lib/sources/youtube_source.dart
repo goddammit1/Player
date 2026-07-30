@@ -323,7 +323,7 @@ class YoutubeSource implements TrackSource {
         ? 'webm'
         : 'm4a';
     final cacheFile =
-        await YoutubeCache.instance.fileFor(track.id, extension: container);
+        await YoutubeCache.instance.fileForTrack(track, extension: container);
 
     return LockCachingAudioSource(
       Uri.parse(info.url.toString()),

@@ -5,6 +5,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/track.dart';
+
 /// Дисковый кэш приложения.
 ///
 /// Аудио (`yt_audio_cache`): LRU-кэш по mtime файлов с лимитом в МБ.
@@ -73,6 +75,17 @@ class YoutubeCache {
       default:
         return trackId;
     }
+  }
+
+  /// Удобный хелпер: файл кэша для трека с учётом его источника.
+  Future<File> fileForTrack(
+    Track track, {
+    String extension = 'mp3',
+  }) {
+    return fileFor(
+      cacheIdFor(sourceId: track.sourceId, trackId: track.id),
+      extension: extension,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════

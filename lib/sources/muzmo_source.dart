@@ -377,10 +377,11 @@ class MuzmoSource implements TrackSource {
     List<Track> tracks, [
     void Function(List<Track> updated)? onUpdate,
   ]) async {
-    // 3 вместо 6: в режиме «все источники» воркеры каждого источника
-    // работают параллельно, и 6+6 одновременных запросов к Genius
-    // стабильно ловили 429 (rate limit).
-    const concurrency = 3;
+    // 2 вместо 3: в режиме «все источники» воркеры каждого источника
+    // работают параллельно, и 3+3 одновременных запросов к Genius
+    // уже достаточно. Меньше concurrency = меньше шанс 429 и
+    // меньше одновременных таймаутов, которые замедляют UI.
+    const concurrency = 2;
     var index = 0;
 
     Timer? notifyTimer;
@@ -404,12 +405,15 @@ class MuzmoSource implements TrackSource {
           // «появлялась» только при следующем поиске. Сам findArtwork
           // ограничен таймаутами Dio (5 сек connect/receive на запрос),
           // так что воркер не зависнет.
-          final url =
-              await ArtworkProvider.instance.findArtwork(t.artist, t.title);
+          final url = await ArtworkProvider.instance
+              .findArtwork(t.artist, t.title)
+              .timeout(const Duration(seconds: 8));
           if (url != null && url.isNotEmpty) {
             tracks[i] = t.copyWith(artworkUrl: url);
             scheduleNotify();
           }
+        } on TimeoutException {
+          // best-effort: не кэшируем и не ломаем UI
         } catch (_) {
           // best-effort
         }
@@ -532,8 +536,8 @@ class MuzmoSource implements TrackSource {
     final directUrl = await _resolveCdnUrl(url);
 
     // Файл muzmo всегда mp3.
-    final cacheFile = await YoutubeCache.instance.fileFor(
-      'muzmo_${track.id}',
+    final cacheFile = await YoutubeCache.instance.fileForTrack(
+      track,
       extension: 'mp3',
     );
 

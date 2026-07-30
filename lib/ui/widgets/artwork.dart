@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/artwork_helper.dart';
 import '../../core/providers.dart';
 
 
@@ -147,7 +148,7 @@ class ArtworkMosaic extends ConsumerWidget {
         size: size,
         borderRadius: borderRadius,
         memCacheSize: size * 2,
-        aspectRatio: _detectAspectRatio(urls.first),
+        aspectRatio: urlAspectRatio(urls.first),
       );
     }
 
@@ -211,7 +212,7 @@ class _Tile extends StatelessWidget {
       return Container(color: colors.elevatedVariant);
     }
 
-    final aspectRatio = _detectAspectRatio(url!);
+    final aspectRatio = urlAspectRatio(url!);
     final imageWidth = size * aspectRatio;
     final imageHeight = size;
     final cacheWidth = (cache * aspectRatio).round();
@@ -245,13 +246,3 @@ class _Tile extends StatelessWidget {
   }
 }
 
-double _detectAspectRatio(String? url) {
-  if (url == null || url.isEmpty) return 1.0;
-  final lower = url.toLowerCase();
-  if (lower.contains('ytimg.com') ||
-      lower.contains('youtube.com') ||
-      lower.contains('googlevideo.com')) {
-    return 16 / 9;
-  }
-  return 1.0;
-}
