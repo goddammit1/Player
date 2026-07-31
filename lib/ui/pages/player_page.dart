@@ -1,9 +1,11 @@
+// lib/ui/pages/player_page.dart
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:marquee/marquee.dart';
-import 'package:player/core/haptic_helper.dart';
+import '../../core/haptic_helper.dart';
 
 import '../../core/player_service.dart';
 import '../../core/providers.dart';
@@ -13,15 +15,6 @@ import '../widgets/track_settings_sheet.dart';
 import '../widgets/queue_sheet.dart';
 import '../../core/artwork_helper.dart';
 
-/// Полноэкранный плеер.
-///
-/// Структура (сверху вниз):
-/// 1. Top bar: `chevron_down` слева, three-dots справа.
-/// 2. Квадратная обложка трека ~85% ширины с большим радиусом.
-/// 3. Название + исполнитель.
-/// 4. Кастомный прогресс-бар + времена.
-/// 5. Контролы: круг prev — pill play — круг next.
-/// 6. Bottom action bar: repeat — pill queue — three-dots.
 class PlayerPage extends StatelessWidget {
   const PlayerPage({super.key});
 
@@ -34,14 +27,6 @@ class PlayerPage extends StatelessWidget {
   }
 }
 
-/// Содержимое полноэкранного плеера без [Scaffold]/[SafeArea].
-///
-/// Вынесено в отдельный виджет, чтобы переиспользовать как в
-/// самостоятельном маршруте [PlayerPage], так и внутри
-/// выезжающего снизу `NowPlayingOverlay`.
-///
-/// [onClose] — если задан, вызывается по нажатию кнопки «вниз»
-/// (используется оверлеем, чтобы свернуть плеер вместо `Navigator.pop`).
 class PlayerContent extends ConsumerStatefulWidget {
   const PlayerContent({super.key, this.onClose});
   final VoidCallback? onClose;
@@ -61,29 +46,27 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
     super.dispose();
   }
 
- @override
-Widget build(BuildContext context) {
-  final player = ref.watch(playerServiceProvider);
-  final colors = ref.watch(animatedPaletteProvider);
+  @override
+  Widget build(BuildContext context) {
+    final player = ref.watch(playerServiceProvider);
+    final colors = ref.watch(animatedPaletteProvider);
 
-  // Градиент — всегда используем gradientTop/gradientBottom, 
-  // для fixed они оба = Colors.black
-  final bgDecoration = BoxDecoration(
-    gradient: LinearGradient(
-      begin: Alignment.topCenter,
-      end: Alignment.bottomCenter,
-      colors: [
-        colors.gradientTop,
-        colors.gradientTop,
-        colors.gradientBottom,
-      ],
-      stops: const [0.0, 0.35, 1.0],
-    ),
-  );
+    final bgDecoration = BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          colors.gradientTop,
+          colors.gradientTop,
+          colors.gradientBottom,
+        ],
+        stops: const [0.0, 0.35, 1.0],
+      ),
+    );
 
-  return Container(
-    decoration: bgDecoration,
-    child: StreamBuilder<MediaItem?>(
+    return Container(
+      decoration: bgDecoration,
+      child: StreamBuilder<MediaItem?>(
         stream: player.mediaItem,
         builder: (context, snap) {
           final item = snap.data;
@@ -107,12 +90,11 @@ Widget build(BuildContext context) {
                     LayoutBuilder(
                       builder: (_, c) {
                         final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                        return Artwork(
-                          url: item.artUri?.toString(),
+                        return _InteractiveArtwork(
+                          item: item,
                           size: size,
-                          borderRadius: 10,
-                          memCacheSize: 600,
                           aspectRatio: artAspectRatio(item),
+                          player: player,
                         );
                       },
                     ),
@@ -152,6 +134,136 @@ Widget build(BuildContext context) {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+// =====================================================================
+// INTERACTIVE ARTWORK WITH CHANGE ALBUM OVERLAY
+// =====================================================================
+
+class _InteractiveArtwork extends ConsumerStatefulWidget {
+  const _InteractiveArtwork({
+    required this.item,
+    required this.size,
+    required this.aspectRatio,
+    required this.player,
+  });
+
+  final MediaItem item;
+  final double size;
+  final double aspectRatio;
+  final PlayerService player;
+
+  @override
+  ConsumerState<_InteractiveArtwork> createState() =>
+      _InteractiveArtworkState();
+}
+
+class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
+  bool _showOverlay = false;
+
+  void _toggleOverlay() {
+    HapticHelper.light(ref: ref);
+    setState(() {
+      _showOverlay = !_showOverlay;
+    });
+  }
+
+  void _hideOverlay() {
+    if (_showOverlay) {
+      setState(() {
+        _showOverlay = false;
+      });
+    }
+  }
+
+  Future<void> _onChangeAlbum() async {
+    HapticHelper.medium(ref: ref);
+    _hideOverlay();
+
+    final trackId =
+        widget.item.extras?['trackId'] as String? ?? widget.item.id;
+
+    final newPath = await ArtworkHelper.pickAndSaveArtwork(trackId);
+
+    if (newPath != null && mounted) {
+      // Это обновит MediaItem на Uri.file(newPath), что автоматически запустит
+      // перерасчет динамических цветов в animatedPaletteProvider!
+      await widget.player.updateCustomArtwork(trackId, newPath);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _toggleOverlay,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          width: widget.size,
+          height: widget.size,
+          child: Stack(
+            children: [
+              // 1. Сама обложка
+              Artwork(
+                url: widget.item.artUri?.toString(),
+                size: widget.size,
+                borderRadius: 10,
+                memCacheSize: 600,
+                aspectRatio: widget.aspectRatio,
+              ),
+
+              // 2. Затемняющий анимированный оверлей
+              AnimatedOpacity(
+                opacity: _showOverlay ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOut,
+                child: IgnorePointer(
+                  ignoring: !_showOverlay,
+                  child: Container(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    width: widget.size,
+                    height: widget.size,
+                    child: Center(
+                      // Нажатие на эту центральную область запускает выбор обложки.
+                      // Нажатие на пустую область вокруг отрабатывает во внешнем GestureDetector и скрывает оверлей.
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _onChangeAlbum,
+                        child: Padding(
+                          padding: const EdgeInsets.all(24.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(
+                                Icons.image_outlined,
+                                color: Colors.white,
+                                size: 38,
+                              ),
+                              SizedBox(height: 10),
+                              Text(
+                                'Change album',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w500,
+                                  letterSpacing: -0.2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -223,7 +335,8 @@ class _Controls extends ConsumerStatefulWidget {
   ConsumerState<_Controls> createState() => _ControlsState();
 }
 
-class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMixin {
+class _ControlsState extends ConsumerState<_Controls>
+    with TickerProviderStateMixin {
   late final AnimationController _playAnim = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 500),
@@ -347,7 +460,6 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
             final prevExpanded = _prevAnim.value;
             final nextExpanded = _nextAnim.value;
 
-            // prev/next сужаются при нажатии на play
             final prevWidth = 56 - 20 * playExpanded + 24 * prevExpanded;
             final nextWidth = 56 - 20 * playExpanded + 24 * nextExpanded;
             final playWidth =
@@ -360,7 +472,6 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
             return Row(
               children: [
                 const SizedBox(width: 5),
-                // Prev — сужается при нажатии на play
                 Listener(
                   onPointerDown: _onPrevPointerDown,
                   onPointerUp: _onPrevPointerUp,
@@ -369,7 +480,7 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
                     onTap: () {
                       widget.player.skipToPrevious();
                       HapticHelper.light(ref: ref);
-                    }, 
+                    },
                     child: Material(
                       color: widget.colors.elevated,
                       borderRadius:
@@ -387,7 +498,6 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
                   ),
                 ),
                 const SizedBox(width: 10),
-                // Play/pause — расширяется при нажатии
                 Listener(
                   onPointerDown: _onPlayPointerDown,
                   onPointerUp: _onPlayPointerUp,
@@ -396,7 +506,7 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
                     onTap: () {
                       playing ? widget.player.pause() : widget.player.play();
                       HapticHelper.medium(ref: ref);
-                    },   
+                    },
                     child: Material(
                       color: widget.colors.elevatedHi,
                       borderRadius: BorderRadius.circular(
@@ -430,7 +540,6 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
                   ),
                 ),
                 const SizedBox(width: 10),
-                // Next — сужается при нажатии на play
                 Listener(
                   onPointerDown: _onNextPointerDown,
                   onPointerUp: _onNextPointerUp,
@@ -467,7 +576,7 @@ class _ControlsState extends ConsumerState<_Controls> with TickerProviderStateMi
 }
 
 // =====================================================================
-//  PROGRESS BAR with Haptic Feedback
+//  PROGRESS BAR
 // =====================================================================
 
 class _ProgressBar extends ConsumerStatefulWidget {
@@ -481,28 +590,21 @@ class _ProgressBar extends ConsumerStatefulWidget {
   final Duration? fallbackDuration;
 
   @override
-  ConsumerState<_ProgressBar> createState() => _ProgressBarState();  // <-- ConsumerState
+  ConsumerState<_ProgressBar> createState() => _ProgressBarState();
 }
 
 class _ProgressBarState extends ConsumerState<_ProgressBar>
     with SingleTickerProviderStateMixin {
-  /// Когда пользователь тянет ползунок — показываем эту позицию вместо
-  /// реальной из стрима, иначе UI «дёргается».
   double? _dragFraction;
 
-  // Анимация thumb
   late final AnimationController _thumbAnim = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 50),
-    value: 0, // 0 = нормальный размер, 1 = сжатый
+    value: 0,
   );
 
-  // ===== HAPTIC STATE =====
-  /// Последняя позиция, при которой сработала вибрация (в долях 0..1)
   double _lastHapticFraction = -1.0;
-  /// Минимальное расстояние между ступенями вибрации (в долях)
-  static const double _hapticStep = 0.015; // ~1.5% от трека
-  /// Cooldown между вибрациями (мс)
+  static const double _hapticStep = 0.015;
   static const int _hapticCooldownMs = 40;
   DateTime? _lastHapticTime;
 
@@ -512,7 +614,6 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
     super.dispose();
   }
 
-  /// Проверяет, нужно ли вызвать вибрацию при текущей позиции
   void _maybeHaptic(double currentFraction) {
     final enabled = ref.read(vibrationEnabledProvider);
     if (!enabled) return;
@@ -525,10 +626,9 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
     if ((currentFraction - _lastHapticFraction).abs() >= _hapticStep) {
       _lastHapticFraction = currentFraction;
       _lastHapticTime = now;
-       HapticHelper.microTick(ref: ref);  // <-- передаём ref
+      HapticHelper.microTick(ref: ref);
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -559,7 +659,7 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                       behavior: HitTestBehavior.opaque,
                       onHorizontalDragStart: (d) {
                         _thumbAnim.forward();
-                        _lastHapticFraction = -1.0; // Сброс при начале drag
+                        _lastHapticFraction = -1.0;
                       },
                       onHorizontalDragUpdate: (d) {
                         final newFraction =
@@ -596,7 +696,6 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                             Duration(milliseconds: (frac * maxMs).round()),
                           );
                         }
-                        // Однократная вибрация при тапе
                         HapticHelper.light(ref: ref);
                         setState(() {
                           _dragFraction = null;
@@ -615,7 +714,6 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            // Прогресс-бар прижат кверху области
                             Padding(
                               padding: const EdgeInsets.only(top: 30),
                               child: CustomPaint(
@@ -683,8 +781,6 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
   }
 }
 
-/// Толстая горизонтальная линия трека + прямоугольный «карандашный»
-/// бегунок, делящий полосу в позиции [fraction] (0..1). Линия скруглена.
 class _ProgressPainter extends CustomPainter {
   _ProgressPainter({
     required this.fraction,
@@ -726,7 +822,6 @@ class _ProgressPainter extends CustomPainter {
     final double clampedThumbX =
         thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
 
-    // Фоновый трек
     if (clampedThumbX + thumbWidth + gap < _margin + totalWidth) {
       final double trackStart = clampedThumbX + thumbWidth + gap;
       final double trackWidth = (_margin + totalWidth) - trackStart;
@@ -744,7 +839,6 @@ class _ProgressPainter extends CustomPainter {
       canvas.drawRRect(trackRect, trackPaint);
     }
 
-    // Заполненная часть
     if (clampedThumbX > _margin + gap) {
       final double filledWidth = clampedThumbX - gap - _margin;
 
@@ -760,7 +854,6 @@ class _ProgressPainter extends CustomPainter {
       canvas.drawRRect(filledRect, filledPaint);
     }
 
-    // Бегунок
     final thumbRect = RRect.fromRectAndRadius(
       Rect.fromLTWH(
           clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
@@ -837,7 +930,6 @@ class _BottomActionsState extends ConsumerState<_BottomActions> {
               final currentFingerY = d.globalPosition.dy;
               final rawDy = _startFingerY - currentFingerY;
 
-              // Мертвая зона 10px
               final dy = rawDy > 10
                   ? rawDy - 10
                   : (rawDy < -10 ? rawDy + 10 : 0);
@@ -866,7 +958,7 @@ class _BottomActionsState extends ConsumerState<_BottomActions> {
               child: InkWell(
                 borderRadius: BorderRadius.circular(28),
                 onTap: () {
-                  HapticHelper.tripleTick(ref: ref); // ← тройной отклик
+                  HapticHelper.tripleTick(ref: ref);
                   widget.queueCtrl.openPart();
                 },
                 child: SizedBox(
@@ -894,7 +986,7 @@ class _BottomActionsState extends ConsumerState<_BottomActions> {
     );
   }
 
-    void _showExtra(BuildContext context) {
+  void _showExtra(BuildContext context) {
     final m = widget.item;
     final track = Track(
       id: m.extras?['trackId'] as String? ?? m.id,
@@ -951,4 +1043,3 @@ class _SquircleButton extends StatelessWidget {
     );
   }
 }
-

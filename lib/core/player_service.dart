@@ -1,3 +1,5 @@
+// lib/core/player_service.dart
+
 import 'dart:async';
 import 'dart:math';
 
@@ -12,27 +14,18 @@ import '../models/track.dart';
 import '../sources/source_registry.dart';
 import 'history_repository.dart';
 import 'youtube_cache.dart';
+import 'artwork_helper.dart';
 
 // print -> adb logcat (tag: flutter)
 // ignore: avoid_print
 void _log(String msg) => print('[PlayerService] $msg');
 
+enum SleepTimerMode { off, time, endOfTrack }
+
 class PlayerService extends BaseAudioHandler with SeekHandler {
-  // ===== BOOST =====
-  //
-  // Обычная громкость полностью отдана системному регулятору
-  // (STREAM_MUSIC) — мы её не трогаем. Единственное, чем управляет
-  // приложение, — это "буст": усиление поверх системного уровня через
-  // AndroidLoudnessEnhancer. Эффект встроен в AudioPipeline плеера,
-  // который работает в фоновом аудиосервисе, поэтому буст сохраняется,
-  // когда приложение свёрнуто, без какой-либо возни с lifecycle.
-
   static const String _boostDbKey = 'boost_db_v1';
-
-  /// Потолок буста в децибелах. 0 dB = без усиления.
   static const double maxBoostDb = 12.0;
 
-  /// Текущий буст в дБ (0..maxBoostDb).
   final BehaviorSubject<double> _boostDb = BehaviorSubject<double>.seeded(0.0);
   Stream<double> get boostDbStream => _boostDb.stream;
   double get boostDb => _boostDb.value;
@@ -57,11 +50,21 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   bool _isLoading = false;
   bool get isLoading => _isLoading;
 
-  /// Кандидат в историю прослушивания. Записывается в HistoryRepository
-  /// только когда трек реально начал играть — позиция пересекла
-  /// [_historyThreshold] (см. подписку на positionStream в конструкторе).
   Track? _pendingHistoryTrack;
   static const Duration _historyThreshold = Duration(seconds: 1);
+
+  // ===== SLEEP TIMER =====
+  final BehaviorSubject<SleepTimerMode> _sleepTimerMode =
+      BehaviorSubject.seeded(SleepTimerMode.off);
+  Stream<SleepTimerMode> get sleepTimerModeStream => _sleepTimerMode.stream;
+  SleepTimerMode get sleepTimerMode => _sleepTimerMode.value;
+
+  final BehaviorSubject<DateTime?> _sleepTimerEndTime =
+      BehaviorSubject.seeded(null);
+  Stream<DateTime?> get sleepTimerEndTimeStream => _sleepTimerEndTime.stream;
+  DateTime? get sleepTimerEndTime => _sleepTimerEndTime.value;
+
+  Timer? _sleepTimer;
 
   PlayerService() {
     _loudnessEnhancer = AndroidLoudnessEnhancer();
@@ -95,11 +98,8 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
             return;
           }
 
-          final pos = _player.position;
-          final dur = _player.duration ?? Duration.zero;
-          if (dur > Duration.zero && pos >= dur - const Duration(seconds: 1)) {
-            _onTrackFinished();
-          }
+          // Вызываем завершение трека без избыточных проверок позиции
+          _onTrackFinished();
         }
       },
       onError: (Object e, StackTrace st) {
@@ -107,9 +107,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       },
     );
 
-    // История прослушивания: записываем pending-трек, только когда он
-    // реально начал играть (позиция пересекла _historyThreshold).
-    // Пропущенный до старта трек в историю не попадает.
     _player.positionStream.listen(
       (pos) {
         final pending = _pendingHistoryTrack;
@@ -127,6 +124,95 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     unawaited(_initBoost());
   }
 
+  // Флаг защиты от повторных дублирующих событий завершения трека
+  bool _isHandlingTrackFinish = false;
+
+  // ===== SLEEP TIMER METHODS =====
+
+  void startSleepTimer(Duration duration) {
+    _sleepTimer?.cancel();
+    _sleepTimerMode.add(SleepTimerMode.time);
+    _sleepTimerEndTime.add(DateTime.now().add(duration));
+
+    _sleepTimer = Timer(duration, () async {
+      _log('Sleep timer: Time expired! Waiting for current track to finish...');
+      
+      // Когда время истекло, переводим плеер в режим доигрывания текущего трека
+      _sleepTimerMode.add(SleepTimerMode.endOfTrack);
+      _sleepTimerEndTime.add(null);
+      try {
+        await _player.setLoopMode(LoopMode.off);
+      } catch (_) {}
+    });
+  }
+
+  Future<void> setStopAtEndOfSong() async {
+    _sleepTimer?.cancel();
+    _sleepTimerMode.add(SleepTimerMode.endOfTrack);
+    _sleepTimerEndTime.add(null);
+
+    try {
+      await _player.setLoopMode(LoopMode.off);
+    } catch (_) {}
+  }
+
+  void cancelSleepTimer() {
+    _sleepTimer?.cancel();
+    _sleepTimerMode.add(SleepTimerMode.off);
+    _sleepTimerEndTime.add(null);
+
+    try {
+      _player.setLoopMode(_loopMode.value);
+    } catch (_) {}
+  }
+
+  // ===== Авто-переход при завершении трека =====
+
+  void _onTrackFinished() {
+    // Если событие завершения уже обрабатывается — игнорируем дубли
+    if (_isHandlingTrackFinish) return;
+    _isHandlingTrackFinish = true;
+
+    try {
+      // 1. Проверяем таймер сна
+      if (sleepTimerMode == SleepTimerMode.endOfTrack) {
+        _log('Sleep timer: End of track reached, stopping playback like end of queue');
+        cancelSleepTimer();
+        // Плеер уже сам дошел до конца (completed). 
+        // Мы просто НЕ вызываем _playIndex, чтобы очередь остановилась.
+        return;
+      }
+
+      // 2. Стандартная логика авто-перехода
+      switch (_loopMode.value) {
+        case LoopMode.one:
+          _log('LoopMode.one \u2192 replay index=$_currentIndex');
+          _playIndex(_currentIndex);
+        case LoopMode.all:
+          final next = _currentIndex + 1;
+          if (next < _queue.length) {
+            _log('LoopMode.all \u2192 next index=$next');
+            _playIndex(next);
+          } else if (_queue.isNotEmpty) {
+            _log('LoopMode.all \u2192 wrap to index=0');
+            _playIndex(0);
+          }
+        case LoopMode.off:
+          if (_currentIndex + 1 < _queue.length) {
+            _log('LoopMode.off \u2192 next index=${_currentIndex + 1}');
+            _playIndex(_currentIndex + 1);
+          } else {
+            _log('LoopMode.off \u2192 end of queue, stopping');
+          }
+      }
+    } finally {
+      // Игнорируем дублирующие эвенты плеера в течение 1 секунды
+      Future.delayed(const Duration(milliseconds: 1000), () {
+        _isHandlingTrackFinish = false;
+      });
+    }
+  }
+
   // ===== BOOST METHODS =====
 
   Future<void> _initBoost() async {
@@ -139,9 +225,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  /// Единственная точка управления бустом (слайдер в UI).
-  /// Значение в дБ, 0..maxBoostDb. Персистится в prefs и переживает
-  /// перезапуск приложения; в фоне держится самим audio pipeline.
   Future<void> setBoost(double db) async {
     final clamped = db.clamp(0.0, maxBoostDb);
     _boostDb.add(clamped);
@@ -162,8 +245,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     } catch (_) {}
   }
 
-  /// Повторно применяем буст к эффекту — на случай, если при смене
-  /// аудио-сессии эффект был пересоздан.
   Future<void> _reapplyBoost() async {
     try {
       await _loudnessEnhancer.setEnabled(true);
@@ -171,34 +252,8 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     } catch (_) {}
   }
 
-  // ===== Авто-переход при завершении трека =====
-
-  void _onTrackFinished() {
-    switch (_loopMode.value) {
-      case LoopMode.one:
-        _log('LoopMode.one \u2192 replay index=$_currentIndex');
-        _playIndex(_currentIndex);
-      case LoopMode.all:
-        final next = _currentIndex + 1;
-        if (next < _queue.length) {
-          _log('LoopMode.all \u2192 next index=$next');
-          _playIndex(next);
-        } else if (_queue.isNotEmpty) {
-          _log('LoopMode.all \u2192 wrap to index=0');
-          _playIndex(0);
-        }
-      case LoopMode.off:
-        if (_currentIndex + 1 < _queue.length) {
-          _log('LoopMode.off \u2192 next index=${_currentIndex + 1}');
-          _playIndex(_currentIndex + 1);
-        } else {
-          _log('LoopMode.off \u2192 end of queue, stopping');
-        }
-    }
-  }
 
   // ===== Queue =====
-
   @override
   Future<void> removeQueueItem(MediaItem mediaItem) async {
     final index = _queue.indexWhere((t) => t.globalId == mediaItem.id);
@@ -277,8 +332,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
         '${isRetry ? ' (RETRY)' : ''}');
 
     mediaItem.add(_toMediaItem(track));
-
-    // Защищаем файл текущего трека от эвикта/очистки, пока он играет.
     YoutubeCache.instance.setProtectedId(_cacheIdForTrack(track));
 
     try {
@@ -312,9 +365,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
           ' starting playback');
       await _player.play();
 
-      // На случай пересоздания аудио-сессии повторно применяем буст.
       unawaited(_reapplyBoost());
-
       _warmArtwork(_currentIndex);
       _schedulePrefetchNext(myGen);
     } catch (e, st) {
@@ -408,11 +459,6 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
-  /// Предзагружает обложку в RAM-кэш с ограниченным разрешением.
-  /// Раньше использовался ImageConfiguration.empty — декодировался
-  /// полный размер. Теперь используем CachedNetworkImage с заданным
-  /// memCacheWidth/Height (200px), чтобы не грузить память и не
-  /// конкурировать с полноразмерными виджетами.
   void _precacheImage(String url) {
     unawaited(
       _precacheImageWithSize(url, 200).catchError((_) {}),
@@ -552,14 +598,41 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== Helpers =====
 
-  MediaItem _toMediaItem(Track t) => MediaItem(
-        id: t.globalId,
-        title: t.title,
-        artist: t.artist,
-        duration: t.duration,
-        artUri: t.artworkUrl != null ? Uri.parse(t.artworkUrl!) : null,
-        extras: {'sourceId': t.sourceId, 'trackId': t.id},
+  MediaItem _toMediaItem(Track t) {
+    // Проверяем, есть ли сохранённая кастомная обложка для трека
+    final customArt = ArtworkHelper.getCustomArtworkSync(t.id);
+    final artUri = customArt != null
+        ? Uri.file(customArt)
+        : (t.artworkUrl != null ? Uri.parse(t.artworkUrl!) : null);
+
+    return MediaItem(
+      id: t.globalId,
+      title: t.title,
+      artist: t.artist,
+      duration: t.duration,
+      artUri: artUri,
+      extras: {'sourceId': t.sourceId, 'trackId': t.id},
+    );
+  }
+
+  /// Обновляет обложку текущего трека на новый локальный файл
+  Future<void> updateCustomArtwork(String trackId, String newPath) async {
+    final current = mediaItem.value;
+    if (current == null) return;
+
+    final currentTrackId = current.extras?['trackId'] as String? ?? current.id;
+    if (currentTrackId == trackId) {
+      final updated = MediaItem(
+        id: current.id,
+        title: current.title,
+        artist: current.artist,
+        duration: current.duration,
+        artUri: Uri.file(newPath),
+        extras: current.extras,
       );
+      mediaItem.add(updated);
+    }
+  }
 
   PlaybackState _transformEvent(PlaybackEvent event) {
     return PlaybackState(

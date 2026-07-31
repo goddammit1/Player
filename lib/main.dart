@@ -12,6 +12,7 @@ import 'core/providers.dart';
 import 'sources/source_registry.dart';
 import 'ui/pages/home_page.dart';
 import 'core/youtube_cache.dart';
+import 'core/artwork_helper.dart';
 
 
 /// Палитра приложения. Pure-black темная тема, серые градации,
@@ -23,6 +24,8 @@ Future<void> main() async {
   runZonedGuarded<Future<void>>(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+
+      await ArtworkHelper.init();
 
       // === ЗАГРУЗКА ЛИМИТОВ КЭША ===
       await YoutubeCache.loadLimits();

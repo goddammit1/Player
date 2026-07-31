@@ -1,3 +1,5 @@
+// lib/ui/sheets/track_settings_sheet.dart
+
 import 'dart:async';
 import 'dart:io';
 
@@ -13,6 +15,7 @@ import 'add_to_playlist_sheet.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
 import 'track_details_sheet.dart';
+import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import '../../core/youtube_cache.dart';
 
 // =============================================================================
@@ -24,7 +27,6 @@ Future<void> showTrackSettingsSheet(
   required Track track,
   MediaItem? currentMediaItem,
 }) {
-  // Защита от двойного открытия sheet'а при быстром тапе.
   if (ModalRoute.of(context)?.isCurrent != true) return Future.value();
   return showModalBottomSheet<void>(
     context: context,
@@ -153,12 +155,13 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
 
             const SizedBox(height: 10),
 
-            // ── Settings group (Download + Details) ──
+            // ── Settings group (Download + Sleep Timer + Details) ──
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: _SettingsGroup(
                 track: t,
                 colors: colors,
+                player: player, // <--- передаем player
               ),
             ),
 
@@ -354,8 +357,6 @@ class _BoostSlider extends ConsumerStatefulWidget {
 
 class _BoostSliderState extends ConsumerState<_BoostSlider>
     with SingleTickerProviderStateMixin {
-  /// Локальный override во время drag/tap — чтобы UI не «мерцал», пока
-  /// стрим буста догоняет жест.
   double? _dragFraction;
 
   late final AnimationController _thumbAnim = AnimationController(
@@ -370,7 +371,6 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
     super.dispose();
   }
 
-  /// Буст в дБ (0..maxBoostDb) → фракция слайдера 0.0..1.0.
   double _fractionFromBoost(double db) =>
       (db / PlayerService.maxBoostDb).clamp(0.0, 1.0);
 
@@ -395,7 +395,7 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Boost',
+                  'Volume',
                   style: TextStyle(
                     color: widget.colors.textPrimary,
                     fontSize: 16,
@@ -563,9 +563,9 @@ class _BoostPainter extends CustomPainter {
   ) {
     final IconData iconData;
     if (fraction <= 0.005) {
-      iconData = Icons.volume_up_rounded;
+      iconData = Icons.volume_mute_rounded;
     } else {
-      iconData = Icons.graphic_eq_rounded;
+      iconData = Icons.volume_up_rounded;
     }
 
     final iconStr = String.fromCharCode(iconData.codePoint);
@@ -595,14 +595,19 @@ class _BoostPainter extends CustomPainter {
 }
 
 // =============================================================================
-// SETTINGS GROUP (РЕАЛЬНОЕ КЭШИРОВАНИЕ)
+// SETTINGS GROUP
 // =============================================================================
 
 class _SettingsGroup extends ConsumerStatefulWidget {
-  const _SettingsGroup({required this.track, required this.colors});
+  const _SettingsGroup({
+    required this.track,
+    required this.colors,
+    required this.player,
+  });
 
   final Track track;
   final AppColors colors;
+  final PlayerService player;
 
   @override
   ConsumerState<_SettingsGroup> createState() => _SettingsGroupState();
@@ -620,7 +625,6 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     _checkCache();
   }
 
-  /// Единый cache id — та же логика, что у PlayerService (см. YoutubeCache).
   String _cacheId(Track track) =>
       YoutubeCache.cacheIdFor(sourceId: track.sourceId, trackId: track.id);
 
@@ -642,20 +646,14 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     });
 
     try {
-      // Резолвим прямую ссылку
       final source = SourceRegistry.instance.require(widget.track.sourceId);
       final url = await source.resolveStreamUrl(widget.track);
 
-      // Получаем путь в кэше
       final cacheFile = await YoutubeCache.instance.fileFor(
         _cacheId(widget.track),
         extension: 'mp3',
       );
 
-      // Качаем во временный .part и переименовываем только после
-      // успешного завершения: оборванная загрузка больше не оставляет
-      // в кэше обрезанный файл, который выглядел бы как «Cached».
-      // Суффикс .part также защищает файл от LRU-эвиктора.
       final partPath = '${cacheFile.path}.part';
       final dio = Dio(
         BaseOptions(
@@ -676,7 +674,6 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         );
         await File(partPath).rename(cacheFile.path);
       } catch (_) {
-        // Подчищаем недокачанный файл.
         try {
           final part = File(partPath);
           if (await part.exists()) await part.delete();
@@ -684,7 +681,6 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         rethrow;
       }
 
-      // Закрепляем: вручную скачанный трек не должен вычищаться LRU.
       await YoutubeCache.instance.pin(_cacheId(widget.track));
 
       if (mounted) {
@@ -746,48 +742,78 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
   @override
   Widget build(BuildContext context) {
     final colors = widget.colors;
+    final player = widget.player;
 
-    final tiles = <_SettingsTileData>[
-      _SettingsTileData(
-        icon: _isCached ? Icons.download_done_rounded : Icons.download_rounded,
-        iconColor: _isCached ? colors.accent : colors.textPrimary,
-        title: _isCached ? 'Cached' : 'Download',
-        subtitle: _isCached ? 'Available offline' : null,
-        trailing: _isCached
-            ? Icon(Icons.check_circle_rounded, color: colors.accent, size: 20)
-            : null,
-        onTap: _isCached ? _deleteCache : _download,
-        loading: _checking || _downloading,
-        progress: _downloading ? _progress : null,
-      ),
-      _SettingsTileData(
-        icon: Icons.info_outline_rounded,
-        title: 'Details',
-        onTap: () => _showDetails(context),
-      ),
-    ];
+    return StreamBuilder<SleepTimerMode>(
+      stream: player.sleepTimerModeStream,
+      builder: (context, modeSnap) {
+        final mode = modeSnap.data ?? SleepTimerMode.off;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.elevated,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      clipBehavior: Clip.hardEdge,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < tiles.length; i++) ...[
-            _SettingsTile(
-              data: tiles[i],
-              position: _tilePosition(i, tiles.length),
-              colors: colors,
-            ),
-            if (i < tiles.length - 1)
-              Container(height: 4, color: colors.background),
-          ],
-        ],
-      ),
+        return StreamBuilder<DateTime?>(
+          stream: player.sleepTimerEndTimeStream,
+          builder: (context, endSnap) {
+            String? sleepSub;
+            if (mode == SleepTimerMode.endOfTrack) {
+              sleepSub = 'End of song';
+            } else if (mode == SleepTimerMode.time) {
+              final end = endSnap.data;
+              if (end != null) {
+                final diff = end.difference(DateTime.now()).inMinutes;
+                sleepSub = diff > 0 ? '$diff min left' : '<1 min left';
+              }
+            }
+
+            final tiles = <_SettingsTileData>[
+              _SettingsTileData(
+                icon: _isCached ? Icons.download_done_rounded : Icons.download_rounded,
+                iconColor: _isCached ? colors.accent : colors.textPrimary,
+                title: _isCached ? 'Cached' : 'Download',
+                subtitle: _isCached ? 'Available offline' : null,
+                trailing: _isCached
+                    ? Icon(Icons.check_circle_rounded, color: colors.accent, size: 20)
+                    : null,
+                onTap: _isCached ? _deleteCache : _download,
+                loading: _checking || _downloading,
+                progress: _downloading ? _progress : null,
+              ),
+              _SettingsTileData(
+                icon: Icons.bedtime_outlined,
+                title: 'Sleep timer',
+                subtitle: sleepSub,
+                onTap: () => showSleepTimerSheet(context),
+              ),
+              _SettingsTileData(
+                icon: Icons.info_outline_rounded,
+                title: 'Details',
+                onTap: () => _showDetails(context),
+              ),
+            ];
+
+            return Container(
+              decoration: BoxDecoration(
+                color: colors.elevated,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              clipBehavior: Clip.hardEdge,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < tiles.length; i++) ...[
+                    _SettingsTile(
+                      data: tiles[i],
+                      position: _tilePosition(i, tiles.length),
+                      colors: colors,
+                    ),
+                    if (i < tiles.length - 1)
+                      Container(height: 4, color: colors.background),
+                  ],
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -913,6 +939,7 @@ class _SettingsTile extends StatelessWidget {
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(

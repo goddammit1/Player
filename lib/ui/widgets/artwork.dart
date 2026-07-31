@@ -1,3 +1,6 @@
+// lib/ui/widgets/artwork.dart
+
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,19 +8,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/artwork_helper.dart';
 import '../../core/providers.dart';
 
-
-
 class Artwork extends ConsumerWidget {
   const Artwork({
     super.key,
     required this.url,
     required this.size,
+    this.trackId, // <--- Новый параметр
     this.borderRadius = 8,
     this.memCacheSize,
     this.aspectRatio = 1.0,
   });
 
   final String? url;
+  final String? trackId; // <--- ID трека для автоматической подгрузки кастомной обложки
   final double size;
   final double borderRadius;
   final double? memCacheSize;
@@ -29,14 +32,19 @@ class Artwork extends ConsumerWidget {
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final cacheSize = (memCacheSize ?? size * dpr).round();
 
+    // 1. Проверяем наличие кастомной обложки на диске по trackId
+    final customPath =
+        trackId != null ? ArtworkHelper.getCustomArtworkSync(trackId!) : null;
+    final effectiveUrl = customPath ?? url;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
       child: SizedBox(
         width: size,
         height: size,
-        child: url != null && url!.isNotEmpty
+        child: effectiveUrl != null && effectiveUrl.isNotEmpty
             ? _CroppedImage(
-                url: url!,
+                url: effectiveUrl,
                 size: size,
                 cacheSize: cacheSize,
                 aspectRatio: aspectRatio,
@@ -76,6 +84,11 @@ class _CroppedImage extends StatelessWidget {
     final cacheWidth = (cacheSize * aspectRatio).round();
     final cacheHeight = cacheSize;
 
+    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
+    final filePath = url.startsWith('file://')
+        ? Uri.parse(url).toFilePath()
+        : url;
+
     return ClipRect(
       child: SizedBox(
         width: size,
@@ -86,17 +99,25 @@ class _CroppedImage extends StatelessWidget {
           child: SizedBox(
             width: imageWidth,
             height: imageHeight,
-            child: CachedNetworkImage(
-              imageUrl: url,
-              width: imageWidth,
-              height: imageHeight,
-              fit: BoxFit.fill,
-              memCacheWidth: cacheWidth,
-              memCacheHeight: cacheHeight,
-              fadeInDuration: fadeInDuration,
-              placeholder: (_, _) => placeholder,
-              errorWidget: (_, _, _) => errorWidget,
-            ),
+            child: isLocalFile
+                ? Image.file(
+                    File(filePath),
+                    width: imageWidth,
+                    height: imageHeight,
+                    fit: BoxFit.fill,
+                    errorBuilder: (_, _, _) => errorWidget,
+                  )
+                : CachedNetworkImage(
+                    imageUrl: url,
+                    width: imageWidth,
+                    height: imageHeight,
+                    fit: BoxFit.fill,
+                    memCacheWidth: cacheWidth,
+                    memCacheHeight: cacheHeight,
+                    fadeInDuration: fadeInDuration,
+                    placeholder: (_, _) => placeholder,
+                    errorWidget: (_, _, _) => errorWidget,
+                  ),
           ),
         ),
       ),
@@ -152,7 +173,8 @@ class ArtworkMosaic extends ConsumerWidget {
       );
     }
 
-    final cells = List<String?>.generate(4, (i) => i < urls.length ? urls[i] : null);
+    final cells =
+        List<String?>.generate(4, (i) => i < urls.length ? urls[i] : null);
     final cell = size / 2;
 
     return ClipRRect(
@@ -212,6 +234,11 @@ class _Tile extends StatelessWidget {
       return Container(color: colors.elevatedVariant);
     }
 
+    final isLocalFile = url!.startsWith('/') || url!.startsWith('file://');
+    final filePath = url!.startsWith('file://')
+        ? Uri.parse(url!).toFilePath()
+        : url!;
+
     final aspectRatio = urlAspectRatio(url!);
     final imageWidth = size * aspectRatio;
     final imageHeight = size;
@@ -228,21 +255,31 @@ class _Tile extends StatelessWidget {
           child: SizedBox(
             width: imageWidth,
             height: imageHeight,
-            child: CachedNetworkImage(
-              imageUrl: url!,
-              width: imageWidth,
-              height: imageHeight,
-              fit: BoxFit.fill,
-              memCacheWidth: cacheWidth,
-              memCacheHeight: cacheHeight,
-              fadeInDuration: Duration.zero,
-              placeholder: (_, _) => Container(color: colors.elevatedVariant),
-              errorWidget: (_, _, _) => Container(color: colors.elevatedVariant),
-            ),
+            child: isLocalFile
+                ? Image.file(
+                    File(filePath),
+                    width: imageWidth,
+                    height: imageHeight,
+                    fit: BoxFit.fill,
+                    errorBuilder: (_, _, _) =>
+                        Container(color: colors.elevatedVariant),
+                  )
+                : CachedNetworkImage(
+                    imageUrl: url!,
+                    width: imageWidth,
+                    height: imageHeight,
+                    fit: BoxFit.fill,
+                    memCacheWidth: cacheWidth,
+                    memCacheHeight: cacheHeight,
+                    fadeInDuration: Duration.zero,
+                    placeholder: (_, _) =>
+                        Container(color: colors.elevatedVariant),
+                    errorWidget: (_, _, _) =>
+                        Container(color: colors.elevatedVariant),
+                  ),
           ),
         ),
       ),
     );
   }
 }
-

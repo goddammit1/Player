@@ -536,7 +536,7 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                 // ── Artwork ──
                 SliverToBoxAdapter(
                   child: Padding(
-                    padding: const EdgeInsets.only(top: 24),
+                    padding: const EdgeInsets.only(top: 12),
                     child: Center(
                       child: Container(
                         width: _Dimens.artworkSize,
