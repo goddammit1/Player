@@ -181,10 +181,20 @@ class _MiniBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      margin: const EdgeInsets.fromLTRB(8, 8, 8, 16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+            color: colors.elevatedHi, 
+            spreadRadius: 1.0,
+            blurRadius: 0.0,
+          ),
+        ],
+      ),
       child: Material(
         color: colors.elevated,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(15),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
@@ -217,7 +227,7 @@ class _MiniBar extends StatelessWidget {
                               style: TextStyle(
                                 color: colors.textPrimary,
                                 fontWeight: FontWeight.w700,
-                                fontSize: 14,
+                                fontSize: 16,
                                 letterSpacing: 0,
                               ),
                             ),
@@ -229,7 +239,7 @@ class _MiniBar extends StatelessWidget {
                               style: TextStyle(
                                 color: colors.textSecondary,
                                 fontWeight: FontWeight.w600,
-                                fontSize: 10,
+                                fontSize: 12,
                               ),
                             ),
                           ],

@@ -9,390 +9,186 @@ import '../../models/playlist.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import '../widgets/artwork.dart';
-import '../widgets/now_playing_overlay.dart';
 import '../../core/artwork_helper.dart';
+import '../widgets/now_playing_overlay.dart';
+import '../widgets/track_settings_sheet.dart';
+import 'settings_page.dart';
+import '../../core/haptic_helper.dart';
 
-/// Экран отдельного плейлиста: большая обложка-мозаика, имя, кнопка
-/// Play, список треков. Используется и для пустого, и для заполненного.
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Провайдер текущего globalId трека из плеера.
-/// Сравниваем с track.globalId чтобы показать оверлей «сейчас играет».
+abstract final class _Dimens {
+  const _Dimens._();
+
+  static const double appBarHeight = 88;
+  static const double buttonHeight = 60;
+  static const double circleButtonSize = 60;
+  static const double menuButtonSize = 60;
+  static const double searchHeight = 60;
+  static const double artworkSize = 188;
+  static const double trackArtwork = 56;
+  static const double trackRowHeight = 64;
+
+  static const double radiusL = 24;
+  static const double radiusM = 15;
+  static const double radiusXS = 5;
+  static const double radiusArtwork = 12;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+BorderRadius _trackBorderRadius(bool isFirst, bool isLast) => BorderRadius.only(
+      topLeft: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
+      topRight: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
+      bottomLeft: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
+      bottomRight: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
+    );
+
+String _fmtDuration(Duration d) {
+  final h = d.inHours;
+  final m = d.inMinutes % 60;
+  final s = d.inSeconds % 60;
+  final mStr = m.toString().padLeft(2, '0');
+  final sStr = s.toString().padLeft(2, '0');
+  if (h > 0) return '$h:$mStr:$sStr';
+  return '$mStr:$sStr';
+}
+
+String _fmt(Duration d) {
+  final m = d.inMinutes.toString().padLeft(2, '0');
+  final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+  return '$m:$s';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PROVIDERS
+// ═══════════════════════════════════════════════════════════════════════════
+
 final _currentTrackIdProvider = StreamProvider<String?>((ref) {
   final player = ref.watch(playerServiceProvider);
   return player.mediaItem.map((item) => item?.id);
 });
 
-class PlaylistPage extends ConsumerWidget {
+final _isPlayingProvider = StreamProvider<bool>((ref) {
+  final player = ref.watch(playerServiceProvider);
+  return player.playingStream;
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SORT MODE
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum _SortMode {
+  date('By date'),
+  title('By title'),
+  artist('By artist'),
+  manual('Manual');
+
+  final String label;
+  const _SortMode(this.label);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PLAYLIST PAGE
+// ═══════════════════════════════════════════════════════════════════════════
+
+class PlaylistPage extends ConsumerStatefulWidget {
   const PlaylistPage({super.key, required this.playlistId});
   final String playlistId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(playlistsProvider);
-    final list = async.value ?? const <Playlist>[];
-    final colors = ref.watch(animatedPaletteProvider);
+  ConsumerState<PlaylistPage> createState() => _PlaylistPageState();
+}
 
-    Playlist? playlist;
-    for (final p in list) {
-      if (p.id == playlistId) {
-        playlist = p;
-        break;
-      }
-    }
+class _PlaylistPageState extends ConsumerState<PlaylistPage> {
+  final TextEditingController _searchCtl = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _filterKey = GlobalKey();
+  String _query = '';
 
-    if (playlist == null) {
-      return _PageAnimator(
-        child: Scaffold(
-          backgroundColor: colors.background,
-          appBar: AppBar(
-            backgroundColor: colors.background,
-            surfaceTintColor: Colors.transparent,
-            elevation: 0,
-            leading: _CircleButton(
-              icon: Icons.chevron_left_rounded,
-              onPressed: () => Navigator.of(context).pop(),
-              colors: colors,
-            ),
-          ),
-          body: Center(
-            child: Text(
-              'Playlist deleted',
-              style: TextStyle(color: colors.textSecondary),
-            ),
-          ),
-        ),
-      );
-    }
+  _SortMode _sortMode = _SortMode.date;
+  bool _sortReversed = false;
+  bool _isMenuOpen = false;
+  bool _isShuffling = false;
 
-    final p = playlist;
-    final player = ref.read(playerServiceProvider);
-    final repo = ref.read(playlistRepositoryProvider);
+  @override
+  void initState() {
+    super.initState();
+    _searchCtl.addListener(_onSearchChanged);
+  }
 
-    final playableTracks = p.tracks
-        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
-        .toList();
+  void _onSearchChanged() {
+    final q = _searchCtl.text;
+    if (q != _query) setState(() => _query = q);
+  }
 
-    return _PageAnimator(
-      child: Scaffold(
-        backgroundColor: colors.background,
-        body: Stack(
-          children: [
-            SafeArea(
-              bottom: false,
-              child: CustomScrollView(
-                physics: const BouncingScrollPhysics(),
-                slivers: [
-                  // ── Static TopBar — unified approach, full control ──
-                  SliverAppBar(
-                    pinned: true,
-                    floating: false,
-                    snap: false,
-                    backgroundColor: colors.background,
-                    surfaceTintColor: Colors.transparent,
-                    elevation: 0,
-                    toolbarHeight: 88,
-                    automaticallyImplyLeading: false,
-                    title: Padding(
-                      padding: const EdgeInsets.only(top: 16, bottom: 12),
-                      child: Row(
-                        children: [
-                          _CircleButton(
-                            icon: Icons.chevron_left_rounded,
-                            onPressed: () => Navigator.of(context).pop(),
-                            colors: colors,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              p.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: colors.textPrimary,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: -0.3,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          _CircleButton(
-                            icon: Icons.more_horiz_rounded,
-                            onPressed: () => _showPlaylistMenu(context, ref, repo, p),
-                            colors: colors,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+  @override
+  void dispose() {
+    _searchCtl.removeListener(_onSearchChanged);
+    _searchCtl.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
 
-                  // ── Artwork with track count badge ──
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                      child: AspectRatio(
-                        aspectRatio: 1,
-                        child: LayoutBuilder(
-                          builder: (_, c) => Stack(
-                            children: [
-                              ArtworkMosaic(
-                                urls: p.coverThumbnails,
-                                size: c.maxWidth,
-                                borderRadius: 24,
-                              ),
-                              // Track count badge — bottom right
-                              if (p.tracks.isNotEmpty)
-                                Positioned(
-                                  right: 12,
-                                  bottom: 12,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withValues(alpha: 0.6),
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    child: Text(
-                                      '${p.tracks.length}',
-                                      style: TextStyle(
-                                        color: colors.textPrimary,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+  void _scrollToFilters() async {
+    // 1. Захватываем контекст ДО асинхронной паузы
+    final targetContext = _filterKey.currentContext;
+    if (targetContext == null) return;
 
-                  // ── Play / Shuffle buttons ──
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                      child: Row(
-                        children: [
-                          // Play/Pause button
-                          Expanded(
-                            child: _PlayPauseButton(
-                              playableTracks: playableTracks,
-                              colors: colors,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          // Shuffle button
-                          Expanded(
-                            child: SizedBox(
-                              height: 60,
-                              child: ElevatedButton.icon(
-                                icon: Icon(
-                                  Icons.shuffle_rounded,
-                                  color: colors.textPrimary,
-                                  size: 22,
-                                ),
-                                label: Text(
-                                  'Shuffle',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 16,
-                                    letterSpacing: 0.2,
-                                    color: colors.textPrimary,
-                                  ),
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: colors.elevated,
-                                  foregroundColor: colors.textPrimary,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(30),
-                                  ),
-                                  elevation: 0,
-                                  padding: EdgeInsets.zero,
-                                ),
-                                onPressed: playableTracks.isEmpty
-                                    ? null
-                                    : () {
-                                        final shuffled = [...playableTracks];
-                                        shuffled.shuffle(math.Random());
-                                        player.setQueue(shuffled);
-                                      },
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+    await Future.delayed(const Duration(milliseconds: 90));
 
-                  // ── Track list or empty state ──
-                  if (p.tracks.isEmpty)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 48),
-                        child: Center(
-                          child: Text(
-                            'No tracks yet.\nFind some via Search 🔍',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: colors.textSecondary,
-                              height: 1.5,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ),
-                      ),
-                    )
-                  else
-                    SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
-                      sliver: SliverReorderableList(
-                        itemCount: p.tracks.length,
-                        itemBuilder: (context, i) {
-                          final t = p.tracks[i];
-                          final isDisabled = SourceRegistry.instance.isDisabled(t.sourceId);
-                          return Dismissible(
-                            key: ValueKey('dismiss:${p.id}:$i:${t.globalId}'),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 24),
-                              color: Colors.red.withValues(alpha: 0.2),
-                              child: const Icon(
-                                Icons.delete_outline_rounded,
-                                color: Colors.redAccent,
-                              ),
-                            ),
-                            onDismissed: (_) => repo.removeTrackAt(p.id, i),
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 0),
-                              leading: _TrackArtworkWithOverlay(
-                                track: t,
-                                isDisabled: isDisabled,
-                              ),
-                              title: Text(
-                                t.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: isDisabled
-                                      ? colors.textSecondary
-                                      : colors.textPrimary,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              subtitle: Text(
-                                isDisabled
-                                    ? '${t.artist} · YouTube unavailable'
-                                    : t.artist,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: isDisabled
-                                      ? Colors.orange
-                                      : colors.textSecondary,
-                                  fontSize: 12,
-                                ),
-                              ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (isDisabled)
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.find_replace_rounded,
-                                        color: Colors.orange,
-                                        size: 22,
-                                      ),
-                                      tooltip: 'Find replacement',
-                                      onPressed: () => _showReplacementSheet(
-                                        context, ref, p, t,
-                                      ),
-                                    )
-                                  else if (t.duration != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(right: 12),
-                                      child: Text(
-                                        _fmt(t.duration!),
-                                        style: TextStyle(
-                                          color: colors.textSecondary,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                  ReorderableDragStartListener(
-                                    index: i,
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(8),
-                                      child: Icon(
-                                        Icons.drag_handle_rounded,
-                                        color: colors.textTertiary,
-                                        size: 20,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              onTap: isDisabled
-                                  ? () => _showReplacementSheet(
-                                        context, ref, p, t)
-                                  : () {
-                                      final idx = playableTracks.indexWhere(
-                                          (pt) => pt.globalId == t.globalId);
-                                      player.setQueue(
-                                        playableTracks,
-                                        startIndex: idx >= 0 ? idx : 0,
-                                      );
-                                    },
-                            ),
-                          );
-                        },
-                        onReorder: (oldIndex, newIndex) {
-                          repo.reorderTracks(p.id, oldIndex, newIndex);
-                        },
-                        proxyDecorator: (child, index, animation) => AnimatedBuilder(
-                          animation: animation,
-                          builder: (context, child) {
-                            final elevationValue = Tween<double>(begin: 0, end: 6)
-                                .evaluate(animation);
-                            return Material(
-                              elevation: elevationValue,
-                              color: Colors.transparent,
-                              shadowColor: Colors.black.withValues(alpha: 0.2),
-                              child: child,
-                            );
-                          },
-                          child: child,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            const NowPlayingOverlay(),
-          ],
-        ),
-      ),
+    // 2. Проверяем и текущий State, и сам целевой контекст
+    if (!mounted) return;
+    if (!targetContext.mounted) return;
+
+    Scrollable.ensureVisible(
+      targetContext,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
     );
   }
+  // ---- Фильтрация и сортировка ----
 
-  static String _fmt(Duration d) {
-    final m = d.inMinutes.toString().padLeft(2, '0');
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
+  List<Track> _filterAndSort(List<Track> tracks) {
+    var result = [...tracks];
+
+    if (_query.trim().isNotEmpty) {
+      final q = _query.trim().toLowerCase();
+      result = result.where((t) {
+        return t.title.toLowerCase().contains(q) ||
+            t.artist.toLowerCase().contains(q);
+      }).toList();
+    }
+
+    switch (_sortMode) {
+      case _SortMode.date:
+      case _SortMode.manual:
+        break;
+      case _SortMode.title:
+        result.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+        break;
+      case _SortMode.artist:
+        result.sort((a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()));
+        break;
+    }
+
+    if (_sortReversed) result = result.reversed.toList();
+    return result;
   }
 
-  Future<void> _showPlaylistMenu(
-    BuildContext context,
-    WidgetRef ref,
-    repo,
-    Playlist p,
-  ) async {
+  static Duration _totalDuration(List<Track> tracks) => tracks.fold<Duration>(
+        Duration.zero,
+        (prev, t) => prev + (t.duration ?? Duration.zero),
+      );
+
+  // ---- BottomSheet меню плейлиста ----
+
+  Future<void> _showPlaylistMenu(BuildContext context, Playlist p) async {
     final colors = ref.read(currentPaletteProvider);
 
     await showModalBottomSheet<void>(
@@ -409,28 +205,25 @@ class PlaylistPage extends ConsumerWidget {
                 leading: Icon(Icons.edit_rounded, color: colors.textPrimary),
                 title: Text('Rename', style: TextStyle(color: colors.textPrimary)),
                 onTap: () async {
+                  HapticHelper.light(ref: ref);
                   Navigator.of(sheetCtx).pop();
-                  await _askRename(context, ref, p);
+                  await _askRename(context, p);
                 },
               ),
               ListTile(
                 leading: Icon(Icons.ios_share_rounded, color: colors.textPrimary),
                 title: Text('Export playlist', style: TextStyle(color: colors.textPrimary)),
                 onTap: () async {
+                  HapticHelper.light(ref: ref);
                   Navigator.of(sheetCtx).pop();
-                  await _exportPlaylist(context, ref, p);
+                  await _exportPlaylist(context, p);
                 },
               ),
               ListTile(
-                leading: Icon(
-                  Icons.delete_outline_rounded,
-                  color: Colors.redAccent,
-                ),
-                title: Text(
-                  'Delete playlist',
-                  style: TextStyle(color: Colors.redAccent),
-                ),
+                leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                title: const Text('Delete playlist', style: TextStyle(color: Colors.redAccent)),
                 onTap: () {
+                  HapticHelper.confirmDelete(ref: ref);
                   Navigator.of(sheetCtx).pop();
                   ref.read(playlistRepositoryProvider).delete(p.id);
                   if (context.mounted) Navigator.of(context).pop();
@@ -443,66 +236,81 @@ class PlaylistPage extends ConsumerWidget {
     );
   }
 
-  Future<void> _exportPlaylist(
-    BuildContext context,
-    WidgetRef ref,
-    Playlist p,
-  ) async {
-    final colors = ref.read(currentPaletteProvider);
+  Future<void> _exportPlaylist(BuildContext context, Playlist p) async {
     try {
       await PlaylistBackup.exportAndShare([p]);
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Playlist exported',
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          backgroundColor: colors.elevated,
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      HapticHelper.success(ref: ref);
     } catch (e) {
       if (!context.mounted) return;
-      _showInfo(context, ref: ref, title: 'Export failed', body: e.toString());
+      HapticHelper.error(ref: ref);
+      _showInfo(context, title: 'Export failed', body: e.toString());
     }
   }
 
-  void _showInfo(
-    BuildContext context, {
-    required String title,
-    required String body,
-    WidgetRef? ref,
-  }) {
-    final colors = ref?.read(currentPaletteProvider);
-
+  void _showInfo(BuildContext context, {required String title, required String body}) {
     showDialog<void>(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: colors?.elevated ?? Colors.grey[900],
-          title: Text(
-            title,
-            style: TextStyle(color: colors?.textPrimary ?? Colors.white),
+      builder: (ctx) => AlertDialog(
+        actions: [
+          TextButton(
+            onPressed: () {
+              HapticHelper.light(ref: ref);
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('OK'),
           ),
-          content: Text(
-            body,
-            style: TextStyle(color: colors?.textSecondary ?? Colors.grey),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
+        ],
+      ),
     );
+  }
+
+  Future<void> _askRename(BuildContext context, Playlist p) async {
+    final colors = ref.read(currentPaletteProvider);
+    final controller = TextEditingController(text: p.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: colors.elevated,
+        title: Text('Rename playlist', style: TextStyle(color: colors.textPrimary)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: TextStyle(color: colors.textPrimary),
+          decoration: InputDecoration(
+            hintText: 'Name',
+            hintStyle: TextStyle(color: colors.textTertiary),
+            border: InputBorder.none,
+          ),
+          onSubmitted: (v) {
+            HapticHelper.success(ref: ref);
+            Navigator.of(ctx).pop(v.trim());
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              HapticHelper.light(ref: ref);
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              HapticHelper.success(ref: ref);
+              Navigator.of(ctx).pop(controller.text.trim());
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (name != null && name.isNotEmpty) {
+      ref.read(playlistRepositoryProvider).rename(p.id, name);
+    }
   }
 
   Future<void> _showReplacementSheet(
     BuildContext context,
-    WidgetRef ref,
     Playlist playlist,
     Track unavailableTrack,
   ) async {
@@ -528,14 +336,12 @@ class PlaylistPage extends ConsumerWidget {
               unavailableTrack: unavailableTrack,
               scrollController: scrollController,
               onReplace: (Track replacement) {
-                repo.replaceTrack(
-                  playlist.id,
-                  unavailableTrack.globalId,
-                  replacement,
-                );
+                HapticHelper.success(ref: ref);
+                repo.replaceTrack(playlist.id, unavailableTrack.globalId, replacement);
                 Navigator.of(sheetCtx).pop();
               },
               onPreview: (Track track) {
+                HapticHelper.light(ref: ref);
                 player.setQueue([track]);
               },
             );
@@ -545,105 +351,787 @@ class PlaylistPage extends ConsumerWidget {
     );
   }
 
-  Future<void> _askRename(
-    BuildContext context,
-    WidgetRef ref,
-    Playlist p,
-  ) async {
+  // ---- Sort picker ----
+
+  void _showSortPicker() {
     final colors = ref.read(currentPaletteProvider);
-    final controller = TextEditingController(text: p.name);
-    final name = await showDialog<String>(
+    showModalBottomSheet<void>(
       context: context,
+      backgroundColor: colors.elevated,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(_Dimens.radiusM)),
+      ),
       builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: colors.elevated,
-          title: Text(
-            'Rename playlist',
-            style: TextStyle(color: colors.textPrimary),
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+                  child: Text(
+                    'Sort by',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                ..._SortMode.values.map((mode) {
+                  final isSelected = _sortMode == mode;
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                    leading: isSelected
+                        ? Icon(Icons.check_rounded, color: colors.accent, size: 22)
+                        : const SizedBox(width: 22),
+                    title: Text(
+                      mode.label,
+                      style: TextStyle(
+                        color: isSelected ? colors.accent : colors.textPrimary,
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                        fontSize: 16,
+                      ),
+                    ),
+                    onTap: () {
+                      HapticHelper.light(ref: ref);
+                      Navigator.of(ctx).pop();
+                      setState(() => _sortMode = mode);
+                    },
+                  );
+                }),
+              ],
+            ),
           ),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            style: TextStyle(color: colors.textPrimary),
-            decoration: InputDecoration(
-              hintText: 'Name',
-              hintStyle: TextStyle(color: colors.textTertiary),
-              filled: true,
-              fillColor: colors.background,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: colors.outline),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: colors.outline),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: colors.textPrimary),
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-            onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () =>
-                  Navigator.of(ctx).pop(controller.text.trim()),
-              child: const Text('Save'),
-            ),
-          ],
         );
       },
     );
-    final trimmed = name?.trim() ?? '';
-    if (trimmed.isNotEmpty && trimmed != p.name) {
-      ref.read(playlistRepositoryProvider).rename(p.id, trimmed);
-    }
   }
-}
 
-// ═══════════════════════════════════════════════════════════════════
-//  CIRCLE BUTTON (60x60, 100% rounded)
-// ═══════════════════════════════════════════════════════════════════
-
-class _CircleButton extends StatelessWidget {
-  const _CircleButton({
-    required this.icon,
-    required this.onPressed,
-    required this.colors,
-  });
-
-  final IconData icon;
-  final VoidCallback onPressed;
-  final AppColors colors;
+  // ===================================================================
+  //  BUILD
+  // ===================================================================
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 60,
-      height: 60,
+    final async = ref.watch(playlistsProvider);
+    final list = async.value ?? const <Playlist>[];
+    final colors = ref.watch(animatedPaletteProvider);
+
+    final playlist = list.cast<Playlist?>().firstWhere(
+          (p) => p?.id == widget.playlistId,
+          orElse: () => null,
+        );
+
+    if (playlist == null) {
+      return _PageAnimator(
+        child: Scaffold(
+          backgroundColor: colors.background,
+          appBar: AppBar(
+            backgroundColor: colors.background,
+            surfaceTintColor: Colors.transparent,
+            elevation: 0,
+            leading: _CircleButton(
+              icon: Icons.chevron_left_rounded,
+              onTap: () {
+                HapticHelper.light(ref: ref);
+                Navigator.of(context).pop();
+              },
+              colors: colors,
+            ),
+          ),
+          body: Center(
+            child: Text('Playlist deleted', style: TextStyle(color: colors.textSecondary)),
+          ),
+        ),
+      );
+    }
+
+    final p = playlist;
+    final player = ref.watch(playerServiceProvider);
+
+    // Сначала фильтруем и сортируем (чтобы порядок совпадал с экраном)
+    final displayedTracks = _filterAndSort(p.tracks);
+    
+    // Получаем ТОЛЬКО доступные треки ИЗ ОТОБРАЖАЕМОГО (отсортированного) списка
+    final playableDisplayedTracks = displayedTracks
+        .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
+        .toList();
+
+    final totalDur = _totalDuration(p.tracks);
+    
+    final isPlaying = ref.watch(_isPlayingProvider.select((a) => a.valueOrNull ?? false));
+    final currentId = ref.watch(_currentTrackIdProvider.select((a) => a.valueOrNull));
+
+    // Проверяем, играет ли этот плейлист сейчас
+    final isThisPlaylist = currentId != null &&
+        p.tracks.any((t) => t.globalId == currentId);
+    final showPause = isPlaying && isThisPlaylist;
+
+    return _PageAnimator(
+      child: Scaffold(
+        backgroundColor: colors.background,
+        body: Stack(
+          children: [
+            CustomScrollView(
+              controller: _scrollController,
+              physics: const BouncingScrollPhysics(),
+              slivers: [
+                // ── Top Bar ──
+                SliverAppBar(
+                  pinned: true,
+                  floating: false,
+                  snap: false,
+                  backgroundColor: colors.background,
+                  surfaceTintColor: Colors.transparent,
+                  elevation: 0,
+                  toolbarHeight: _Dimens.appBarHeight,
+                  automaticallyImplyLeading: false,
+                  titleSpacing: 0,
+                  title: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                    child: Row(
+                      children: [
+                        _CircleButton(
+                          icon: Icons.chevron_left_rounded,
+                          onTap: () {
+                            HapticHelper.light(ref: ref);
+                            Navigator.of(context).pop();
+                          },
+                          colors: colors,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _SearchPill(
+                            colors: colors,
+                            controller: _searchCtl,
+                            focusNode: _searchFocus,
+                            hint: 'In playlist?',
+                            onTap: () {
+                              HapticHelper.light(ref: ref);
+                              _scrollToFilters(); // ВЫЗЫВАЕМ ПРОКРУТКУ
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        _CircleButton(
+                          icon: Icons.settings_rounded,
+                          onTap: () {
+                            HapticHelper.light(ref: ref);
+                            Navigator.of(context).push(
+                              MaterialPageRoute(builder: (_) => const SettingsPage()),
+                            );
+                          },
+                          colors: colors,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // ── Artwork ──
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 24),
+                    child: Center(
+                      child: Container(
+                        width: _Dimens.artworkSize,
+                        height: _Dimens.artworkSize,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(_Dimens.radiusL),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x40000000),
+                              blurRadius: 24,
+                              offset: Offset(0, 0),
+                              spreadRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(_Dimens.radiusL),
+                          child: ArtworkMosaic(
+                            urls: p.coverThumbnails,
+                            size: _Dimens.artworkSize,
+                            borderRadius: 0,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+                // ── Playlist Name ──
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 24, left: 16, right: 16),
+                    child: Text(
+                      p.name,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 32,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+
+                // ── Track count · Duration ──
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          '${p.tracks.length} song${p.tracks.length == 1 ? '' : 's'}',
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '·',
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _fmtDuration(totalDur),
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // ── Play / Shuffle / Menu buttons ──
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
+                    child: SizedBox(
+                      height: _Dimens.buttonHeight, // 60px
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Play / Pause Button
+                          Expanded(
+                            child: _AnimatedActionButton(
+                              onTap: playableDisplayedTracks.isEmpty
+                                  ? null
+                                  : () {
+                                      HapticHelper.medium(ref: ref);
+                                      if (showPause) {
+                                        player.pause();
+                                      } else {
+                                        player.setQueue(playableDisplayedTracks);
+                                      }
+                                    },
+                              backgroundColor: colors.elevatedHi,
+                              radiusBuilder: (isPressed) => (showPause || isPressed)
+                                  ? BorderRadius.circular(30)
+                                  : const BorderRadius.horizontal(
+                                      left: Radius.circular(30),
+                                      right: Radius.circular(5),
+                                    ),
+                              builder: (isPressed) => Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    showPause ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                    color: colors.textPrimary,
+                                    size: 26,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    showPause ? 'Pause' : 'Play',
+                                    style: TextStyle(
+                                      color: colors.textPrimary,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          // Shuffle Button
+                          Expanded(
+                            child: _AnimatedActionButton(
+                              onTap: playableDisplayedTracks.isEmpty
+                                  ? null
+                                  : () {
+                                      HapticHelper.medium(ref: ref);
+                                      final shuffled = [...playableDisplayedTracks]..shuffle();
+                                      player.setQueue(shuffled);
+                                      
+                                      setState(() => _isShuffling = true);
+                                      Future.delayed(const Duration(milliseconds: 400), () {
+                                        if (mounted) setState(() => _isShuffling = false);
+                                      });
+                                    },
+                              backgroundColor: colors.elevated,
+                              radiusBuilder: (isPressed) => (isPressed || _isShuffling)
+                                  ? BorderRadius.circular(30)
+                                  : BorderRadius.circular(5),
+                              builder: (isPressed) => Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.shuffle_rounded,
+                                    color: colors.textPrimary,
+                                    size: 22,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Shuffle',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                      color: colors.textPrimary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          // Menu Button
+                          SizedBox(
+                            width: _Dimens.menuButtonSize,
+                            child: _AnimatedActionButton(
+                              onTap: () async {
+                                HapticHelper.light(ref: ref);
+                                
+                                setState(() => _isMenuOpen = true);
+                                await _showPlaylistMenu(context, p);
+                                if (mounted) setState(() => _isMenuOpen = false);
+                              },
+                              backgroundColor: colors.elevated,
+                              radiusBuilder: (isPressed) => (isPressed || _isMenuOpen)
+                                  ? BorderRadius.circular(30)
+                                  : const BorderRadius.horizontal(
+                                      left: Radius.circular(5),
+                                      right: Radius.circular(30),
+                                    ),
+                              builder: (isPressed) {
+                                // Если кнопка скруглена полностью - убираем смещение
+                                final isRounded = isPressed || _isMenuOpen;
+                                
+                                return AnimatedPadding(
+                                  duration: const Duration(milliseconds: 200),
+                                  curve: Curves.easeOutCubic,
+                                  padding: isRounded 
+                                      ? EdgeInsets.zero 
+                                      : const EdgeInsets.only(right: 6), // Двигаем иконку чуть левее для баланса плоской стороны
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.more_vert_rounded,
+                                      color: colors.textPrimary,
+                                      size: 24,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                // ── Filter / Sort bar ──
+                SliverToBoxAdapter(
+                  child: Padding(
+                    key: _filterKey,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 95,
+                          height: 48,
+                          child: Material(
+                            color: colors.elevatedHi,
+                            borderRadius: const BorderRadius.only(
+                              topLeft: Radius.circular(24),
+                              bottomLeft: Radius.circular(24),
+                              topRight: Radius.circular(5),
+                              bottomRight: Radius.circular(5),
+                            ),
+                            child: InkWell(
+                              borderRadius: const BorderRadius.only(
+                                topLeft: Radius.circular(24),
+                                bottomLeft: Radius.circular(24),
+                                topRight: Radius.circular(5),
+                                bottomRight: Radius.circular(5),
+                              ),
+                              onTap: () {
+                                HapticHelper.light(ref: ref);
+                                _showSortPicker();
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      _sortMode.label,
+                                      style: TextStyle(
+                                        color: colors.textPrimary,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: Material(
+                            color: colors.elevatedHi,
+                            borderRadius: _sortReversed 
+                                ? BorderRadius.circular(24)
+                                : const BorderRadius.only(
+                                    topLeft: Radius.circular(5),
+                                    bottomLeft: Radius.circular(5),
+                                    topRight: Radius.circular(24),
+                                    bottomRight: Radius.circular(24),
+                                  ),
+                            child: InkWell(
+                              borderRadius: _sortReversed 
+                                  ? BorderRadius.circular(24)
+                                  : const BorderRadius.only(
+                                      topLeft: Radius.circular(5),
+                                      bottomLeft: Radius.circular(5),
+                                      topRight: Radius.circular(24),
+                                      bottomRight: Radius.circular(24),
+                                    ),
+                              onTap: () {
+                                HapticHelper.light(ref: ref);
+                                setState(() => _sortReversed = !_sortReversed);
+                              },
+                              child: AnimatedPadding(
+                                duration: const Duration(milliseconds: 200),
+                                padding: _sortReversed 
+                                    ? const EdgeInsets.all(0)
+                                    : const EdgeInsets.only(right: 4),
+                                child: Center(
+                                  child: AnimatedRotation(
+                                    turns: _sortReversed ? 0.5 : 0,
+                                    duration: const Duration(milliseconds: 200),
+                                    child: Icon(
+                                      Icons.keyboard_arrow_down_rounded,
+                                      color: colors.textPrimary,
+                                      size: 24,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      ],
+                    ),
+                  ),
+                ),
+
+                // ── Track list or empty state ──
+                if (displayedTracks.isEmpty && _query.isNotEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 48),
+                      child: Center(
+                        child: Text(
+                          'Nothing found',
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                else if (p.tracks.isEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 48),
+                      child: Center(
+                        child: Text(
+                          'No tracks yet.\nFind some via Search 🔍',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            height: 1.5,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+                    sliver: SliverList.builder(
+                      itemCount: displayedTracks.length,
+                      itemBuilder: (context, i) {
+                        final t = displayedTracks[i];
+                        return _TrackTile(
+                          key: ValueKey(t.globalId),
+                          track: t,
+                          playlist: p,
+                          playableDisplayedTracks: playableDisplayedTracks,
+                          isFirst: i == 0,
+                          isLast: i == displayedTracks.length - 1,
+                          onReplaceTap: () {
+                            HapticHelper.light(ref: ref);
+                            _showReplacementSheet(context, p, t);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+            const NowPlayingOverlay(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ANIMATED ACTION BUTTON (PLAY / SHUFFLE / MENU)
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _AnimatedActionButton extends StatefulWidget {
+  const _AnimatedActionButton({
+    required this.builder, // Заменили child на builder
+    this.onTap,
+    required this.radiusBuilder,
+    required this.backgroundColor,
+  });
+
+  // Теперь виджет перестраивается в зависимости от состояния нажатия
+  final Widget Function(bool isPressed) builder; 
+  final VoidCallback? onTap;
+  final BorderRadius Function(bool isPressed) radiusBuilder;
+  final Color backgroundColor;
+
+  @override
+  State<_AnimatedActionButton> createState() => _AnimatedActionButtonState();
+}
+
+class _AnimatedActionButtonState extends State<_AnimatedActionButton> {
+  bool _isPressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = widget.radiusBuilder(_isPressed);
+    final isDisabled = widget.onTap == null;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOutCubic,
+      decoration: BoxDecoration(
+        color: widget.backgroundColor.withValues(alpha: isDisabled ? 0.5 : 1.0),
+        borderRadius: radius,
+      ),
+      clipBehavior: Clip.antiAlias,
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(30),
+          onHighlightChanged: (val) {
+            if (!isDisabled) setState(() => _isPressed = val);
+          },
+          onTap: widget.onTap,
+          child: widget.builder(_isPressed), // Передаем состояние внутрь
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TRACK TILE
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _TrackTile extends ConsumerWidget {
+  const _TrackTile({
+    super.key,
+    required this.track,
+    required this.playlist,
+    required this.playableDisplayedTracks,
+    required this.isFirst,
+    required this.isLast,
+    required this.onReplaceTap,
+  });
+
+  final Track track;
+  final Playlist playlist;
+  final List<Track> playableDisplayedTracks;
+  final bool isFirst;
+  final bool isLast;
+  final VoidCallback onReplaceTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+    final repo = ref.watch(playlistRepositoryProvider);
+    final player = ref.watch(playerServiceProvider);
+
+    final isDisabled = SourceRegistry.instance.isDisabled(track.sourceId);
+    final borderRadius = _trackBorderRadius(isFirst, isLast);
+    final isCurrentTrack = ref.watch(
+      _currentTrackIdProvider.select((id) => id.valueOrNull == track.globalId),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Dismissible(
+        key: ValueKey(track.globalId),
+        direction: DismissDirection.endToStart,
+        background: Container(
+          alignment: Alignment.centerRight,
+          padding: const EdgeInsets.only(right: 24),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.2),
+            borderRadius: borderRadius,
+          ),
+          child: const Icon(
+            Icons.delete_outline_rounded,
+            color: Colors.redAccent,
+          ),
+        ),
+        onDismissed: (_) {
+          HapticHelper.confirmDelete(ref: ref);
+          repo.removeTrack(playlist.id, track.globalId);
+        },
+        child: InkWell(
+          onTap: isDisabled
+              ? onReplaceTap
+              : () {
+                  HapticHelper.light(ref: ref);
+                  final idx = playableDisplayedTracks.indexWhere(
+                      (pt) => pt.globalId == track.globalId);
+                  player.setQueue(
+                    playableDisplayedTracks,
+                    startIndex: idx >= 0 ? idx : 0,
+                  );
+                },
+          onLongPress: () {
+            HapticHelper.medium(ref: ref);
+            showTrackSettingsSheet(context, track: track);
+          },
+          borderRadius: borderRadius,
           child: Container(
-            width: 60,
-            height: 60,
             decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: colors.elevated,
+              color: isCurrentTrack
+                  ? colors.elevatedHi.withValues(alpha: 0.5)
+                  : colors.elevated,
+              borderRadius: borderRadius,
             ),
-            alignment: Alignment.center,
-            child: Icon(
-              icon,
-              size: 28,
-              color: colors.textPrimary,
+            child: SizedBox(
+              height: _Dimens.trackRowHeight,
+              child: Row(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: _TrackArtwork(
+                      track: track,
+                      isDisabled: isDisabled,
+                      isCurrentTrack: isCurrentTrack,
+                      colors: colors,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          track.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isDisabled
+                                ? colors.textSecondary
+                                : colors.textPrimary,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          isDisabled
+                              ? '${track.artist} · YouTube unavailable'
+                              : track.artist,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: isDisabled
+                                ? Colors.orange
+                                : colors.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (isDisabled)
+                    IconButton(
+                      icon: const Icon(
+                        Icons.find_replace_rounded,
+                        color: Colors.orange,
+                        size: 22,
+                      ),
+                      tooltip: 'Find replacement',
+                      onPressed: onReplaceTap,
+                    )
+                  else if (track.duration != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: Text(
+                        _fmt(track.duration!),
+                        style: TextStyle(
+                          color: colors.textSecondary,
+                          fontSize: 12,
+                          fontFeatures: const [
+                            FontFeature.tabularFigures()
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    const SizedBox(width: 8),
+                ],
+              ),
             ),
           ),
         ),
@@ -652,78 +1140,183 @@ class _CircleButton extends StatelessWidget {
   }
 }
 
-/// ═══════════════════════════════════════════════════════════════════
-///  SHARED ANIMATOR (как в HomePage)
-/// ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//  CIRCLE BUTTON
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// ═══════════════════════════════════════════════════════════════════
-///  TRACK ARTWORK WITH NOW-PLAYING OVERLAY
-/// ═══════════════════════════════════════════════════════════════════
-
-class _TrackArtworkWithOverlay extends ConsumerWidget {
-  const _TrackArtworkWithOverlay({
-    required this.track,
-    required this.isDisabled,
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
   });
 
-  final Track track;
-  final bool isDisabled;
+  final IconData icon;
+  final VoidCallback onTap;
+  final AppColors colors;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = ref.watch(animatedPaletteProvider);
-    final currentIdAsync = ref.watch(_currentTrackIdProvider);
-    final currentId = currentIdAsync.value;
-    final isPlaying = currentId == track.globalId;
-
-    return Stack(
-      children: [
-        Opacity(
-          opacity: isDisabled ? 0.4 : 1.0,
-          child: Artwork(
-            url: track.artworkUrl,
-            size: 48,
-            borderRadius: 8,
-            aspectRatio: artAspectRatio(track),
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: _Dimens.circleButtonSize,
+          height: _Dimens.circleButtonSize,
+          child: Center(
+            child: Icon(icon, color: colors.textPrimary, size: 20),
           ),
         ),
-        // Now playing animated wave overlay
-        if (isPlaying)
-          Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.45),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              alignment: Alignment.center,
-              child: _WaveBars(color: colors.elevatedHi),
-            ),
-          ),
-        if (isDisabled)
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              padding: const EdgeInsets.all(2),
-              decoration: const BoxDecoration(
-                color: Colors.orange,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.warning_rounded,
-                size: 12,
-                color: Colors.white,
-              ),
-            ),
-          ),
-      ],
+      ),
     );
   }
 }
 
-/// ═══════════════════════════════════════════════════════════════════
-///  ANIMATED WAVE BARS — looping equalizer
-/// ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//  SEARCH PILL
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _SearchPill extends StatelessWidget {
+  const _SearchPill({
+    required this.colors,
+    required this.controller,
+    required this.focusNode,
+    required this.hint,
+    required this.onTap,
+  });
+
+  final AppColors colors;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final String hint;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      borderRadius: BorderRadius.circular(32),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(32),
+        onTap: () {
+          // Срабатывает, если тапнуть по краям (padding) кнопки
+          onTap();
+          focusNode.requestFocus();
+        },
+        child: SizedBox(
+          height: _Dimens.searchHeight,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    onTap: onTap,
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: hint,
+                      hintStyle: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      isCollapsed: true,
+                    ),
+                    cursorColor: colors.accent,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TRACK ARTWORK
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _TrackArtwork extends StatelessWidget {
+  const _TrackArtwork({
+    required this.track,
+    required this.isDisabled,
+    required this.isCurrentTrack,
+    required this.colors,
+  });
+
+  final Track track;
+  final bool isDisabled;
+  final bool isCurrentTrack;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: _Dimens.trackArtwork,
+      height: _Dimens.trackArtwork,
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(_Dimens.radiusArtwork),
+            child: Opacity(
+              opacity: isDisabled ? 0.4 : 1.0,
+              child: Artwork(
+                url: track.artworkUrl,
+                size: _Dimens.trackArtwork,
+                borderRadius: 0,
+                aspectRatio: artAspectRatio(track),
+              ),
+            ),
+          ),
+          if (isCurrentTrack)
+            Positioned.fill(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  borderRadius: BorderRadius.circular(_Dimens.radiusArtwork),
+                ),
+                alignment: Alignment.center,
+                child: RepaintBoundary(
+                  child: _WaveBars(color: colors.elevatedHi),
+                ),
+              ),
+            ),
+          if (isDisabled)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration: const BoxDecoration(
+                  color: Colors.orange,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.warning_rounded, size: 12, color: Colors.white),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ANIMATED WAVE BARS
+// ═══════════════════════════════════════════════════════════════════════════
 
 class _WaveBars extends StatefulWidget {
   const _WaveBars({required this.color});
@@ -733,8 +1326,7 @@ class _WaveBars extends StatefulWidget {
   State<_WaveBars> createState() => _WaveBarsState();
 }
 
-class _WaveBarsState extends State<_WaveBars>
-    with SingleTickerProviderStateMixin {
+class _WaveBarsState extends State<_WaveBars> with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
 
   static const _barCount = 5;
@@ -768,9 +1360,7 @@ class _WaveBarsState extends State<_WaveBars>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: List.generate(_barCount, (i) {
-            // Each bar has its own phase offset for organic wave effect
             final phase = (i / _barCount) * 2 * math.pi;
-            // Double sine wave for more complex motion
             final wave = math.sin(t * 2 * math.pi + phase) * 0.5 +
                          math.sin(t * 4 * math.pi + phase * 1.5) * 0.3;
             final height = _minHeight +
@@ -780,9 +1370,7 @@ class _WaveBarsState extends State<_WaveBars>
             return Container(
               width: _barWidth,
               height: height,
-              margin: EdgeInsets.only(
-                right: i < _barCount - 1 ? _barGap : 0,
-              ),
+              margin: EdgeInsets.only(right: i < _barCount - 1 ? _barGap : 0),
               decoration: BoxDecoration(
                 color: widget.color,
                 borderRadius: BorderRadius.circular(_barWidth / 2),
@@ -795,73 +1383,9 @@ class _WaveBarsState extends State<_WaveBars>
   }
 }
 
-/// ═══════════════════════════════════════════════════════════════════
-///  PLAY / PAUSE BUTTON — fast, reactive via Riverpod streams
-/// ═══════════════════════════════════════════════════════════════════
-
-class _PlayPauseButton extends ConsumerWidget {
-  const _PlayPauseButton({
-    required this.playableTracks,
-    required this.colors,
-  });
-
-  final List<Track> playableTracks;
-  final AppColors colors;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final player = ref.watch(playerServiceProvider);
-    final isPlaying = ref.watch(_isPlayingProvider).value ?? false;
-    final currentId = ref.watch(_currentTrackIdProvider).value;
-
-    final isThisPlaylist = currentId != null &&
-        playableTracks.any((t) => t.globalId == currentId);
-    final showPause = isPlaying && isThisPlaylist;
-
-    return SizedBox(
-      height: 60,
-      child: ElevatedButton.icon(
-        icon: Icon(
-          showPause ? Icons.pause_rounded : Icons.play_arrow_rounded,
-          color: colors.textPrimary,
-          size: 26,
-        ),
-        label: Text(
-          showPause ? 'Pause' : 'Play',
-          style: const TextStyle(
-            fontWeight: FontWeight.w700,
-            fontSize: 16,
-            letterSpacing: 0.2,
-          ),
-        ),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: colors.elevatedHi,
-          foregroundColor: colors.textPrimary,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(30),
-          ),
-          elevation: 0,
-          padding: EdgeInsets.zero,
-        ),
-        onPressed: playableTracks.isEmpty
-            ? null
-            : () {
-                if (showPause) {
-                  player.pause();
-                } else {
-                  player.setQueue(playableTracks);
-                }
-              },
-      ),
-    );
-  }
-}
-
-/// StreamProvider для isPlaying — мгновенные обновления
-final _isPlayingProvider = StreamProvider<bool>((ref) {
-  final player = ref.watch(playerServiceProvider);
-  return player.playingStream;
-});
+// ═══════════════════════════════════════════════════════════════════════════
+//  PAGE ANIMATOR
+// ═══════════════════════════════════════════════════════════════════════════
 
 class _PageAnimator extends StatefulWidget {
   const _PageAnimator({required this.child});
@@ -871,9 +1395,7 @@ class _PageAnimator extends StatefulWidget {
   State<_PageAnimator> createState() => _PageAnimatorState();
 }
 
-class _PageAnimatorState extends State<_PageAnimator>
-    with SingleTickerProviderStateMixin {
-
+class _PageAnimatorState extends State<_PageAnimator> with SingleTickerProviderStateMixin {
   late final AnimationController _anim;
   late final Animation<double> _slide;
   late final Animation<double> _fade;
@@ -891,9 +1413,7 @@ class _PageAnimatorState extends State<_PageAnimator>
     _fade = Tween<double>(begin: 0.7, end: 1).animate(
       CurvedAnimation(parent: _anim, curve: Curves.easeOut),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _anim.forward();
-    });
+    _anim.forward();
   }
 
   @override
@@ -917,9 +1437,9 @@ class _PageAnimatorState extends State<_PageAnimator>
   }
 }
 
-/// ═══════════════════════════════════════════════════════════════════
-///  REPLACEMENT SHEET BODY (с динамическими цветами)
-/// ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//  REPLACEMENT SHEET BODY
+// ═══════════════════════════════════════════════════════════════════════════
 
 class _ReplacementSheetBody extends ConsumerStatefulWidget {
   const _ReplacementSheetBody({
@@ -1024,17 +1544,12 @@ class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
           child: Text(
             'Tap to preview · Long press to replace',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 12,
-            ),
+            style: TextStyle(color: colors.textSecondary, fontSize: 12),
           ),
         ),
         if (_loading)
           const Expanded(
-            child: Center(
-              child: CircularProgressIndicator(),
-            ),
+            child: Center(child: CircularProgressIndicator()),
           )
         else if (_error != null)
           Expanded(
@@ -1087,16 +1602,10 @@ class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
                     '${t.artist} · ${t.sourceId}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: colors.textSecondary,
-                      fontSize: 11,
-                    ),
+                    style: TextStyle(color: colors.textSecondary, fontSize: 11),
                   ),
                   trailing: IconButton(
-                    icon: const Icon(
-                      Icons.swap_horiz_rounded,
-                      color: Colors.green,
-                    ),
+                    icon: const Icon(Icons.swap_horiz_rounded, color: Colors.green),
                     tooltip: 'Use this track',
                     onPressed: () => widget.onReplace(t),
                   ),
