@@ -1275,6 +1275,7 @@ class _TrackArtwork extends StatelessWidget {
             child: Opacity(
               opacity: isDisabled ? 0.4 : 1.0,
               child: Artwork(
+                trackId: track.id,
                 url: track.artworkUrl,
                 size: _Dimens.trackArtwork,
                 borderRadius: 0,

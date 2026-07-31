@@ -566,7 +566,7 @@ class _HistoryTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              Artwork(url: track.artworkUrl, size: 52, borderRadius: 10),
+              Artwork(url: track.artworkUrl, trackId: track.id, size: 52, borderRadius: 10),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(

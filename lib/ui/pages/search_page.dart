@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -7,10 +8,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../widgets/artwork.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import '../widgets/add_to_playlist_sheet.dart';
-import '../widgets/artwork.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../../core/artwork_helper.dart';
@@ -524,7 +525,7 @@ class _FilterIconButton extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  GRID TRACK TILE
+// GRID TRACK TILE (Исправленная версия с поддержкой кастомных обложек)
 // ═══════════════════════════════════════════════════════════════════════════
 
 class _TrackTileGrid extends StatefulWidget {
@@ -551,10 +552,10 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
     final colors = widget.colors;
     final duration = track.duration != null ? _formatDuration(track.duration!) : null;
 
-    // Ограничиваем размер декода: Genius нередко отдаёт оригинал
-    // 2000x2000+ (несколько МБ), а тут 20 плиток × 2 слоя. Полноразмерный
-    // декод давил на память — обложки вылетали из кэша и «мигали».
-    // Задаём только ширину, чтобы сохранить пропорции (16:9 у YouTube).
+    // 1. Проверяем наличие локальной кастомной обложки по track.id
+    final customPath = ArtworkHelper.getCustomArtworkSync(track.id);
+    final effectiveUrl = customPath ?? track.artworkUrl;
+
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final cellPx =
         (((MediaQuery.of(context).size.width - 40) / 2) * dpr).round();
@@ -567,6 +568,7 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
         height: 160,
         child: Stack(
           children: [
+            // === ОСНОВНАЯ ОБЛОЖКА ===
             ClipSmoothRect(
               radius: SmoothBorderRadius(
                 cornerRadius: 40,
@@ -575,22 +577,11 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               child: SizedBox(
                 width: 160,
                 height: 160,
-                child: track.artworkUrl != null && track.artworkUrl!.isNotEmpty
-                    ? CachedNetworkImage(
-                        imageUrl: track.artworkUrl!,
-                        fit: BoxFit.cover,
+                child: effectiveUrl != null && effectiveUrl.isNotEmpty
+                    ? _TileImage(
+                        url: effectiveUrl,
                         memCacheWidth: cellPx,
-                        placeholder: (context, url) => Container(
-                          color: colors.elevated,
-                        ),
-                        errorWidget: (context, url, error) => Container(
-                          color: colors.elevated,
-                          child: Icon(
-                            Icons.music_note_rounded,
-                            color: colors.textTertiary,
-                            size: 32,
-                          ),
-                        ),
+                        colors: colors,
                       )
                     : Container(
                         color: colors.elevated,
@@ -603,7 +594,8 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
               ),
             ),
 
-            if (track.artworkUrl != null && track.artworkUrl!.isNotEmpty)
+            // === БЛЮР-ФОН ПОД ОБЛОЖКОЙ ===
+            if (effectiveUrl != null && effectiveUrl.isNotEmpty)
               ClipSmoothRect(
                 radius: SmoothBorderRadius(
                   cornerRadius: 40,
@@ -628,19 +620,17 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
                     child: SizedBox(
                       width: 160,
                       height: 160,
-                      child: CachedNetworkImage(
-                        imageUrl: track.artworkUrl!,
-                        fit: BoxFit.cover,
-                        // Слой всё равно блюрится sigma=12 —
-                        // четверти разрешения достаточно.
+                      child: _TileImage(
+                        url: effectiveUrl,
                         memCacheWidth: cellPx ~/ 4,
-                        memCacheHeight: cellPx ~/ 4,
+                        colors: colors,
                       ),
                     ),
                   ),
                 ),
               ),
 
+            // === ГРАДИЕНТ И ТЕНЬ ===
             ClipSmoothRect(
               radius: SmoothBorderRadius(
                 cornerRadius: 40,
@@ -777,6 +767,51 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
   }
 }
 
+/// Хелпер для отрисовки локальных (File) и сетевых (URL) обложек в плитках сетки
+class _TileImage extends StatelessWidget {
+  const _TileImage({
+    required this.url,
+    required this.memCacheWidth,
+    required this.colors,
+  });
+
+  final String url;
+  final int memCacheWidth;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
+    final filePath = url.startsWith('file://')
+        ? Uri.parse(url).toFilePath()
+        : url;
+
+    if (isLocalFile) {
+      final file = File(filePath);
+      return Image.file(
+        file,
+        key: ValueKey('${filePath}_${file.existsSync() ? file.lastModifiedSync().millisecondsSinceEpoch : 0}'),
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => Container(color: colors.elevated),
+      );
+    }
+
+    return CachedNetworkImage(
+      imageUrl: url,
+      fit: BoxFit.cover,
+      memCacheWidth: memCacheWidth,
+      placeholder: (_, _) => Container(color: colors.elevated),
+      errorWidget: (_, _, _) => Container(
+        color: colors.elevated,
+        child: Icon(
+          Icons.music_note_rounded,
+          color: colors.textTertiary,
+          size: 32,
+        ),
+      ),
+    );
+  }
+}
 // ═══════════════════════════════════════════════════════════════════════════
 //  LIST TRACK TILE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -822,6 +857,7 @@ class _TrackTileList extends StatelessWidget {
                   children: [
                     Artwork(
                       url: track.artworkUrl,
+                      trackId: track.id,
                       size: 54,
                       aspectRatio: artAspectRatio(track),
                       borderRadius: 10,

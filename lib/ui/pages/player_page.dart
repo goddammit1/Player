@@ -210,6 +210,7 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
               // 1. Сама обложка
               Artwork(
                 url: widget.item.artUri?.toString(),
+                trackId: widget.item.extras?['trackId'] as String? ?? widget.item.id,
                 size: widget.size,
                 borderRadius: 10,
                 memCacheSize: 600,

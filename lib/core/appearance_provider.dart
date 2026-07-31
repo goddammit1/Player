@@ -19,7 +19,8 @@ final appThemeModeProvider =
 });
 
 class AppThemeModeNotifier extends StateNotifier<AppThemeMode> {
-  AppThemeModeNotifier() : super(AppThemeMode.fixed) {
+  // Устанавливаем дефолтный режим AppThemeMode.dynamic, если пользователь еще не делал выбор
+  AppThemeModeNotifier() : super(AppThemeMode.dynamic) {
     _load();
   }
 
@@ -40,7 +41,6 @@ class AppThemeModeNotifier extends StateNotifier<AppThemeMode> {
     await prefs.setString(_key, mode.name);
   }
 
-  /// Переключить между dynamic ↔ fixed.
   Future<void> toggle() async {
     final next = state == AppThemeMode.fixed
         ? AppThemeMode.dynamic

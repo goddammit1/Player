@@ -1,3 +1,4 @@
+import 'dart:io'; // <-- КРИТИЧЕСКИ ВАЖНО ДЛЯ FileImage
 import 'package:audio_service/audio_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -17,25 +18,39 @@ final _mediaItemProvider = StreamProvider<MediaItem?>((ref) {
 });
 
 // ── Palette from artwork URL ───────────────────────────────────────────────
-//
-// autoDispose: палитры старых обложек освобождаются, как только на них никто
-// не подписан (подписку на текущий URL держит CurrentPaletteNotifier).
-// size: PaletteGenerator квантует уменьшенную копию картинки — тот же
-// результат, но без десятков миллисекунд jank в main isolate.
-// CachedNetworkImageProvider: общий кэш с cached_network_image, которым
-// обложки уже загружены в UI — без повторного похода в сеть.
+
 final _appColorsForUrlProvider =
     FutureProvider.autoDispose.family<AppColors, String>((ref, url) async {
-  final palette = await PaletteGenerator.fromImageProvider(
-    CachedNetworkImageProvider(url),
-    size: const Size(200, 200),
-    maximumColorCount: 32,
-    timeout: const Duration(seconds: 5),
-  );
-  final extractor = PaletteExtractor();
-  final dynamicPalette = extractor.fromPalette(palette);
-  if (dynamicPalette == null) return AppColors.fixed;
-  return AppColors.fromDynamicPalette(dynamicPalette);
+  try {
+    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
+    final ImageProvider imageProvider;
+
+    // ПРАВИЛЬНОЕ РАЗДЕЛЕНИЕ: FileImage для локальных обложек, CachedNetworkImageProvider для сети
+    if (isLocalFile) {
+      final filePath = url.startsWith('file://')
+          ? Uri.parse(url).toFilePath()
+          : url;
+      final file = File(filePath);
+      if (!file.existsSync()) return AppColors.fixed;
+      imageProvider = FileImage(file);
+    } else {
+      imageProvider = CachedNetworkImageProvider(url);
+    }
+
+    final palette = await PaletteGenerator.fromImageProvider(
+      imageProvider,
+      size: const Size(200, 200),
+      maximumColorCount: 32,
+      timeout: const Duration(seconds: 5),
+    );
+
+    final extractor = PaletteExtractor();
+    final dynamicPalette = extractor.fromPalette(palette);
+    if (dynamicPalette == null) return AppColors.fixed;
+    return AppColors.fromDynamicPalette(dynamicPalette);
+  } catch (e) {
+    return AppColors.fixed;
+  }
 });
 
 // ── Current palette (instant, no animation) ────────────────────────────────
@@ -45,11 +60,6 @@ final currentPaletteProvider =
   return CurrentPaletteNotifier(ref);
 });
 
-/// Мгновенная (неанимированная) палитра.
-///
-/// Держит last-good значение: пока палитра нового трека считается (или упала
-/// с ошибкой), остаёмся на предыдущей — без «вспышки» чёрной fixed-темы при
-/// каждой смене трека.
 class CurrentPaletteNotifier extends StateNotifier<AppColors> {
   CurrentPaletteNotifier(this._ref) : super(AppColors.fixed) {
     _ref.listen(appThemeModeProvider, (_, _) => _recompute());
@@ -78,12 +88,9 @@ class CurrentPaletteNotifier extends StateNotifier<AppColors> {
       return;
     }
 
-    // Открытая подписка держит autoDispose-запись текущего URL живой —
-    // аналог keepAlive для активного трека.
     _paletteSub = _ref.listen(
       _appColorsForUrlProvider(url),
       (_, asyncColors) {
-        // data → новая палитра; loading/error → остаёмся на last-good.
         asyncColors.whenData((colors) => state = colors);
       },
       fireImmediately: true,

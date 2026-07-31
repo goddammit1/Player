@@ -615,22 +615,39 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     );
   }
 
-  /// Обновляет обложку текущего трека на новый локальный файл
+  /// Обновляет обложку трека (и в текущем проигрывателе, и во всей очереди)
   Future<void> updateCustomArtwork(String trackId, String newPath) async {
-    final current = mediaItem.value;
-    if (current == null) return;
+    final newArtUri = Uri.file(newPath);
 
-    final currentTrackId = current.extras?['trackId'] as String? ?? current.id;
-    if (currentTrackId == trackId) {
-      final updated = MediaItem(
-        id: current.id,
-        title: current.title,
-        artist: current.artist,
-        duration: current.duration,
-        artUri: Uri.file(newPath),
-        extras: current.extras,
-      );
-      mediaItem.add(updated);
+    // 1. Обновляем трек в локальном списке очереди _queue
+    bool queueUpdated = false;
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].id == trackId) {
+        _queue[i] = _queue[i].copyWith(artworkUrl: newPath);
+        queueUpdated = true;
+      }
+    }
+
+    // 2. Если очередь изменилась — рассылаем обновленный список MediaItem
+    if (queueUpdated) {
+      queue.add(_queue.map(_toMediaItem).toList());
+    }
+
+    // 3. Обновляем активный проигрываемый MediaItem (шторку уведомлений и плеер)
+    final current = mediaItem.value;
+    if (current != null) {
+      final currentTrackId = current.extras?['trackId'] as String? ?? current.id;
+      if (currentTrackId == trackId) {
+        final updated = MediaItem(
+          id: current.id,
+          title: current.title,
+          artist: current.artist,
+          duration: current.duration,
+          artUri: newArtUri,
+          extras: Map<String, dynamic>.from(current.extras ?? {}),
+        );
+        mediaItem.add(updated);
+      }
     }
   }
 

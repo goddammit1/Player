@@ -60,11 +60,20 @@ class ArtworkHelper {
 
       final savedFile = File('${artDir.path}/$trackId.jpg');
 
-      // Сбрасываем кэш картинок Flutter, чтобы сменившееся изображение обновилось в UI
+      // 1. Копируем файл
+      await File(file.path).copy(savedFile.path);
+
+      // 2. Обновляем время модификации файла, чтобы Flutter точно увидел изменения
+      try {
+        await savedFile.setLastModified(DateTime.now());
+      } catch (_) {}
+
+      // 3. Выселяем точечно старый FileImage из кэша Flutter
+      await FileImage(savedFile).evict();
+
+      // 4. Очищаем общий кэш изображений
       PaintingBinding.instance.imageCache.clear();
       PaintingBinding.instance.imageCache.clearLiveImages();
-
-      await File(file.path).copy(savedFile.path);
 
       _customArtCache[trackId] = savedFile.path;
 
@@ -81,19 +90,28 @@ class ArtworkHelper {
 bool isWideArt(dynamic item) {
   String sourceId;
   String? artworkUrl;
+  String? trackId;
 
   if (item is Track) {
     sourceId = item.sourceId;
     artworkUrl = item.artworkUrl;
+    trackId = item.id;
   } else if (item is MediaItem) {
     sourceId = item.extras?['sourceId'] as String? ?? '';
     artworkUrl = item.artUri?.toString();
+    trackId = item.extras?['trackId'] as String? ?? item.id;
   } else {
     throw ArgumentError(
       'isWideArt принимает только Track или MediaItem, получен: ${item.runtimeType}',
     );
   }
 
+  // 1. Если для трека установлена локальная кастомная обложка — она ВСЕГДА квадратная (1:1)!
+  if (ArtworkHelper.getCustomArtworkSync(trackId) != null) {
+    return false;
+  }
+
+  // 2. Стандартная проверка для YouTube
   if (sourceId == 'youtube') return true;
   return isWideArtUrl(artworkUrl);
 }

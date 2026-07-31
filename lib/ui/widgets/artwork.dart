@@ -13,14 +13,14 @@ class Artwork extends ConsumerWidget {
     super.key,
     required this.url,
     required this.size,
-    this.trackId, // <--- Новый параметр
+    this.trackId,
     this.borderRadius = 8,
     this.memCacheSize,
     this.aspectRatio = 1.0,
   });
 
   final String? url;
-  final String? trackId; // <--- ID трека для автоматической подгрузки кастомной обложки
+  final String? trackId;
   final double size;
   final double borderRadius;
   final double? memCacheSize;
@@ -89,6 +89,17 @@ class _CroppedImage extends StatelessWidget {
         ? Uri.parse(url).toFilePath()
         : url;
 
+    // Генерируем ключ на основе даты модификации файла для сброса кеша визуала
+    Key? imageKey;
+    if (isLocalFile) {
+      try {
+        final f = File(filePath);
+        if (f.existsSync()) {
+          imageKey = ValueKey('${filePath}_${f.lastModifiedSync().millisecondsSinceEpoch}');
+        }
+      } catch (_) {}
+    }
+
     return ClipRect(
       child: SizedBox(
         width: size,
@@ -102,6 +113,7 @@ class _CroppedImage extends StatelessWidget {
             child: isLocalFile
                 ? Image.file(
                     File(filePath),
+                    key: imageKey,
                     width: imageWidth,
                     height: imageHeight,
                     fit: BoxFit.fill,
