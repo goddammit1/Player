@@ -331,11 +331,12 @@ class _PlaylistCard extends StatelessWidget {
               builder: (_, c) => Stack(
                 children: [
                   Positioned.fill(
-                    child: ArtworkMosaic(
-                      urls: playlist.coverThumbnails,
-                      size: c.maxWidth,
-                      borderRadius: 20,
-                    ),
+                                    child: ArtworkMosaic(
+                                      urls: playlist.coverThumbnails,
+                                      size: c.maxWidth,
+                                      borderRadius: 20,
+                                      coverCustomUrl: playlist.coverCustomPath,
+                                    ),
                   ),
                   Positioned(
                     right: 8,

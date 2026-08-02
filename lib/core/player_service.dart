@@ -611,8 +611,58 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       artist: t.artist,
       duration: t.duration,
       artUri: artUri,
-      extras: {'sourceId': t.sourceId, 'trackId': t.id},
+      extras: {
+        'sourceId': t.sourceId,
+        'trackId': t.id,
+        'originalArtworkUrl': t.artworkUrl,
+      },
     );
+  }
+
+  /// Сбрасывает кастомную обложку трека на оригинальную (или пустую)
+  Future<void> resetCustomArtwork(String trackId) async {
+    // 1. Удаляем кастомную обложку с диска и из кэша
+    await ArtworkHelper.removeCustomArtwork(trackId);
+
+    // 2. Получаем оригинальный URL из текущего MediaItem (он сохраняется в extras)
+    String? originalUrl;
+    final current = mediaItem.value;
+    if (current != null) {
+      final currentTrackId = current.extras?['trackId'] as String? ?? current.id;
+      if (currentTrackId == trackId) {
+        originalUrl = current.extras?['originalArtworkUrl'] as String?;
+      }
+    }
+
+    // 3. Обновляем трек в локальном списке очереди _queue — сбрасываем artworkUrl на оригинальный
+    bool queueUpdated = false;
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].id == trackId) {
+        _queue[i] = _queue[i].copyWith(artworkUrl: originalUrl);
+        queueUpdated = true;
+      }
+    }
+
+    // 4. Если очередь изменилась — рассылаем обновленный список MediaItem
+    if (queueUpdated) {
+      queue.add(_queue.map(_toMediaItem).toList());
+    }
+
+    // 5. Обновляем активный проигрываемый MediaItem
+    if (current != null) {
+      final currentTrackId = current.extras?['trackId'] as String? ?? current.id;
+      if (currentTrackId == trackId) {
+        final updated = MediaItem(
+          id: current.id,
+          title: current.title,
+          artist: current.artist,
+          duration: current.duration,
+          artUri: originalUrl != null ? Uri.tryParse(originalUrl) : null,
+          extras: Map<String, dynamic>.from(current.extras ?? {}),
+        );
+        mediaItem.add(updated);
+      }
+    }
   }
 
   /// Обновляет обложку трека (и в текущем проигрывателе, и во всей очереди)

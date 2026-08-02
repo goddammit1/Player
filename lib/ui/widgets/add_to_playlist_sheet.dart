@@ -477,11 +477,12 @@ class _PlaylistTile extends ConsumerWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  playlist.coverThumbnails.isNotEmpty
+                  playlist.coverThumbnails.isNotEmpty || playlist.coverCustomPath != null
                       ? ArtworkMosaic(
                           urls: playlist.coverThumbnails,
                           size: size,
                           borderRadius: 0,
+                          coverCustomUrl: playlist.coverCustomPath,
                         )
                       : Container(
                           color: colors.elevated,

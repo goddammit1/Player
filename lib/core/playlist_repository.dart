@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
+import 'artwork_helper.dart';
 import '../models/track.dart';
 import 'playlist_backup.dart';
 
@@ -98,6 +99,12 @@ class PlaylistRepository {
   }
 
   void delete(String id) {
+    // Удаляем файл кастомной обложки перед удалением плейлиста
+    final playlist = find(id);
+    if (playlist?.coverCustomUrl != null) {
+      ArtworkHelper.removePlaylistCover(playlist!.coverCustomUrl!);
+    }
+
     final n = _list.length;
     _list = _list.where((p) => p.id != id).toList();
     if (_list.length != n) _notifyAndSchedulePersist();
@@ -109,6 +116,34 @@ class PlaylistRepository {
       if (p.id != id) return p;
       changed = true;
       return p.copyWith(name: name.trim().isEmpty ? p.name : name.trim());
+    }).toList();
+    if (changed) _notifyAndSchedulePersist();
+  }
+
+  /// Устанавливает кастомную обложку плейлиста.
+  void setCoverCustom(String id, String url) {
+    var changed = false;
+    _list = _list.map((p) {
+      if (p.id != id) return p;
+      changed = true;
+      return p.copyWith(coverCustomUrl: url);
+    }).toList();
+    if (changed) _notifyAndSchedulePersist();
+  }
+
+  /// Алиас для [setCoverCustom] — обратная совместимость.
+  void setCoverImage(String id, String path) => setCoverCustom(id, path);
+
+  /// Алиас для [clearCoverCustom] — обратная совместимость.
+  void removeCoverImage(String id) => clearCoverCustom(id);
+
+  /// Сбрасывает кастомную обложку (удаляет).
+  void clearCoverCustom(String id) {
+    var changed = false;
+    _list = _list.map((p) {
+      if (p.id != id) return p;
+      changed = true;
+      return p.copyWith(coverCustomUrl: null);
     }).toList();
     if (changed) _notifyAndSchedulePersist();
   }

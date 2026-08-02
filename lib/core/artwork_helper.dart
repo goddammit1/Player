@@ -11,6 +11,37 @@ import '../models/track.dart';
 
 class ArtworkHelper {
   static final ImagePicker _picker = ImagePicker();
+
+  /// Выбор изображения для плейлиста (без привязки к trackId)
+  static Future<String?> pickCustomArtwork() async {
+    try {
+      final XFile? file = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1200,
+        maxHeight: 1200,
+        imageQuality: 90,
+      );
+      if (file == null) return null;
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final artDir = Directory('${appDir.path}/custom_artworks/playlists');
+      if (!await artDir.exists()) await artDir.create(recursive: true);
+
+      final fileName = 'cover_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final savedFile = File('${artDir.path}/$fileName');
+      await File(file.path).copy(savedFile.path);
+
+      // Обновляем mtime и сбрасываем кэш Flutter
+      try { await savedFile.setLastModified(DateTime.now()); } catch (_) {}
+      await FileImage(savedFile).evict();
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+
+      return savedFile.path;
+    } catch (_) {
+      return null;
+    }
+  }
   static final Map<String, String> _customArtCache = {};
   static bool _initialized = false;
 
@@ -18,6 +49,10 @@ class ArtworkHelper {
   static Future<void> init() async {
     if (_initialized) return;
     try {
+      final appDir = await getApplicationDocumentsDirectory();
+      await Directory('${appDir.path}/custom_artworks').create(recursive: true);
+      await Directory('${appDir.path}/custom_artworks/playlists').create(recursive: true);
+
       final prefs = await SharedPreferences.getInstance();
       final keys = prefs.getKeys().where((k) => k.startsWith('custom_art_'));
       for (final key in keys) {
@@ -27,7 +62,9 @@ class ArtworkHelper {
           _customArtCache[trackId] = path;
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[ArtworkHelper.init] Failed to initialize: $e');
+    }
     _initialized = true;
   }
 
@@ -83,6 +120,33 @@ class ArtworkHelper {
       return savedFile.path;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Удаляет кастомную обложку трека (файл + кэш + SharedPreferences)
+  static Future<void> removeCustomArtwork(String trackId) async {
+    try {
+      // Удаляем файл с диска
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File('${appDir.path}/custom_artworks/$trackId.jpg');
+      if (await file.exists()) await file.delete();
+
+      // Удаляем из кэша и SharedPreferences
+      _customArtCache.remove(trackId);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('custom_art_$trackId');
+    } catch (e) {
+      debugPrint('[ArtworkHelper.removeCustomArtwork] Failed: $e');
+    }
+  }
+
+  /// Удаляет кастомную обложку плейлиста (только файл)
+  static Future<void> removePlaylistCover(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      debugPrint('[ArtworkHelper.removePlaylistCover] Failed: $e');
     }
   }
 }

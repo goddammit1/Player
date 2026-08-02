@@ -161,27 +161,32 @@ class ArtworkMosaic extends ConsumerWidget {
     required this.urls,
     required this.size,
     this.borderRadius = 16,
+    this.coverCustomUrl,
   });
 
   final List<String> urls;
   final double size;
   final double borderRadius;
+  final String? coverCustomUrl;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = ref.watch(animatedPaletteProvider);
+    final effectiveUrls = coverCustomUrl != null && coverCustomUrl!.isNotEmpty
+        ? [coverCustomUrl!]
+        : urls;
 
-    if (urls.isEmpty) {
+    if (effectiveUrls.isEmpty) {
       return Artwork(url: null, size: size, borderRadius: borderRadius);
     }
 
-    if (urls.length == 1) {
+    if (effectiveUrls.length == 1) {
       return Artwork(
-        url: urls.first,
+        url: effectiveUrls.first,
         size: size,
         borderRadius: borderRadius,
         memCacheSize: size * 2,
-        aspectRatio: urlAspectRatio(urls.first),
+        aspectRatio: urlAspectRatio(effectiveUrls.first),
       );
     }
 

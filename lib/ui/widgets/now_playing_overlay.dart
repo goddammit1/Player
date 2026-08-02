@@ -184,13 +184,6 @@ class _MiniBar extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(8, 8, 8, 16),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(15),
-        boxShadow: [
-          BoxShadow(
-            color: colors.elevatedHi, 
-            spreadRadius: 1.0,
-            blurRadius: 0.0,
-          ),
-        ],
       ),
       child: Material(
         color: colors.elevated,

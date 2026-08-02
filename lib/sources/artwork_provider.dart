@@ -248,10 +248,17 @@ class ArtworkProvider {
   Future<String?> _fetchGenius(String artist, String title) async {
     if (_geniusToken.isEmpty) return null;
 
-    final q = '$artist $title';
+    // Чистим title от мусора, который сбивает поиск: (Radio Edit),
+    // [Explicit], (feat. ...), (Original Mix) и т.п. Оставляем
+    // основной заголовок — это повышает точность матчинга и для
+    // Genius, и для iTunes.
+    final cleanArtist = _cleanSearchTerm(artist);
+    final cleanTitle = _cleanSearchTerm(title);
+
+    final q = '$cleanArtist $cleanTitle';
     final resp = await _dio.get<dynamic>(
-      'https://api.genius.com/search',
-      queryParameters: {'q': q},
+      'https://api.genius.com/search/songs',
+      queryParameters: {'q': q, 'per_page': 20},
       options: Options(
         headers: {'Authorization': 'Bearer $_geniusToken'},
       ),
@@ -278,22 +285,98 @@ class ArtworkProvider {
     final hits = (data['response']?['hits'] as List?) ?? const [];
     if (hits.isEmpty) return '';
 
+    // Ищем первый hit, у которого артист похож на запрошенного.
+    // Раньше брали hits.first без проверки — из-за этого каверы
+    // и ремиксы могли вытеснить оригинальную песню.
+    final best = _findBestHit(hits, cleanArtist, cleanTitle);
+    if (best == null) return '';
 
-    // Genius возвращает самый релевантный результат первым. Берём арт
-    // песни (`song_art_image_url`), он почти всегда квадратный и
-    // достаточного разрешения. Если его нет — fallback на header.
-    final result = hits.first['result'] as Map<String, dynamic>?;
-    if (result == null) return '';
-
-    final art =
-        (result['song_art_image_url'] as String?) ??
-        (result['header_image_url'] as String?);
+    // Приоритет: song_art_image_url (обложка песни, квадратная).
+    // header_image_url — фоновый баннер альбома/артиста, он часто
+    // не квадратный и хуже подходит как обложка. Если song_art нет —
+    // лучше вернуть пустой результат (уйдёт в iTunes-фолбэк), чем
+    // header, который может быть широким баннером.
+    final art = best['song_art_image_url'] as String?;
     if (art == null || art.isEmpty) return '';
 
     // Genius отдаёт оригинальное изображение — оно может быть любого
     // размера. Для квадратной обложки подставляем параметры resize,
     // чтобы получить ровно 600x600 (квадрат, центрированный crop).
     return _geniusSquareUrl(art, size: 600);
+  }
+
+  /// Убирает из поискового запроса типичный «мусор», который снижает
+  /// точность поиска обложек: (Radio Edit), [Explicit], feat.,
+  /// Original Mix, Remix, и т.д.
+  ///
+  /// Не трогает символ "&" и апострофы — они важны для названий групп
+  /// (например, "Simon & Garfunkel").
+  String _cleanSearchTerm(String term) {
+    var cleaned = term
+        // Скобочные суффиксы: (Radio Edit), (feat. ...), (Remix) и т.д.
+        .replaceAll(RegExp(r'\s*\([^)]*\)'), '')
+        // Квадратные скобки: [Explicit], [Clean], [Bonus Track] и т.д.
+        .replaceAll(RegExp(r'\s*\[[^\]]*\]'), '')
+        // feat./ft. с артистом
+        .replaceAll(RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$',
+            caseSensitive: false), '')
+        // Суффиксы через тире: " - Radio Edit", " - Remix", и т.д.
+        .replaceAll(RegExp(r'\s+-\s+(?:Radio|Club|Extended|Original|Alternative|Acoustic|Instrumental|Live|Remix|Remastered|Demo|Single|EP|Album|Version|Edit|Mix|Cut).*$',
+            caseSensitive: false), '')
+        .trim();
+    // Если после чистки ничего не осталось — отдаём исходную строку.
+    return cleaned.isEmpty ? term.trim() : cleaned;
+  }
+
+  /// Ищет среди хитов Genius первый, у которого имя артиста похоже на
+  /// запрошенное. Сравнение регистронезависимое, по первому исполнителю
+  /// из списка (artist_names обычно "Artist1, Artist2").
+  ///
+  /// Если ни один hit не подходит по артисту — возвращаем первый
+  /// результат как есть (best-effort), но с пониженным приоритетом
+  /// проверяем song_art_image_url (см. выше).
+  Map<String, dynamic>? _findBestHit(
+    List hits,
+    String cleanArtist,
+    String cleanTitle,
+  ) {
+    // Для запросов без артиста или с артистом "Unknown" — берём первый.
+    final wantArtist = cleanArtist.toLowerCase().trim();
+    if (wantArtist.isEmpty || wantArtist == 'unknown') {
+      return hits.first['result'] as Map<String, dynamic>?;
+    }
+
+    Map<String, dynamic>? firstResult;
+    for (final hit in hits) {
+      final result = hit['result'] as Map<String, dynamic>?;
+      if (result == null) continue;
+      firstResult ??= result;
+
+      final artistNames = (result['artist_names'] as String?) ?? '';
+      // artist_names — строка вида "Eminem" или "Drake, Rihanna".
+      // Разбиваем по запятой и сравниваем каждый элемент.
+      final names =
+          artistNames.toLowerCase().split(',').map((n) => n.trim()).toList();
+      for (final name in names) {
+        // Достаточно, чтобы запрошенный артист содержался в одном из
+        // имён (или наоборот — имя содержит запрошенного). Это ловит
+        // случаи "Eminem" vs "Eminem (feat. Rihanna)".
+        if (name.contains(wantArtist) || wantArtist.contains(name)) {
+          return result;
+        }
+      }
+    }
+
+    // Ни один hit не подошёл по артисту — отдаём первый (best-effort),
+    // но song_art_image_url обязателен (см. выше), так что если у него
+    // нет обложки песни, уйдём в iTunes.
+    if (kDebugMode) {
+      debugPrint(
+        '[ArtworkProvider] Genius: ни один hit не совпал по артисту '
+        '"$cleanArtist" — фолбэк на первый результат.',
+      );
+    }
+    return firstResult;
   }
 
   /// Приводит URL Genius-изображения к квадратному тумбнейлу.
@@ -314,7 +397,9 @@ class ArtworkProvider {
   // ---------------------------------------------------------------------
 
   Future<String?> _fetchItunes(String artist, String title) async {
-    final term = '$artist $title';
+    final cleanArtist = _cleanSearchTerm(artist);
+    final cleanTitle = _cleanSearchTerm(title);
+    final term = '$cleanArtist $cleanTitle';
     final resp = await _dio.get<dynamic>(
       'https://itunes.apple.com/search',
       queryParameters: {'term': term, 'entity': 'song', 'limit': 1},

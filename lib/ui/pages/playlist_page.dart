@@ -210,6 +210,25 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                   await _askRename(context, p);
                 },
               ),
+              if (p.coverCustomPath != null)
+                ListTile(
+                  leading: Icon(Icons.remove_circle_outline_rounded, color: colors.textSecondary),
+                  title: Text('Remove cover image', style: TextStyle(color: colors.textSecondary)),
+                  onTap: () async {
+                    HapticHelper.light(ref: ref);
+                    Navigator.of(sheetCtx).pop();
+                    await _removeCoverImage(context, p);
+                  },
+                ),
+              ListTile(
+                leading: Icon(Icons.add_photo_alternate_rounded, color: colors.textPrimary),
+                title: Text('Set cover image', style: TextStyle(color: colors.textPrimary)),
+                onTap: () async {
+                  HapticHelper.light(ref: ref);
+                  Navigator.of(sheetCtx).pop();
+                  await _setCoverImage(context, p);
+                },
+              ),
               ListTile(
                 leading: Icon(Icons.ios_share_rounded, color: colors.textPrimary),
                 title: Text('Export playlist', style: TextStyle(color: colors.textPrimary)),
@@ -307,6 +326,23 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     if (name != null && name.isNotEmpty) {
       ref.read(playlistRepositoryProvider).rename(p.id, name);
     }
+  }
+
+  Future<void> _setCoverImage(BuildContext context, Playlist playlist) async {
+    final path = await ArtworkHelper.pickCustomArtwork();
+    if (path == null || !mounted) return;
+
+    final repo = ref.read(playlistRepositoryProvider);
+    repo.setCoverImage(playlist.id, path);
+  }
+
+  Future<void> _removeCoverImage(BuildContext context, Playlist playlist) async {
+    final repo = ref.read(playlistRepositoryProvider);
+    // Сначала удаляем файл с диска
+    if (playlist.coverCustomUrl != null) {
+      await ArtworkHelper.removePlaylistCover(playlist.coverCustomUrl!);
+    }
+    repo.removeCoverImage(playlist.id);
   }
 
   Future<void> _showReplacementSheet(
@@ -558,6 +594,7 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                             urls: p.coverThumbnails,
                             size: _Dimens.artworkSize,
                             borderRadius: 0,
+                            coverCustomUrl: p.coverCustomPath,
                           ),
                         ),
                       ),

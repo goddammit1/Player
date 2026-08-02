@@ -23,6 +23,9 @@ class Playlist {
   /// мозаику 2×2 из обложек первых четырёх треков.
   final String? coverCustomUrl;
 
+  /// Алиас для [coverCustomUrl] — обратная совместимость.
+  String? get coverCustomPath => coverCustomUrl;
+
   /// Время создания (для сортировки «новые сверху»).
   final DateTime createdAt;
 
@@ -37,14 +40,16 @@ class Playlist {
   Playlist copyWith({
     String? name,
     List<Track>? tracks,
-    String? coverCustomUrl,
+    Object? coverCustomUrl = _sentinel,
   }) => Playlist(
     id: id,
     name: name ?? this.name,
     tracks: tracks ?? this.tracks,
-    coverCustomUrl: coverCustomUrl ?? this.coverCustomUrl,
+    coverCustomUrl: identical(coverCustomUrl, _sentinel) ? this.coverCustomUrl : coverCustomUrl as String?,
     createdAt: createdAt,
   );
+
+  static const _sentinel = #sentinel;
 
   /// Первые 4 непустых артворка — для мозаичной обложки.
   List<String> get coverThumbnails => tracks

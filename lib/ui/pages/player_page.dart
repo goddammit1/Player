@@ -195,8 +195,22 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
     }
   }
 
+  Future<void> _onResetAlbum() async {
+    HapticHelper.medium(ref: ref);
+    _hideOverlay();
+
+    final trackId =
+        widget.item.extras?['trackId'] as String? ?? widget.item.id;
+
+    await widget.player.resetCustomArtwork(trackId);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final trackId =
+        widget.item.extras?['trackId'] as String? ?? widget.item.id;
+    final hasCustomArt = ArtworkHelper.getCustomArtworkSync(trackId) != null;
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _toggleOverlay,
@@ -210,7 +224,7 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
               // 1. Сама обложка
               Artwork(
                 url: widget.item.artUri?.toString(),
-                trackId: widget.item.extras?['trackId'] as String? ?? widget.item.id,
+                trackId: trackId,
                 size: widget.size,
                 borderRadius: 10,
                 memCacheSize: 600,
@@ -229,34 +243,68 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
                     width: widget.size,
                     height: widget.size,
                     child: Center(
-                      // Нажатие на эту центральную область запускает выбор обложки.
-                      // Нажатие на пустую область вокруг отрабатывает во внешнем GestureDetector и скрывает оверлей.
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: _onChangeAlbum,
-                        child: Padding(
-                          padding: const EdgeInsets.all(24.0),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: const [
-                              Icon(
-                                Icons.image_outlined,
-                                color: Colors.white,
-                                size: 38,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Кнопка "Change album" — всегда присутствует
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _onChangeAlbum,
+                            child: const Padding(
+                              padding: EdgeInsets.all(14.0),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.image_outlined,
+                                    color: Colors.white,
+                                    size: 38,
+                                  ),
+                                  SizedBox(height: 10),
+                                  Text(
+                                    'Change album',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w500,
+                                      letterSpacing: -0.2,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              SizedBox(height: 10),
-                              Text(
-                                'Change album',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w500,
-                                  letterSpacing: -0.2,
+                            ),
+                          ),
+
+                          // Кнопка "Restore original" — только если есть кастомная обложка
+                          if (hasCustomArt)
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _onResetAlbum,
+                              child: Padding(
+                                padding: const EdgeInsets.all(14.0),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.restore_outlined,
+                                      color: Colors.white.withValues(alpha: 0.8),
+                                      size: 24,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Restore original',
+                                      style: TextStyle(
+                                        color: Colors.white.withValues(alpha: 0.8),
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w400,
+                                        letterSpacing: -0.2,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ],
-                          ),
-                        ),
+                            ),
+                        ],
                       ),
                     ),
                   ),
