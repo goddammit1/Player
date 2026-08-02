@@ -161,9 +161,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     _sleepTimerMode.add(SleepTimerMode.off);
     _sleepTimerEndTime.add(null);
 
-    try {
-      _player.setLoopMode(_loopMode.value);
-    } catch (_) {}
+    // _player is always LoopMode.off — no need to restore
   }
 
   // ===== Авто-переход при завершении трека =====
@@ -188,6 +186,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
         case LoopMode.one:
           _log('LoopMode.one \u2192 replay index=$_currentIndex');
           _playIndex(_currentIndex);
+          break;
         case LoopMode.all:
           final next = _currentIndex + 1;
           if (next < _queue.length) {
@@ -197,6 +196,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
             _log('LoopMode.all \u2192 wrap to index=0');
             _playIndex(0);
           }
+          break;
         case LoopMode.off:
           if (_currentIndex + 1 < _queue.length) {
             _log('LoopMode.off \u2192 next index=${_currentIndex + 1}');
@@ -204,6 +204,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
           } else {
             _log('LoopMode.off \u2192 end of queue, stopping');
           }
+          break;
       }
     } finally {
       // Игнорируем дублирующие эвенты плеера в течение 1 секунды
@@ -577,7 +578,9 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   Future<void> setLoopMode(LoopMode mode) async {
     _loopMode.add(mode);
-    await _player.setLoopMode(mode);
+    // always keep just_audio in LoopMode.off — we handle
+    // one/all/off ourselves in _onTrackFinished
+    await _player.setLoopMode(LoopMode.off);
   }
 
   Future<void> cycleLoopMode() {
