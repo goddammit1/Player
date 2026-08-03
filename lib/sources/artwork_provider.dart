@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
+
+import '../core/app_database.dart';
 
 
 
@@ -18,7 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///    том числе русскую попсу. URL обложки расширяем до 600x600.
 /// 3. Результат (включая «не нашлось» как пустую строку) кэшируется:
 ///    - в RAM на время жизни процесса,
-///    - в SharedPreferences между запусками — чтобы не дёргать API
+///    - в SQLite между запусками — чтобы не дёргать API
 ///      повторно для тех же треков.
 ///
 /// Класс — синглтон, инициализируется лениво. Все операции best-effort:
@@ -59,37 +61,6 @@ class ArtworkProvider {
   /// одновременных поисков одной и той же обложки из разных виджетов.
   final Map<String, Future<String?>> _inFlight = {};
 
-  SharedPreferences? _prefs;
-  Future<void>? _prefsInit;
-
-  Future<void> _ensurePrefs() {
-    _prefsInit ??= () async {
-      _prefs = await SharedPreferences.getInstance();
-      await _purgeLegacyPrefs();
-    }();
-    return _prefsInit!;
-  }
-
-  /// Разовая чистка ключей от старых версий кэша обложек (artwork_v1/v2).
-  /// Их формат устарел, а место в SharedPreferences они занимают навсегда.
-  static const List<String> _legacyPrefsPrefixes = ['artwork_v1', 'artwork_v2'];
-
-  Future<void> _purgeLegacyPrefs() async {
-    final prefs = _prefs;
-    if (prefs == null) return;
-    try {
-      final stale = prefs
-          .getKeys()
-          .where(
-            (k) => _legacyPrefsPrefixes.any((prefix) => k.startsWith(prefix)),
-          )
-          .toList();
-      for (final k in stale) {
-        await prefs.remove(k);
-      }
-    } catch (_) {}
-  }
-
   bool _tokenStatusLogged = false;
   void _logTokenStatusOnce() {
     if (_tokenStatusLogged) return;
@@ -113,6 +84,17 @@ class ArtworkProvider {
 
   /// Есть ли токен Genius в текущей сборке.
   bool get hasGeniusToken => _geniusToken.isNotEmpty;
+
+  Future<void> _cacheToDb(String key, String value) async {
+    try {
+      final db = await AppDatabase.instance.database;
+      await db.insert(
+        'settings',
+        {'key': key, 'value': value},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (_) {}
+  }
 
   /// Приводит тело ответа к Map. Некоторые API (в частности iTunes)
   /// отдают JSON с заголовком `text/javascript`, и Dio не парсит его
@@ -142,8 +124,8 @@ class ArtworkProvider {
   /// нашли (или всё упало). Никогда не кидает исключений наружу.
   ///
   /// Кэширование:
-  /// - Нашли URL → кэшируем URL (в RAM + prefs).
-  /// - Оба API явно вернули пустой результат → кэшируем '' в prefs
+  /// - Нашли URL → кэшируем URL (в RAM + БД).
+  /// - Оба API явно вернули пустой результат → кэшируем '' в БД
   ///   (не дёргаем снова).
   /// - Ошибка сети / таймаут / rate limit → НЕ кэшируем: следующий
   ///   вызов повторит попытку.
@@ -154,13 +136,23 @@ class ArtworkProvider {
     final mem = _memCache[key];
     if (mem != null) return mem.isEmpty ? null : mem;
 
-    // 2) Persistent.
-    await _ensurePrefs();
-    final saved = _prefs?.getString('$_prefsPrefix$key');
-    if (saved != null) {
-      _memCache[key] = saved;
-      return saved.isEmpty ? null : saved;
-    }
+    // 2) Persistent (SQLite).
+    try {
+      final db = await AppDatabase.instance.database;
+      final rows = await db.query(
+        'settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: ['$_prefsPrefix$key'],
+      );
+      if (rows.isNotEmpty) {
+        final saved = rows.first['value'] as String?;
+        if (saved != null) {
+          _memCache[key] = saved;
+          return saved.isEmpty ? null : saved;
+        }
+      }
+    } catch (_) {}
 
     // 3) Дедупликация in-flight запросов.
     final existing = _inFlight[key];
@@ -220,19 +212,15 @@ class ArtworkProvider {
 
     if (found) {
       _memCache[key] = url;
-      unawaited(
-        _prefs?.setString('$_prefsPrefix$key', url) ?? Future.value(),
-      );
+      _cacheToDb('$_prefsPrefix$key', url);
       return url;
     }
 
     if (!networkError) {
-      // Оба API честно ответили «не нашёл» — кэшируем '' в prefs,
+      // Оба API честно ответили «не нашёл» — кэшируем '' в БД,
       // чтобы не дёргать снова.
       _memCache[key] = '';
-      unawaited(
-        _prefs?.setString('$_prefsPrefix$key', '') ?? Future.value(),
-      );
+      _cacheToDb('$_prefsPrefix$key', '');
     }
     // При networkError НЕ кэшируем ничего. Раньше '' попадал в RAM до
     // перезапуска, и после одного таймаута/429 трек оставался без

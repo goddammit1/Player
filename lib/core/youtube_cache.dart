@@ -1,11 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
 
 import '../models/track.dart';
+import 'app_database.dart';
 
 /// Дисковый кэш приложения.
 ///
@@ -34,20 +36,46 @@ class YoutubeCache {
   static int get maxArtworkCacheMB => _maxArtworkCacheMB;
 
   static Future<void> loadLimits() async {
-    final prefs = await SharedPreferences.getInstance();
-    _maxAudioCacheMB = prefs.getInt('cache_audio_limit_mb') ?? 5120;
-    _maxArtworkCacheMB = prefs.getInt('cache_artwork_limit_mb') ?? 500;
+    try {
+      final db = await AppDatabase.instance.database;
+      final rows = await db.query(
+        'settings',
+        columns: ['key', 'value'],
+        where: 'key IN (?, ?)',
+        whereArgs: ['cache_audio_limit_mb', 'cache_artwork_limit_mb'],
+      );
+      for (final row in rows) {
+        final key = row['key'] as String;
+        final val = int.tryParse(row['value'] as String? ?? '');
+        if (val != null && val > 0) {
+          if (key == 'cache_audio_limit_mb') _maxAudioCacheMB = val;
+          if (key == 'cache_artwork_limit_mb') _maxArtworkCacheMB = val;
+        }
+      }
+    } catch (_) {}
   }
 
   static Future<void> setAudioLimitMB(int value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('cache_audio_limit_mb', value);
+    try {
+      final db = await AppDatabase.instance.database;
+      await db.insert(
+        'settings',
+        {'key': 'cache_audio_limit_mb', 'value': value.toString()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (_) {}
     _maxAudioCacheMB = value;
   }
 
   static Future<void> setArtworkLimitMB(int value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('cache_artwork_limit_mb', value);
+    try {
+      final db = await AppDatabase.instance.database;
+      await db.insert(
+        'settings',
+        {'key': 'cache_artwork_limit_mb', 'value': value.toString()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (_) {}
     _maxArtworkCacheMB = value;
   }
 
@@ -168,18 +196,34 @@ class YoutubeCache {
   Future<void> _loadPinnedIds() async {
     if (_pinnedLoaded) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      _pinnedIds
-        ..clear()
-        ..addAll(prefs.getStringList(_pinnedPrefsKey) ?? const <String>[]);
+      final db = await AppDatabase.instance.database;
+      final rows = await db.query(
+        'settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: [_pinnedPrefsKey],
+      );
+      if (rows.isNotEmpty) {
+        final raw = rows.first['value'] as String?;
+        if (raw != null && raw.isNotEmpty) {
+          final list = (jsonDecode(raw) as List).cast<String>();
+          _pinnedIds
+            ..clear()
+            ..addAll(list);
+        }
+      }
     } catch (_) {}
     _pinnedLoaded = true;
   }
 
   Future<void> _persistPinnedIds() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_pinnedPrefsKey, _pinnedIds.toList());
+      final db = await AppDatabase.instance.database;
+      await db.insert(
+        'settings',
+        {'key': _pinnedPrefsKey, 'value': jsonEncode(_pinnedIds.toList())},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     } catch (_) {}
   }
 
