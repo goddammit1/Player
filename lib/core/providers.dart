@@ -7,13 +7,13 @@ import '../models/track.dart';
 import '../sources/muzmo_source.dart';
 import '../sources/soundcloud_source.dart';
 import '../sources/source_registry.dart';
+import 'app_database.dart';
 import 'history_repository.dart';
 import 'player_service.dart';
 import 'playlist_repository.dart';
 export 'appearance_provider.dart';
 export 'dynamic_colors.dart';
 export 'global_theme_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 /// PlayerService инициализируется в main.dart и пробрасывается сюда через
 /// override. См. main.dart -> ProviderScope(overrides: [...]).
@@ -331,6 +331,15 @@ class PlaylistLoadException implements Exception {
   String toString() => message;
 }
 
+/// Ошибка загрузки истории.
+class HistoryLoadException implements Exception {
+  const HistoryLoadException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Удобный доступ к репозиторию из UI: для мутаций.
 final playlistRepositoryProvider = Provider<PlaylistRepository>((ref) {
   return PlaylistRepository.instance;
@@ -339,7 +348,11 @@ final playlistRepositoryProvider = Provider<PlaylistRepository>((ref) {
 /// Поток истории прослушивания (новые сверху). UI слушает через
 /// `ref.watch(listenHistoryProvider)` и получает `AsyncValue<List<HistoryEntry>>`.
 final listenHistoryProvider = StreamProvider<List<HistoryEntry>>((ref) async* {
-  await HistoryRepository.instance.ensureLoaded();
+  try {
+    await HistoryRepository.instance.ensureLoaded();
+  } catch (e) {
+    throw HistoryLoadException('Failed to load history: $e');
+  }
   yield HistoryRepository.instance.current;
   yield* HistoryRepository.instance.stream;
 });
@@ -370,6 +383,9 @@ class HistoryLimitNotifier extends StateNotifier<int> {
     await HistoryRepository.instance.setLimit(value);
     state = HistoryRepository.instance.limit;
   }
+
+  /// Перечитывает значение из БД (нужно после импорта полного бэкапа).
+  Future<void> reload() => _load();
 }
 
 
@@ -385,17 +401,21 @@ class VibrationNotifier extends StateNotifier<bool> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getBool(_key) ?? true;
+    final raw = await AppDatabase.instance.getSetting(_key);
+    state = raw != null
+        ? (raw == 'true' || raw == '1')
+        : true;
   }
 
   Future<void> setEnabled(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_key, enabled);
+    await AppDatabase.instance.setSetting(_key, enabled.toString());
     state = enabled;
   }
 
   Future<void> toggle() => setEnabled(!state);
+
+  /// Перечитывает значение из БД (нужно после импорта полного бэкапа).
+  Future<void> reload() => _load();
 }
 
 enum SearchViewMode { grid, list }
@@ -412,8 +432,7 @@ class SearchViewModeNotifier extends StateNotifier<SearchViewMode> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(_key);
+    final saved = await AppDatabase.instance.getSetting(_key);
     if (saved != null) {
       state = SearchViewMode.values.firstWhere(
         (e) => e.name == saved,
@@ -423,13 +442,15 @@ class SearchViewModeNotifier extends StateNotifier<SearchViewMode> {
   }
 
   Future<void> setMode(SearchViewMode mode) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, mode.name);
+    await AppDatabase.instance.setSetting(_key, mode.name);
     state = mode;
   }
+
+  /// Перечитывает значение из БД (нужно после импорта полного бэкапа).
+  Future<void> reload() => _load();
 }
 
-/// История поисковых запросов (новые сверху). Хранится в SharedPreferences,
+/// История поисковых запросов (новые сверху). Хранится в SQLite,
 /// дедупликация без учёта регистра, максимум [_maxItems] записей.
 final searchHistoryProvider =
     StateNotifierProvider<SearchHistoryNotifier, List<String>>(
@@ -437,7 +458,6 @@ final searchHistoryProvider =
 );
 
 class SearchHistoryNotifier extends StateNotifier<List<String>> {
-  static const _key = 'search_history_v1';
   static const _maxItems = 12;
 
   SearchHistoryNotifier() : super(const []) {
@@ -445,13 +465,11 @@ class SearchHistoryNotifier extends StateNotifier<List<String>> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getStringList(_key) ?? const [];
+    state = await AppDatabase.instance.getSearchHistory(_maxItems);
   }
 
   Future<void> _persist() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_key, state);
+    await AppDatabase.instance.setSearchHistory(state, _maxItems);
   }
 
   Future<void> add(String query) async {
@@ -471,7 +489,9 @@ class SearchHistoryNotifier extends StateNotifier<List<String>> {
 
   Future<void> clear() async {
     state = const [];
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_key);
+    await _persist();
   }
+
+  /// Перечитывает значение из БД (нужно после импорта полного бэкапа).
+  Future<void> reload() => _load();
 }

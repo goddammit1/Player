@@ -19,3 +19,41 @@ void showSnack(BuildContext context, String message) {
     ),
   );
 }
+
+/// Зелёный toast для успешных операций.
+void showSuccessSnack(BuildContext context, String message) {
+  final m = ScaffoldMessenger.maybeOf(context);
+  if (m == null) return;
+  m.clearSnackBars();
+  m.showSnackBar(
+    SnackBar(
+      content: Row(
+        children: [
+          const Icon(Icons.check_circle_outline, color: Color(0xFF4CAF50), size: 18),
+          const SizedBox(width: 8),
+          Expanded(child: Text(message)),
+        ],
+      ),
+      duration: const Duration(milliseconds: 1500),
+    ),
+  );
+}
+
+/// Красный toast для ошибок.
+void showErrorSnack(BuildContext context, String message) {
+  final m = ScaffoldMessenger.maybeOf(context);
+  if (m == null) return;
+  m.clearSnackBars();
+  m.showSnackBar(
+    SnackBar(
+      content: Row(
+        children: [
+          const Icon(Icons.error_outline, color: Color(0xFFEF5350), size: 18),
+          const SizedBox(width: 8),
+          Expanded(child: Text(message)),
+        ],
+      ),
+      duration: const Duration(milliseconds: 2500),
+    ),
+  );
+}

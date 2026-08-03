@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../../core/history_repository.dart';
+import '../../core/playlist_backup.dart';
+import '../../core/playlist_repository.dart';
 import '../../core/providers.dart';
 import 'cache_page.dart';
+import '../widgets/snack.dart';
 import '../widgets/update_dialog.dart';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -53,6 +58,7 @@ class SettingsPage extends ConsumerWidget {
             _HistorySection(colors: colors),
             _HapticsSection(colors: colors),
             _CacheTile(colors: colors),
+            _BackupSection(colors: colors),
             _AboutSection(colors: colors),
           ],
         ),
@@ -523,6 +529,94 @@ class _LimitOption extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// =====================================================================
+//  BACKUP SECTION
+// =====================================================================
+
+class _BackupSection extends ConsumerWidget {
+  const _BackupSection({required this.colors});
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return _Section(
+      title: 'Backup',
+      colors: colors,
+      children: [
+        ListTile(
+          leading: Icon(Icons.file_upload_outlined, color: colors.textPrimary),
+          title: Text(
+            'Export everything',
+            style: TextStyle(color: colors.textPrimary),
+          ),
+          subtitle: Text(
+            'Save all data to a file',
+            style: TextStyle(color: colors.textSecondary),
+          ),
+          onTap: () async {
+            try {
+              await FullBackup.exportAndShare();
+              if (context.mounted) {
+                showSuccessSnack(context, 'Backup exported');
+              }
+            } catch (e) {
+              if (context.mounted) {
+                showErrorSnack(context, 'Export failed: $e');
+              }
+            }
+          },
+        ),
+        ListTile(
+          leading:
+              Icon(Icons.file_download_outlined, color: colors.textPrimary),
+          title: Text(
+            'Import everything',
+            style: TextStyle(color: colors.textPrimary),
+          ),
+          subtitle: Text(
+            'Restore all data from a file',
+            style: TextStyle(color: colors.textSecondary),
+          ),
+          onTap: () async {
+            try {
+              final result = await FilePicker.platform.pickFiles(
+                type: FileType.custom,
+                allowedExtensions: ['json'],
+              );
+              if (result == null || result.files.isEmpty) return;
+
+              final path = result.files.single.path;
+              if (path == null) return;
+
+              await FullBackup.importFromFile(path);
+              // Перечитываем все данные из БД после импорта, чтобы UI
+              // сразу отобразил актуальные значения без перезахода.
+              await PlaylistRepository.instance.reload();
+              await HistoryRepository.instance.reload();
+              await ref.read(appThemeModeProvider.notifier).reload();
+              await ref.read(historyLimitProvider.notifier).reload();
+              await ref.read(vibrationEnabledProvider.notifier).reload();
+              await ref.read(searchViewModeProvider.notifier).reload();
+              await ref.read(searchHistoryProvider.notifier).reload();
+              // Инвалидируем Riverpod-провайдеры, чтобы они подхватили
+              // новые значения из репозиториев.
+              ref.invalidate(playlistsProvider);
+              ref.invalidate(listenHistoryProvider);
+              if (context.mounted) {
+                showSuccessSnack(context, 'Data restored successfully');
+              }
+            } catch (e) {
+              if (context.mounted) {
+                showErrorSnack(context, 'Import failed: $e');
+              }
+            }
+          },
+        ),
+      ],
     );
   }
 }
