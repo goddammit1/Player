@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Правила извлечения данных для Android 12+ (API 31+).
+  Используется android:dataExtractionRules в манифесте.
+
+  При device-to-device (D2D) миграции и авто-бэкапе в облако
+  данные по умолчанию НЕ бэкапятся.
+  Явно разрешаем: базу данных (SQLite) и файлы Documents/.
+  SharedPreferences не включены — они не бэкапятся (весь persistance в SQLite).
+-->
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="false">
+        <include domain="database" path="." />
+        <include domain="file" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="." />
+        <include domain="file" path="." />
+    </device-transfer>
+</data-extraction-rules>

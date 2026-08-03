@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!--
+      Android Auto Backup (Android 6–11).
+      Включаем только базу данных (SQLite).
+      SharedPreferences не включены — по умолчанию everything-except-what's-excluded,
+      но без явного include для sharedpref они не бэкапятся.
+    -->
+    <include domain="database" path="." />
+</full-backup-content>
