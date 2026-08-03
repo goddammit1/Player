@@ -5,6 +5,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/playlist.dart';
+import 'app_database.dart';
+import 'artwork_helper.dart';
+import 'history_repository.dart';
 import 'playlist_repository.dart';
 
 /// Максимальная поддерживаемая версия формата бэкапа.
@@ -40,7 +43,7 @@ class PlaylistBackup {
       'exported_at_ms': DateTime.now().millisecondsSinceEpoch,
       'playlists': playlists.map((p) => p.toJson()).toList(),
     };
-    return const JsonEncoder.withIndent('  ').convert(map);
+    return const JsonEncoder().convert(map);
   }
 
   /// Парсит строку бэкапа в список плейлистов.
@@ -57,7 +60,7 @@ class PlaylistBackup {
       throw const FormatException('Unexpected JSON structure');
     }
     final format = parsed['format'];
-    if (format != null && format != formatTag) {
+    if (format != formatTag) {
       throw const FormatException('This file is not a playlist backup');
     }
     final version = parsed['version'];
@@ -76,8 +79,19 @@ class PlaylistBackup {
     var skippedCount = 0;
     for (final e in rawList) {
       if (e is Map) {
+        final map = e.cast<String, dynamic>();
+        // Валидируем обязательные поля перед вызовом fromJson.
+        if (map['id'] is! String ||
+            map['id'] == null ||
+            (map['id'] as String).isEmpty ||
+            map['name'] is! String ||
+            map['name'] == null ||
+            (map['name'] as String).isEmpty) {
+          skippedCount++;
+          continue;
+        }
         try {
-          result.add(Playlist.fromJson(e.cast<String, dynamic>()));
+          result.add(Playlist.fromJson(map));
         } catch (_) {
           skippedCount++;
           // Пропускаем отдельный битый плейлист, не валим весь импорт.
@@ -154,4 +168,56 @@ class ImportResult {
   final int skipped;
 
   int get total => added + replaced + skipped;
+}
+
+// ======================================================================
+//  ПОЛНЫЙ БЭКАП (все данные приложения: плейлисты, история, настройки)
+// ======================================================================
+
+/// Бэкап **всех** данных приложения в один JSON-файл.
+///
+/// Формат: `player_full_backup` v1 — содержит все таблицы БД как есть.
+/// После восстановления приложение полностью идентично состоянию на момент
+/// экспорта.
+class FullBackup {
+  FullBackup._();
+
+  /// Экспортирует все данные в JSON и отправляет через share-sheet.
+  static Future<void> exportAndShare() async {
+    final json = await AppDatabase.instance.exportFullBackup();
+    final dir = await getTemporaryDirectory();
+    final stamp = DateTime.now()
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .split('.')
+        .first;
+    final file = File('${dir.path}/player_full_backup_$stamp.json');
+    await file.writeAsString(json);
+    try {
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: 'Player full backup',
+      );
+    } finally {
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// Импортирует данные из JSON-файла, полностью замещая текущие.
+  ///
+  /// Бросает [FormatException], если файл битый или не того формата.
+  static Future<void> importFromFile(String path) async {
+    final raw = await File(path).readAsString();
+    await AppDatabase.instance.importFullBackup(raw);
+
+    // Перезагружаем репозитории после импорта.
+    await PlaylistRepository.instance.ensureLoaded();
+    await HistoryRepository.instance.reload();
+
+    // Сбрасываем флаг _initialized, чтобы init() перечитал БД заново.
+    ArtworkHelper.resetInit();
+    await ArtworkHelper.init();
+  }
 }

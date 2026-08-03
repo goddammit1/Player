@@ -71,6 +71,9 @@ class Track {
         'artist': artist,
         'duration_ms': duration?.inMilliseconds,
         'artwork_url': artworkUrl,
+        'quality_score': qualityScore,
+        'quality_label': qualityLabel,
+        'extra': extra,
       };
 
   factory Track.fromMap(Map<String, dynamic> m) => Track(
@@ -79,9 +82,12 @@ class Track {
         title: m['title'] as String,
         artist: m['artist'] as String,
         duration: m['duration_ms'] != null
-            ? Duration(milliseconds: m['duration_ms'] as int)
+            ? Duration(milliseconds: (m['duration_ms'] as num).toInt())
             : null,
         artworkUrl: m['artwork_url'] as String?,
+        qualityScore: m['quality_score'] as int?,
+        qualityLabel: m['quality_label'] as String?,
+        extra: (m['extra'] as Map?)?.cast<String, dynamic>() ?? const {},
       );
 
   @override

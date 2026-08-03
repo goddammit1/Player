@@ -2,8 +2,8 @@ import 'track.dart';
 
 /// Пользовательский плейлист.
 ///
-/// Хранится как JSON в `SharedPreferences` под ключом `playlists_v1`
-/// (см. [PlaylistRepository]). На каждый плейлист сохраняем только
+/// Хранится в SQLite через [AppDatabase] (см. [PlaylistRepository]).
+/// На каждый плейлист сохраняем только
 /// метаданные треков и список — стрим-URL'ы резолвятся по требованию
 /// через `TrackSource.resolveStreamUrl` точно так же, как и для треков
 /// из результатов поиска.
@@ -87,9 +87,9 @@ class Playlist {
     'artist': t.artist,
     'duration_ms': t.duration?.inMilliseconds,
     'artwork_url': t.artworkUrl,
-    // extra нужен для muzmo (там лежит streamUrl). Сохраняем только
-    // примитивы — большего у нас и нет.
-    'extra': t.extra.map((k, v) => MapEntry(k, v?.toString())),
+    // extra нужен для muzmo (там лежит streamUrl).
+    // Сохраняем примитивы как есть: null, строки, числа, булы
+    'extra': t.extra.map((k, v) => MapEntry(k, v)),
   };
 
   static Track _trackFromJson(Map<String, dynamic> m) => Track(

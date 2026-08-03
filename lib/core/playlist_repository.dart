@@ -1,39 +1,29 @@
 import 'dart:async';
-import 'dart:convert';
 
-import 'package:meta/meta.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
+import 'app_database.dart';
 import 'artwork_helper.dart';
 import '../models/track.dart';
 import 'playlist_backup.dart';
 
 /// Persistence + state-store для пользовательских плейлистов.
 ///
-/// Хранилище — `SharedPreferences`, единый ключ `playlists_v1` с
-/// JSON-массивом сериализованных плейлистов. На реальных данных
-/// (≤ 50 плейлистов × ≤ 500 треков) это работает мгновенно и не
-/// требует SQLite. Когда понадобятся серьёзные запросы — перенесём в
-/// `sqflite`.
-///
-/// Публикует `Stream<List<Playlist>>` (через `_controller.stream`) —
-/// UI подписывается на него через Riverpod-провайдер. Запись на диск
-/// дебаунсится 300 мс: серия быстрых правок (add → add → rename)
-/// сольётся в одну запись.
+/// Хранилище — SQLite через [AppDatabase]. Публикует `Stream<List<Playlist>>`
+/// (через `_controller.stream`) — UI подписывается на него через
+/// Riverpod-провайдер. Запись на диск дебаунсится 300 мс.
 class PlaylistRepository {
   PlaylistRepository._();
   static final PlaylistRepository instance = PlaylistRepository._();
 
-  static const String _key = 'playlists_v1';
   static const _uuid = Uuid();
   static const Duration _persistDebounce = Duration(milliseconds: 300);
 
   final StreamController<List<Playlist>> _controller =
       StreamController<List<Playlist>>.broadcast();
   List<Playlist> _list = [];
-  SharedPreferences? _prefs;
   Future<void>? _initFuture;
   Timer? _persistTimer;
 
@@ -52,21 +42,15 @@ class PlaylistRepository {
   }
 
   Future<void> _load() async {
-    _prefs = await SharedPreferences.getInstance();
-    final raw = _prefs!.getString(_key);
-    if (raw == null || raw.isEmpty) {
-      _list = [];
-      _controller.add(_list);
-      return;
-    }
     try {
-      final arr = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
-      _list = arr.map(Playlist.fromJson).toList();
-      // Сортируем «новые сверху» — это удобный дефолт для UI.
-      _list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    } catch (_) {
-      // Битый JSON в проде лучше игнорировать, чем падать.
-      _list = [];
+      _list = await AppDatabase.instance.loadPlaylists();
+    } catch (e, st) {
+      // Логируем ошибку, но не сбрасываем текущий список на пустой —
+      // иначе при любой ошибке БД все данные теряются необратимо.
+      debugPrint(
+          '[PlaylistRepository] Failed to load playlists, keeping previous state if any: $e\n$st');
+      // Если список был пуст (первый запуск) — остаёмся с пустым списком.
+      // Если были данные (reload после ошибки) — сохраняем их в памяти.
     }
     _controller.add(List.unmodifiable(_list));
   }
@@ -78,10 +62,16 @@ class PlaylistRepository {
   }
 
   Future<void> _persistNow() async {
-    final prefs = _prefs;
-    if (prefs == null) return;
-    final raw = jsonEncode(_list.map((p) => p.toJson()).toList());
-    await prefs.setString(_key, raw);
+    try {
+      await AppDatabase.instance.saveAllPlaylists(_list);
+    } catch (e, st) {
+      // Логируем ошибку записи, чтобы в логах было видно.
+      // Данные в памяти остаются актуальными, но при следующем запуске
+      // загрузятся с диска (устаревшие). Пользователь может потерять
+      // последние изменения, но не все данные.
+      debugPrint(
+          '[PlaylistRepository] Failed to persist playlists to DB: $e\n$st');
+    }
   }
 
   // ===== Mutations =====
@@ -317,10 +307,17 @@ class PlaylistRepository {
 
   /// Сбрасывает внутреннее состояние (для тестов и аварийного восстановления).
   @visibleForTesting
-  void resetForTesting() {
+  Future<void> resetForTesting() async {
     _initFuture = null;
-    _prefs = null;
     _list = [];
+    // ignore: invalid_use_of_visible_for_testing_member
+    await AppDatabase.instance.clearPlaylists();
     _controller.add(List.unmodifiable(_list));
+  }
+
+  /// Перечитывает данные из БД (нужно после импорта полного бэкапа).
+  Future<void> reload() async {
+    _initFuture = null;
+    await _load();
   }
 }
