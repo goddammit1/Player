@@ -1,9 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/track.dart';
+import 'app_database.dart';
 
 /// Одна запись истории прослушивания: трек + момент воспроизведения.
 class HistoryEntry {
@@ -20,7 +20,7 @@ class HistoryEntry {
   factory HistoryEntry.fromJson(Map<String, dynamic> m) => HistoryEntry(
         track: Track.fromMap((m['track'] as Map).cast<String, dynamic>()),
         playedAt:
-            DateTime.fromMillisecondsSinceEpoch(m['played_at'] as int),
+            DateTime.fromMillisecondsSinceEpoch((m['played_at'] as num).toInt()),
       );
 
   /// Идентичность записи для удаления из UI.
@@ -32,20 +32,15 @@ class HistoryEntry {
 
 /// Persistence + state-store для истории прослушивания.
 ///
-/// Хранилище — `SharedPreferences`, ключ `listen_history_v1` с
-/// JSON-массивом записей (новые сверху). Паттерн полностью повторяет
+/// Хранилище — SQLite через [AppDatabase]. Паттерн полностью повторяет
 /// [PlaylistRepository]: broadcast-стрим для UI + снапшот, запись на
 /// диск дебаунсится 300 мс.
 ///
-/// Лимит записей выбирается пользователем (ключ `history_limit_v1`),
-/// абсолютный максимум — [maxLimit].
+/// Лимит записей выбирается пользователем (хранится в таблице `settings`
+/// под ключом `history_limit_v1`), абсолютный максимум — [maxLimit].
 class HistoryRepository {
   HistoryRepository._();
   static final HistoryRepository instance = HistoryRepository._();
-
-  static const String _key = 'listen_history_v1';
-  static const String _limitKey = 'history_limit_v1';
-  static const Duration _persistDebounce = Duration(milliseconds: 300);
 
   /// Абсолютный максимум записей.
   static const int maxLimit = 200;
@@ -57,9 +52,7 @@ class HistoryRepository {
       StreamController<List<HistoryEntry>>.broadcast();
   List<HistoryEntry> _list = [];
   int _limit = defaultLimit;
-  SharedPreferences? _prefs;
   Future<void>? _initFuture;
-  Timer? _persistTimer;
 
   /// Поток записей истории, новые сверху.
   Stream<List<HistoryEntry>> get stream => _controller.stream;
@@ -75,45 +68,30 @@ class HistoryRepository {
     return _initFuture!;
   }
 
+  /// Сбрасывает кэш и перезагружает историю из БД.
+  /// Вызывается после импорта полного бэкапа, чтобы UI отразил новые данные.
+  Future<void> reload() async {
+    _initFuture = null;
+    await _load();
+  }
+
   Future<void> _load() async {
-    _prefs = await SharedPreferences.getInstance();
-    _limit = (_prefs!.getInt(_limitKey) ?? defaultLimit).clamp(1, maxLimit);
-    final raw = _prefs!.getString(_key);
-    if (raw == null || raw.isEmpty) {
-      _list = [];
-      _controller.add(_list);
-      return;
-    }
+    // Читаем лимит из SQLite settings.
+    final rawLimit = await AppDatabase.instance.getSetting('history_limit_v1');
+    _limit = int.tryParse(rawLimit ?? '') ?? defaultLimit;
+    _limit = _limit.clamp(1, maxLimit);
+
+    // Загружаем историю из БД.
     try {
-      final arr = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
-      _list = arr.map(HistoryEntry.fromJson).toList();
-      _list.sort((a, b) => b.playedAt.compareTo(a.playedAt));
-      // Миграция: чистим дубли одного трека из старых версий,
-      // оставляем самую свежую запись.
-      final seen = <Object>{};
-      _list = _list.where((e) => seen.add(e.track.globalId)).toList();
-      if (_list.length > _limit) {
-        _list = _list.sublist(0, _limit);
-      }
+      _list = await AppDatabase.instance.loadListenHistory(_limit);
     } catch (_) {
-      // Битый JSON лучше игнорировать, чем падать.
       _list = [];
     }
     _controller.add(List.unmodifiable(_list));
   }
 
-  void _notifyAndSchedulePersist() {
-    _controller.add(List.unmodifiable(_list));
-    _persistTimer?.cancel();
-    _persistTimer = Timer(_persistDebounce, _persistNow);
-  }
-
-  Future<void> _persistNow() async {
-    final prefs = _prefs;
-    if (prefs == null) return;
-    final raw = jsonEncode(_list.map((e) => e.toJson()).toList());
-    await prefs.setString(_key, raw);
-  }
+  // _notifyAndSchedulePersist и _persistNow удалены — история пишется
+  // атомарно через AppDatabase на каждую мутацию, debounce не нужен.
 
   // ===== Mutations =====
 
@@ -121,17 +99,35 @@ class HistoryRepository {
   ///
   /// Трек хранится в истории только один раз: при повторном прослушивании
   /// старая запись удаляется, а трек поднимается наверх со свежим `playedAt`.
+  ///
+  /// Операция идемпотентна и транзакционна на уровне БД: сначала пишем в БД,
+  /// потом обновляем in-memory список. Если БД упадёт — память останется
+  /// консистентной (изменения не применятся).
   Future<void> add(Track track) async {
     await ensureLoaded();
     final now = DateTime.now();
+    final entry = HistoryEntry(track: track, playedAt: now);
+
+    // Сначала атомарная запись в БД (DELETE + INSERT в одной транзакции).
+    try {
+      await AppDatabase.instance.addListenHistoryEntry(entry);
+      await AppDatabase.instance.trimListenHistory(_limit);
+    } catch (e, st) {
+      debugPrint(
+          '[HistoryRepository] Failed to persist history entry: $e\n$st');
+      return; // Не обновляем память, если БД не приняла запись.
+    }
+
+    // Только после успешной записи обновляем in-memory список.
     _list = [
-      HistoryEntry(track: track, playedAt: now),
+      entry,
       ..._list.where((e) => e.track.globalId != track.globalId),
     ];
     if (_list.length > _limit) {
       _list = _list.sublist(0, _limit);
     }
-    _notifyAndSchedulePersist();
+
+    _controller.add(List.unmodifiable(_list));
   }
 
   /// Удаляет одну запись.
@@ -139,7 +135,10 @@ class HistoryRepository {
     await ensureLoaded();
     final n = _list.length;
     _list = _list.where((e) => !e.sameAs(entry)).toList();
-    if (_list.length != n) _notifyAndSchedulePersist();
+    if (_list.length != n) {
+      await AppDatabase.instance.removeListenHistoryEntry(entry);
+      _controller.add(List.unmodifiable(_list));
+    }
   }
 
   /// Полностью очищает историю.
@@ -147,7 +146,8 @@ class HistoryRepository {
     await ensureLoaded();
     if (_list.isEmpty) return;
     _list = [];
-    _notifyAndSchedulePersist();
+    await AppDatabase.instance.clearListenHistory();
+    _controller.add(List.unmodifiable(_list));
   }
 
   /// Меняет лимит записей. При уменьшении история сразу подрезается.
@@ -156,18 +156,18 @@ class HistoryRepository {
     final clamped = value.clamp(1, maxLimit);
     if (clamped == _limit) return;
     _limit = clamped;
-    await _prefs?.setInt(_limitKey, clamped);
+    await AppDatabase.instance.setSetting('history_limit_v1', clamped.toString());
     if (_list.length > _limit) {
       _list = _list.sublist(0, _limit);
-      _notifyAndSchedulePersist();
+      await AppDatabase.instance.trimListenHistory(_limit);
+      _controller.add(List.unmodifiable(_list));
     } else {
       _controller.add(List.unmodifiable(_list));
     }
   }
 
-  /// Принудительный flush на диск.
+  /// Принудительный flush на диск (не нужен — все мутации атомарны).
   Future<void> flush() async {
-    _persistTimer?.cancel();
-    await _persistNow();
+    // no-op: все мутации атомарны.
   }
 }
