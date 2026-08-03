@@ -1,6 +1,7 @@
 // lib/core/player_service.dart
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
@@ -8,10 +9,11 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener, Size;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
 
 import '../models/track.dart';
 import '../sources/source_registry.dart';
+import 'app_database.dart';
 import 'history_repository.dart';
 import 'youtube_cache.dart';
 import 'artwork_helper.dart';
@@ -122,6 +124,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     );
 
     unawaited(_initBoost());
+    unawaited(_restoreSession());
   }
 
   // Флаг защиты от повторных дублирующих событий завершения трека
@@ -218,9 +221,19 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   Future<void> _initBoost() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getDouble(_boostDbKey) ?? 0.0;
-      await setBoost(saved);
+      try {
+        final db = await AppDatabase.instance.database;
+        final rows = await db.query(
+          'settings',
+          columns: ['value'],
+          where: 'key = ?',
+          whereArgs: [_boostDbKey],
+        );
+        if (rows.isNotEmpty) {
+          final saved = double.tryParse(rows.first['value'] as String? ?? '') ?? 0.0;
+          await setBoost(saved);
+        }
+      } catch (_) {}
     } catch (e) {
       _log('boost init failed: $e');
     }
@@ -241,8 +254,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   Future<void> _persistBoost(double db) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble(_boostDbKey, db);
+      final database = await AppDatabase.instance.database;
+      await database.insert(
+        'settings',
+        {'key': _boostDbKey, 'value': db.toString()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     } catch (_) {}
   }
 
@@ -272,6 +289,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
     _currentIndexSubject.add(_currentIndex);
     queue.add(_queue.map(_toMediaItem).toList());
+    await _saveSession();
   }
 
   @override
@@ -290,6 +308,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
     _currentIndexSubject.add(_currentIndex);
     queue.add(_queue.map(_toMediaItem).toList());
+    await _saveSession();
   }
 
   Future<void> setQueue(List<Track> tracks, {int startIndex = 0}) async {
@@ -299,12 +318,16 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     queue.add(tracks.map(_toMediaItem).toList());
     if (tracks.isNotEmpty) {
       await _playIndex(startIndex);
+      // _playIndex already saves session internally
+    } else {
+      await _saveSession();
     }
   }
 
   Future<void> addToQueue(Track track) async {
     _queue.add(track);
     queue.add([...queue.value, _toMediaItem(track)]);
+    await _saveSession();
   }
 
   Future<void> insertToQueue(Track track) async {
@@ -317,6 +340,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
 
     queue.add(_queue.map(_toMediaItem).toList());
+    await _saveSession();
   }
 
   Future<void> _playIndex(int index, {bool isRetry = false}) async {
@@ -367,6 +391,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       await _player.play();
 
       unawaited(_reapplyBoost());
+      await _saveSession();
       _warmArtwork(_currentIndex);
       _schedulePrefetchNext(myGen);
     } catch (e, st) {
@@ -446,6 +471,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       return;
     }
     await _player.play();
+    await _saveSession();
   }
 
   void _warmArtwork(int index) {
@@ -492,12 +518,116 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    await _player.pause();
+    await _saveSession();
+  }
+
+  // ===== SESSION PERSISTENCE =====
+
+  /// Сериализует [track] в Map, совместимый с `AppDatabase._trackFromRow`.
+  static Map<String, dynamic> _trackToRow(Track track) {
+    return {
+      'track_id': track.id,
+      'source_id': track.sourceId,
+      'title': track.title,
+      'artist': track.artist,
+      'duration_ms': track.duration?.inMilliseconds,
+      'artwork_url': track.artworkUrl,
+      'quality_score': track.qualityScore,
+      'quality_label': track.qualityLabel,
+      'track_global_id': track.globalId,
+      'extra_json': jsonEncode(AppDatabase.extraPrimitives(track.extra)),
+    };
+  }
+
+  Future<void> _saveSession({int? positionMs}) async {
+    try {
+      final pos = positionMs ?? _player.position.inMilliseconds;
+      final queueRows = _queue.map(_trackToRow).toList();
+      await AppDatabase.instance.savePlaybackSession(
+        queueRows: queueRows,
+        currentIndex: _currentIndex,
+        positionMs: pos,
+      );
+    } catch (_) {
+      // Не даём ошибке БД уронить плеер.
+    }
+  }
+
+  /// Публичный доступ для сохранения сессии из UI (например, при сворачивании).
+  Future<void> saveSession() => _saveSession();
+
+  Future<void> _restoreSession() async {
+    try {
+      final session = await AppDatabase.instance.loadPlaybackSession();
+      if (session == null) return;
+
+      _log('Restoring session: ${session.queue.length} tracks, '
+          'index=${session.currentIndex}');
+
+      _queue
+        ..clear()
+        ..addAll(session.queue);
+      _currentIndex = session.currentIndex.clamp(-1, _queue.length - 1);
+      _currentIndexSubject.add(_currentIndex);
+
+      queue.add(_queue.map(_toMediaItem).toList());
+
+      if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+        final track = _queue[_currentIndex];
+
+        // Немедленно показываем трек в UI/шторке с сохранёнными метаданными,
+        // не дожидаясь сетевого resolveStreamUrl.
+        mediaItem.add(_toMediaItem(track));
+        playbackState.add(PlaybackState(
+          controls: [MediaControl.play],
+          processingState: AudioProcessingState.ready,
+          playing: false,
+          queueIndex: _currentIndex,
+        ));
+
+        // Загружаем аудио-источник в фоне. Это может занять 1–5 секунд
+        // (YouTube требует внешнего extractor'а), но мини-плеер уже виден.
+        unawaited(_restoreAudioSource(track));
+      }
+    } catch (e, st) {
+      _log('Session restore failed: $e\n$st');
+    }
+  }
+
+  /// Фоновая загрузка аудио-источника для восстановленного трека.
+  /// Вызывается после того, как UI уже показал трек через mediaItem.add().
+  Future<void> _restoreAudioSource(Track track) async {
+    try {
+      final src = SourceRegistry.instance.require(track.sourceId);
+      final url = await src.resolveStreamUrl(track);
+      await _player.setAudioSource(AudioSource.uri(Uri.parse(url)));
+
+      // Обновляем PlaybackState после загрузки аудио: плеер готов к воспроизведению
+      playbackState.add(_transformEvent(PlaybackEvent()));
+    } catch (_) {
+      _log('Failed to restore audio source for "${track.title}"');
+    }
+  }
+
+  // =============================================================
 
   @override
   Future<void> stop() async {
     await _player.stop();
     await super.stop();
+  }
+
+  @override
+  Future<void> onTaskRemoved() async {
+    _log('onTaskRemoved — saving session');
+    await _saveSession();
+    // Не вызываем _player.stop()/_player.dispose() — на момент
+    // onTaskRemoved главный изолят уже может быть мёртв, Platform
+    // Channel для just_audio/sqflite недоступен, и dispose крашит
+    // процесс до того как БД синкнется на диск.
+    await super.onTaskRemoved();
   }
 
   @override
@@ -550,6 +680,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
     _currentIndexSubject.add(_currentIndex);
     queue.add(_queue.map(_toMediaItem).toList());
+    await _saveSession();
   }
 
   Future<void> shuffleQueue() async {
@@ -574,6 +705,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       _currentIndexSubject.add(_currentIndex);
     }
     queue.add(_queue.map(_toMediaItem).toList());
+    await _saveSession();
   }
 
   Future<void> setLoopMode(LoopMode mode) async {
