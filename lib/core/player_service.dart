@@ -470,6 +470,17 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       _log('play() ignored (loading)');
       return;
     }
+
+    // Если аудио-источник не загружен (например, после восстановления сессии),
+    // загружаем текущий трек через _playIndex (который сам вызовет play())
+    if (_player.processingState == ProcessingState.idle &&
+        _currentIndex >= 0 &&
+        _currentIndex < _queue.length) {
+      _log('play() on idle player — loading current index=$_currentIndex');
+      await _playIndex(_currentIndex);
+      return;
+    }
+
     await _player.play();
     await _saveSession();
   }
