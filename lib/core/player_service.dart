@@ -587,27 +587,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
           queueIndex: _currentIndex,
         ));
 
-        // Загружаем аудио-источник в фоне. Это может занять 1–5 секунд
-        // (YouTube требует внешнего extractor'а), но мини-плеер уже виден.
-        unawaited(_restoreAudioSource(track));
+        // Аудио-источник не загружаем — только показываем UI.
+        // При нажатии Play сработает обычный _playIndex, который сам
+        // сделает createAudioSource (с поддержкой кэша через LockCachingAudioSource).
       }
     } catch (e, st) {
       _log('Session restore failed: $e\n$st');
-    }
-  }
-
-  /// Фоновая загрузка аудио-источника для восстановленного трека.
-  /// Вызывается после того, как UI уже показал трек через mediaItem.add().
-  Future<void> _restoreAudioSource(Track track) async {
-    try {
-      final src = SourceRegistry.instance.require(track.sourceId);
-      final url = await src.resolveStreamUrl(track);
-      await _player.setAudioSource(AudioSource.uri(Uri.parse(url)));
-
-      // Обновляем PlaybackState после загрузки аудио: плеер готов к воспроизведению
-      playbackState.add(_transformEvent(PlaybackEvent()));
-    } catch (_) {
-      _log('Failed to restore audio source for "${track.title}"');
     }
   }
 
