@@ -294,7 +294,7 @@ class ArtworkProvider {
     }
 
     // Собираем всех артистов из API-ответа: primary + featured
-    List<String> _apiArtists(Map<String, dynamic> result) {
+    List<String> extractApiArtists(Map<String, dynamic> result) {
       final list = <String>[];
       final primary = (result['primary_artist']?['name'] as String?)?.toLowerCase().trim();
       if (primary != null && primary.isNotEmpty) list.add(primary);
@@ -311,7 +311,7 @@ class ArtworkProvider {
       return list;
     }
 
-    bool _artistMatch(List<String> apiArtists) {
+    bool artistMatch(List<String> apiArtists) {
       if (wantArtists.isEmpty || wantArtists.contains('unknown')) return true;
       for (final want in wantArtists) {
         if (want.isEmpty) continue;
@@ -323,7 +323,7 @@ class ArtworkProvider {
       return false;
     }
 
-    bool _titleMatch(String apiTitle) {
+    bool titleMatch(String apiTitle) {
       if (wantTitleNorm.isEmpty) return true;
       final apiNorm = _normalize(apiTitle);
       if (apiNorm == wantTitleNorm) return true;
@@ -337,8 +337,8 @@ class ArtworkProvider {
     Map<String, dynamic>? artistFallback;
 
     for (final result in candidates) {
-      final apiArtists = _apiArtists(result);
-      final hasArtist = _artistMatch(apiArtists);
+      final apiArtists = extractApiArtists(result);
+      final hasArtist = artistMatch(apiArtists);
 
       // Проверяем все варианты title
       final titleFields = [
@@ -350,7 +350,7 @@ class ArtworkProvider {
       bool hasTitle = false;
       for (final raw in titleFields) {
         if (raw is! String) continue;
-        if (_titleMatch(raw)) {
+        if (titleMatch(raw)) {
           hasTitle = true;
           break;
         }

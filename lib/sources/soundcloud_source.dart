@@ -346,7 +346,10 @@ class SoundCloudSource implements TrackSource {
             scheduleNotify();
           }
         } on TimeoutException {
-        } catch (_) {}
+          // Таймаут при поиске обложки — пропускаем трек
+        } catch (_) {
+          // Прочие ошибки поиска обложки игнорируем
+        }
       }
     }
 
