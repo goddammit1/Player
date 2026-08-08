@@ -5,7 +5,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Поиск обложек. Genius + iTunes fallback.
 class ArtworkProvider {
   ArtworkProvider._();
   static final ArtworkProvider instance = ArtworkProvider._();
@@ -18,7 +17,6 @@ class ArtworkProvider {
   late final String _prefsPrefix =
       '${_prefsPrefixBase}_${_geniusToken.isEmpty ? 'noauth' : 'auth'}:';
 
-  // --- static final RegExp: компилируем один раз ---
   static final _reParen = RegExp(r'\s*\([^)]*\)');
   static final _reBracket = RegExp(r'\s*\[[^\]]*\]');
   static final _reFeat = RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$', caseSensitive: false);
@@ -27,6 +25,7 @@ class ArtworkProvider {
     caseSensitive: false,
   );
   static final _reSpaces = RegExp(r'\s+');
+  static final _reNonWord = RegExp(r'[^\w\s]');
 
   final Dio _dio = Dio(
     BaseOptions(
@@ -108,14 +107,25 @@ class ArtworkProvider {
     return '$a|$t';
   }
 
+  List<String> _splitArtists(String artists) {
+    return artists
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  /// Нормализует строку для сравнения: убирает non-word символы (в т.ч. *).
+  String _normalize(String s) {
+    return s.toLowerCase().replaceAll(_reNonWord, '').replaceAll(_reSpaces, ' ').trim();
+  }
+
   Future<String?> findArtwork(String artist, String title) async {
     final key = _key(artist, title);
 
-    // 1) RAM
     final mem = _memCache[key];
     if (mem != null) return mem.isEmpty ? null : mem;
 
-    // 2) Persistent
     await _ensurePrefs();
     final saved = _prefs?.getString('$_prefsPrefix$key');
     if (saved != null) {
@@ -123,7 +133,6 @@ class ArtworkProvider {
       return saved.isEmpty ? null : saved;
     }
 
-    // 3) In-flight dedup
     final existing = _inFlight[key];
     if (existing != null) return existing;
 
@@ -138,13 +147,11 @@ class ArtworkProvider {
     }
   }
 
-  /// Запускает Genius и iTunes ПАРАЛЛЕЛЬНО.
   Future<String?> _findArtworkNetwork(
     String artist,
     String title,
     String key,
   ) async {
-    // Параллельный запуск обоих провайдеров
     final geniusFuture = _safeFetch(() => _fetchGenius(artist, title));
     final itunesFuture = _safeFetch(() => _fetchItunes(artist, title));
 
@@ -159,7 +166,6 @@ class ArtworkProvider {
     final geniusError = geniusResult == _networkErrorMarker;
     final itunesError = itunesResult == _networkErrorMarker;
 
-    // Приоритет: Genius, затем iTunes
     final url = (geniusResult != null &&
             geniusResult.isNotEmpty &&
             geniusResult != _networkErrorMarker)
@@ -190,7 +196,6 @@ class ArtworkProvider {
     }
 
     if (!networkError) {
-      // Оба честно ответили «не нашёл»
       _memCache[key] = '';
       unawaited(
         _prefs?.setString('$_prefsPrefix$key', '') ?? Future.value(),
@@ -199,10 +204,8 @@ class ArtworkProvider {
     return null;
   }
 
-  /// Маркер сетевой ошибки, отличный от null и ''.
   static const String _networkErrorMarker = '__NETWORK_ERROR__';
 
-  /// Оборачивает fetch в try/catch, возвращая маркер при ошибке.
   Future<String?> _safeFetch(Future<String?> Function() fetch) async {
     try {
       return await fetch();
@@ -222,9 +225,15 @@ class ArtworkProvider {
   Future<String?> _fetchGenius(String artist, String title) async {
     if (_geniusToken.isEmpty) return null;
 
-    final cleanArtist = _cleanSearchTerm(artist);
+    final artists = _splitArtists(artist);
     final cleanTitle = _cleanSearchTerm(title);
-    final q = '$cleanArtist $cleanTitle';
+
+    // Поиск: все артисты через пробел + title (запятые мешают API)
+    final q = '${artists.join(' ')} $cleanTitle'.trim();
+
+    // Для матчинга: нормализованные строки (убираем *, скобки и т.д.)
+    final wantTitleNorm = _normalize(_cleanSearchTerm(title));
+    final wantArtists = artists.map((a) => a.toLowerCase().trim()).toList();
 
     final resp = await _dio.get<dynamic>(
       'https://api.genius.com/search',
@@ -234,8 +243,6 @@ class ArtworkProvider {
       ),
     );
 
-    // 1. ОШИБКА СЕТИ / АВТОРИЗАЦИИ: Бросаем исключение, чтобы _safeFetch
-    // вернул _networkErrorMarker и НЕ заблокировал трек в кэше навсегда.
     if (resp.statusCode != 200) {
       if (kDebugMode && (resp.statusCode == 401 || resp.statusCode == 403)) {
         debugPrint(
@@ -259,10 +266,6 @@ class ArtworkProvider {
       return '';
     }
 
-    final wantArtist = cleanArtist.toLowerCase().trim();
-    final wantTitle = cleanTitle.toLowerCase().trim();
-
-    // Собираем hits с обложкой
     final candidates = <Map<String, dynamic>>[];
     for (final hit in hits) {
       final result = hit['result'] as Map<String, dynamic>?;
@@ -290,59 +293,102 @@ class ArtworkProvider {
       }
     }
 
+    // Собираем всех артистов из API-ответа: primary + featured
+    List<String> _apiArtists(Map<String, dynamic> result) {
+      final list = <String>[];
+      final primary = (result['primary_artist']?['name'] as String?)?.toLowerCase().trim();
+      if (primary != null && primary.isNotEmpty) list.add(primary);
+
+      final featured = result['featured_artists'] as List?;
+      if (featured != null) {
+        for (final f in featured) {
+          if (f is Map<String, dynamic>) {
+            final name = (f['name'] as String?)?.toLowerCase().trim();
+            if (name != null && name.isNotEmpty) list.add(name);
+          }
+        }
+      }
+      return list;
+    }
+
+    bool _artistMatch(List<String> apiArtists) {
+      if (wantArtists.isEmpty || wantArtists.contains('unknown')) return true;
+      for (final want in wantArtists) {
+        if (want.isEmpty) continue;
+        for (final api in apiArtists) {
+          if (api == want) return true;
+          if (want.length > 2 && (api.contains(want) || want.contains(api))) return true;
+        }
+      }
+      return false;
+    }
+
+    bool _titleMatch(String apiTitle) {
+      if (wantTitleNorm.isEmpty) return true;
+      final apiNorm = _normalize(apiTitle);
+      if (apiNorm == wantTitleNorm) return true;
+      if (wantTitleNorm.length > 3 && apiNorm.contains(wantTitleNorm)) return true;
+      if (apiNorm.length > 3 && wantTitleNorm.contains(apiNorm)) return true;
+      return false;
+    }
+
     Map<String, dynamic>? exactMatch;
     Map<String, dynamic>? partialMatch;
+    Map<String, dynamic>? artistFallback;
 
     for (final result in candidates) {
-      final apiArtist =
-          ((result['primary_artist']?['name'] as String?) ?? '').toLowerCase().trim();
+      final apiArtists = _apiArtists(result);
+      final hasArtist = _artistMatch(apiArtists);
 
-      // 2. БЕЗОПАСНЫЙ ПОИСК ИСПОЛНИТЕЛЯ: Защита от коротких строк (чтобы 'art' не совпадал с 'Arctic Monkeys')
-      final artistMatch = wantArtist.isEmpty ||
-          wantArtist == 'unknown' ||
-          apiArtist == wantArtist ||
-          (wantArtist.length > 3 && (apiArtist.contains(wantArtist) || wantArtist.contains(apiArtist)));
-
-      if (!artistMatch) continue;
-
-      // Проверяем варианты title
+      // Проверяем все варианты title
       final titleFields = [
         result['title'],
         result['title_with_featured'],
         result['full_title'],
       ];
+
+      bool hasTitle = false;
       for (final raw in titleFields) {
         if (raw is! String) continue;
-        final cleanedTitle = _cleanSearchTerm(raw).toLowerCase().trim();
-
-        // 2. БЕЗОПАСНЫЙ ПОИСК НАЗВАНИЯ
-        final titleMatch = wantTitle.isEmpty ||
-            cleanedTitle == wantTitle ||
-            (wantTitle.length > 3 && (cleanedTitle.contains(wantTitle) || wantTitle.contains(cleanedTitle)));
-
-        if (!titleMatch) continue;
-
-        if (cleanedTitle == wantTitle && apiArtist == wantArtist) {
-          exactMatch = result;
+        if (_titleMatch(raw)) {
+          hasTitle = true;
           break;
         }
-        partialMatch ??= result;
       }
-      if (exactMatch != null) break;
+
+      if (!hasArtist) continue;
+
+      // Запоминаем первого с совпадающим artist (fallback)
+      artistFallback ??= result;
+
+      if (!hasTitle) continue;
+
+      // Проверяем exact: title exact && любой artist exact
+      final apiTitleNorm = _normalize((result['title'] as String?) ?? '');
+      final isExactTitle = apiTitleNorm == wantTitleNorm;
+      final isExactArtist = wantArtists.any((w) => apiArtists.any((a) => a == w));
+
+      if (isExactTitle && isExactArtist) {
+        exactMatch = result;
+        break;
+      }
+      partialMatch ??= result;
     }
 
-    // 3. УБРАН ОПАСНЫЙ FALLBACK: Больше не берем `candidates.first`, если ни один результат не подошел!
-    final chosen = exactMatch ?? partialMatch;
+    // Приоритет: exact → partial → artistFallback (хоть какая-то обложка)
+    final chosen = exactMatch ?? partialMatch ?? artistFallback;
 
     if (chosen == null) {
       if (kDebugMode) {
-        debugPrint('[ArtworkProvider] Genius: ни один из результатов не подошел под "$wantArtist — $wantTitle"');
+        debugPrint('[ArtworkProvider] Genius: ни один не подошёл под "$q"');
       }
-      return ''; // Отдаем пустую строку, чтобы включился iTunes fallback
+      return '';
     }
 
     if (kDebugMode) {
-      final matchType = chosen == exactMatch ? 'EXACT' : 'PARTIAL';
+      final matchType = chosen == exactMatch
+          ? 'EXACT'
+          : (chosen == partialMatch ? 'PARTIAL' : 'ARTIST_FALLBACK');
       final chosenTitle = (chosen['title'] as String?) ?? '?';
       final chosenArtist = (chosen['primary_artist']?['name'] as String?) ?? '?';
       debugPrint(
@@ -358,14 +404,12 @@ class ArtworkProvider {
   }
 
   String? _extractArtworkUrl(Map<String, dynamic> result) {
-    // Приоритет отдаем обложке трека/альбома.
     final songArt = result['song_art_image_url'] as String?;
     if (songArt != null && songArt.isNotEmpty) return songArt;
 
     final thumb = result['song_art_image_thumbnail_url'] as String?;
     if (thumb != null && thumb.isNotEmpty) return thumb;
 
-    // header_image_url берём в последнюю очередь, так как там часто баннеры, а не квадратные обложки
     final header = result['header_image_url'] as String?;
     if (header != null && header.isNotEmpty) return header;
 
@@ -392,7 +436,8 @@ class ArtworkProvider {
   // ---------------------------------------------------------------------
 
   Future<String?> _fetchItunes(String artist, String title) async {
-    final cleanArtist = _cleanSearchTerm(artist);
+    final artists = _splitArtists(artist);
+    final cleanArtist = _cleanSearchTerm(artists.firstOrNull ?? artist);
     final cleanTitle = _cleanSearchTerm(title);
     final term = '$cleanArtist $cleanTitle';
 

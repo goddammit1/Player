@@ -5,38 +5,12 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 
+import '../core/youtube_cache.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
 import 'track_source.dart';
-import '../core/youtube_cache.dart';
 
-/// Источник треков на основе публичного веб-API SoundCloud.
-///
-/// SoundCloud давно не выдаёт новые официальные API-ключи, но публичный
-/// веб-клиент (soundcloud.com) использует `client_id`, который зашит в
-/// его JS-бандлы. Мы извлекаем этот `client_id` так же, как это делает
-/// любой неофициальный клиент:
-///
-/// 1. `GET https://soundcloud.com/` → в HTML лежат `script`-теги со
-///    `src` на `https://a-v2.sndcdn.com/assets/<hash>.js` бандлы.
-/// 2. Скачиваем эти JS-файлы (с конца — нужный `client_id` обычно в
-///    последних) и ищем `client_id:"XXXXXXXX"` регуляркой.
-/// 3. С этим `client_id` дёргаем `https://api-v2.soundcloud.com`:
-///    - поиск: `GET /search/tracks?q=<query>&client_id=<id>&limit=20`
-///    - каждый трек содержит title, user.username (артист),
-///      duration (мс), artwork_url (готовая обложка!), и
-///      `media.transcodings[]` со ссылками на стримы.
-///
-/// Воспроизведение (вариант progressive/MP3):
-/// Среди `media.transcodings` берём формат `protocol == "progressive"`
-/// (прямой MP3). Его URL — это «authorized URL», который при GET с тем
-/// же `client_id` отдаёт JSON `{"url": "<финальная CDN-ссылка>"}`. Эту
-/// CDN-ссылку оборачиваем в [LockCachingAudioSource] (как muzmo) —
-/// файл качается один раз, seek мгновенный.
-///
-/// Обложки SoundCloud отдаёт сам (`artwork_url`), поэтому Genius/iTunes
-/// здесь нужен только как фолбэк для треков без обложки.
 class SoundCloudSource implements TrackSource {
   static const String _siteUrl = 'https://soundcloud.com';
   static const String _apiBase = 'https://api-v2.soundcloud.com';
@@ -54,21 +28,13 @@ class SoundCloudSource implements TrackSource {
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
       },
-      // Не бросаемся исключениями на не-200 — обрабатываем явно.
       validateStatus: (code) => code != null && code < 500,
     ),
   );
 
-  /// Извлечённый из JS-бандлов client_id. Резолвится лениво один раз за
-  /// сессию.
   String? _clientId;
   Future<String?>? _clientIdFuture;
-
-  /// Счётчик неудачных попыток получить client_id подряд.
-  /// Сбрасывается при успешном извлечении.
   int _clientIdFailedAttempts = 0;
-
-  /// Максимальное количество повторных попыток извлечь client_id.
   static const int _maxClientIdAttempts = 3;
 
   @override
@@ -81,17 +47,9 @@ class SoundCloudSource implements TrackSource {
   //  CLIENT_ID
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Гарантирует наличие `client_id`. Возвращает null, если извлечь не
-  /// удалось после [_maxClientIdAttempts] попыток (тогда поиск вернёт
-  /// пустой список — best-effort).
-  ///
-  /// Если предыдущая попытка вернула null, но лимит не исчерпан,
-  /// следующий вызов предпримет новую попытку.
   Future<String?> _ensureClientId() {
     if (_clientId != null) return Future.value(_clientId);
 
-    // Если future ещё не создана или предыдущая завершилась неудачей
-    // (но есть запас попыток) — запускаем новую попытку.
     if (_clientIdFuture == null ||
         (_clientIdFailedAttempts > 0 &&
             _clientIdFailedAttempts < _maxClientIdAttempts)) {
@@ -100,7 +58,6 @@ class SoundCloudSource implements TrackSource {
     return _clientIdFuture!;
   }
 
-  /// Извлекает client_id с лимитом повторных попыток и backoff'ом.
   Future<String?> _fetchClientIdWithRetry() async {
     while (_clientIdFailedAttempts < _maxClientIdAttempts) {
       final result = await _fetchClientId();
@@ -111,7 +68,6 @@ class SoundCloudSource implements TrackSource {
       }
       _clientIdFailedAttempts++;
       if (_clientIdFailedAttempts >= _maxClientIdAttempts) break;
-      // Экспоненциальный backoff: 300мс, 600мс...
       await Future.delayed(
         Duration(milliseconds: 300 * _clientIdFailedAttempts),
       );
@@ -119,10 +75,9 @@ class SoundCloudSource implements TrackSource {
     return null;
   }
 
-  /// Парсит главную страницу SoundCloud, находит ссылки на JS-бандлы и
-  /// ищет в них `client_id:"..."`.
   Future<String?> _fetchClientId() async {
     try {
+      if (kDebugMode) debugPrint('[SoundCloud] Парсим главную страницу для поиска client_id...');
       final pageResp = await _dio.get<String>(
         _siteUrl,
         options: Options(responseType: ResponseType.plain),
@@ -130,8 +85,6 @@ class SoundCloudSource implements TrackSource {
       final html = pageResp.data;
       if (html == null || html.isEmpty) return null;
 
-      // Все ссылки на JS-бандлы sndcdn. Идём с конца — нужный client_id
-      // традиционно лежит в одном из последних бандлов.
       final scriptUrls = RegExp(
         r'<script[^>]+src="(https://[^"]+\.js)"',
         caseSensitive: false,
@@ -142,17 +95,16 @@ class SoundCloudSource implements TrackSource {
         if (id != null) {
           _clientId = id;
           if (kDebugMode) {
-            debugPrint('[SoundCloud] client_id получен: '
-                '${id.substring(0, 6)}...');
+            debugPrint('[SoundCloud] Успешно извлечен client_id: ${id.substring(0, 6)}...');
           }
           return id;
         }
       }
 
-      debugPrint('[SoundCloud] не удалось извлечь client_id из бандлов');
+      if (kDebugMode) debugPrint('[SoundCloud] Ошибка: Не удалось найти client_id в JS-бандлах');
       return null;
     } catch (e) {
-      debugPrint('[SoundCloud] _fetchClientId threw: $e');
+      if (kDebugMode) debugPrint('[SoundCloud] Исключение при получении client_id: $e');
       return null;
     }
   }
@@ -175,9 +127,8 @@ class SoundCloudSource implements TrackSource {
     }
   }
 
-  /// Сбрасывает закэшированный client_id. Полезно, если он протух
-  /// (SoundCloud вернул 401) — следующий запрос извлечёт свежий.
   void _invalidateClientId() {
+    if (kDebugMode) debugPrint('[SoundCloud] Инвалидация client_id');
     _clientId = null;
     _clientIdFuture = null;
   }
@@ -191,6 +142,8 @@ class SoundCloudSource implements TrackSource {
     final q = query.trim();
     if (q.isEmpty) return const [];
 
+    if (kDebugMode) debugPrint('[SoundCloud] Поиск: "$q" (limit: $limit)');
+
     final clientId = await _ensureClientId();
     if (clientId == null) return const [];
 
@@ -203,7 +156,6 @@ class SoundCloudSource implements TrackSource {
       },
     );
 
-    // client_id протух — обновим и попробуем один раз ещё.
     if (resp.statusCode == 401) {
       _invalidateClientId();
       final fresh = await _ensureClientId();
@@ -211,7 +163,11 @@ class SoundCloudSource implements TrackSource {
       return _searchWith(fresh, q, limit);
     }
 
-    if (resp.statusCode != 200) return const [];
+    if (resp.statusCode != 200) {
+      if (kDebugMode) debugPrint('[SoundCloud] Поиск вернул HTTP ${resp.statusCode}');
+      return const [];
+    }
+
     return _parseTracks(resp.data, limit);
   }
 
@@ -228,7 +184,6 @@ class SoundCloudSource implements TrackSource {
     return _parseTracks(resp.data, limit);
   }
 
-  /// Приводит тело ответа к Map (Dio иногда отдаёт String).
   Map<String, dynamic>? _asMap(Object? data) {
     if (data is Map<String, dynamic>) return data;
     if (data is String && data.isNotEmpty) {
@@ -249,24 +204,33 @@ class SoundCloudSource implements TrackSource {
 
     for (final item in collection) {
       if (item is! Map) continue;
-      // Иногда в collection попадают плейлисты/пользователи — нам нужны
-      // только треки (у них есть media.transcodings).
       final kind = item['kind'];
       if (kind != null && kind != 'track') continue;
 
       final media = item['media'];
-      final transcodings = media is Map ? media['transcodings'] : null;
-      if (transcodings is! List || transcodings.isEmpty) continue;
+      final rawTranscodings = media is Map ? media['transcodings'] : null;
+      if (rawTranscodings is! List || rawTranscodings.isEmpty) continue;
 
-      // Ищем progressive (MP3) транскодинг.
-      final progressive = _findProgressive(transcodings);
-      if (progressive == null) continue; // только HLS — пропускаем (вариант 1)
+      // ИСПРАВЛЕНИЕ: Отфильтровываем зашифрованные транскодинги (cbc-encrypted-hls)
+      final transcodings = <Map<String, dynamic>>[];
+      for (final t in rawTranscodings) {
+        if (t is Map) {
+          final url = t['url'];
+          final format = t['format'];
+          final protocol = (format is Map ? format['protocol'] as String? : '') ?? '';
 
-      final progressiveUrl = progressive['url'] as String;
-      // Оценка битрейта по метаданным транскодинга — мгновенно и без
-      // сетевых запросов (точного битрейта api-v2 не отдаёт).
-      final presetKbps = _bitrateFromTranscoding(progressive);
+          // Игнорируем DRM-зашифрованные стримы, которые ExoPlayer не может расшифровать
+          if (protocol.contains('encrypted')) continue;
 
+          if (url is String && url.isNotEmpty) {
+            transcodings.add(Map<String, dynamic>.from(t));
+          }
+        }
+      }
+
+      if (transcodings.isEmpty) continue;
+
+      final trackAuth = item['track_authorization'] as String?;
       final idVal = item['id'];
       if (idVal == null) continue;
       final trackId = idVal.toString();
@@ -287,6 +251,7 @@ class SoundCloudSource implements TrackSource {
               : null);
 
       final artworkUrl = _bestArtwork(item);
+      final presetKbps = _bitrateFromTranscoding(transcodings.first);
 
       result.add(
         Track(
@@ -299,8 +264,9 @@ class SoundCloudSource implements TrackSource {
           qualityScore: presetKbps,
           qualityLabel: presetKbps != null ? '$presetKbps kbps' : null,
           extra: {
-            // URL транскодинга (authorized) — резолвим в CDN-ссылку лениво.
-            'transcodingUrl': progressiveUrl,
+            'transcodings': transcodings,
+            if (trackAuth != null && trackAuth.isNotEmpty)
+              'trackAuthorization': trackAuth,
           },
         ),
       );
@@ -308,29 +274,11 @@ class SoundCloudSource implements TrackSource {
       if (result.length >= limit) break;
     }
 
+    if (kDebugMode) debugPrint('[SoundCloud] Найдено треков (без DRM): ${result.length}');
+
     return result;
   }
 
-  /// Находит progressive-транскодинг (MP3) среди списка. Возвращает всю
-  /// Map транскодинга (url, preset, quality, format), а не только URL —
-  /// метаданные нужны для оценки битрейта.
-  Map? _findProgressive(List transcodings) {
-    for (final t in transcodings) {
-      if (t is! Map) continue;
-      final format = t['format'];
-      final protocol = format is Map ? format['protocol'] : null;
-      if (protocol == 'progressive') {
-        final url = t['url'];
-        if (url is String && url.isNotEmpty) return t;
-      }
-    }
-    return null;
-  }
-
-  /// Оценивает битрейт (kbps) по метаданным транскодинга SoundCloud.
-  ///
-  /// Точного битрейта api-v2 не отдаёт, но preset/quality стабильны:
-  /// progressive mp3 «sq» — 128 kbps, «hq» (Go+) — 256, opus — ~64.
   int? _bitrateFromTranscoding(Map t) {
     final preset = (t['preset'] as String? ?? '').toLowerCase();
     final quality = (t['quality'] as String? ?? '').toLowerCase();
@@ -346,9 +294,6 @@ class SoundCloudSource implements TrackSource {
     return null;
   }
 
-  /// Возвращает лучшую доступную обложку. SoundCloud отдаёт `artwork_url`
-  /// в варианте `-large.jpg` (100x100) — апскейлим до `-t500x500.jpg`.
-  /// Если у трека нет обложки, берём аватар пользователя.
   String? _bestArtwork(Map item) {
     String? raw = item['artwork_url'] as String?;
     if (raw == null || raw.isEmpty) {
@@ -360,12 +305,9 @@ class SoundCloudSource implements TrackSource {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  ОБОГАЩЕНИЕ ОБЛОЖКАМИ (фолбэк для треков без artwork_url)
+  //  ОБОГАЩЕНИЕ ОБЛОЖКАМИ
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Догружает обложки через [ArtworkProvider] только для тех треков
-  /// SoundCloud, у которых её нет. Работа идёт в фоне; по мере находок
-  /// вызывается [onUpdate] с обновлённым списком.
   void enrichArtworksInBackground(
     List<Track> tracks,
     void Function(List<Track> updated) onUpdate,
@@ -378,10 +320,6 @@ class SoundCloudSource implements TrackSource {
     List<Track> tracks,
     void Function(List<Track> updated) onUpdate,
   ) async {
-    // 2 вместо 3: в режиме «все источники» воркеры каждого источника
-    // работают параллельно, и 3+3 одновременных запросов к Genius
-    // уже достаточно. Меньше concurrency = меньше шанс 429 и
-    // меньше одновременных таймаутов, которые замедляют UI.
     const concurrency = 2;
     var index = 0;
 
@@ -400,12 +338,6 @@ class SoundCloudSource implements TrackSource {
         final t = tracks[i];
         if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) continue;
         try {
-          // Без внешнего .timeout(): раньше при медленной сети future
-          // «бросался» по таймауту, findArtwork доезжал до конца и клал
-          // URL в кэш, но текущая выдача уже не обновлялась — обложка
-          // «появлялась» только при следующем поиске. Сам findArtwork
-          // ограничен таймаутами Dio (5 сек connect/receive на запрос),
-          // так что воркер не зависнет.
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
               .timeout(const Duration(seconds: 8));
@@ -414,10 +346,7 @@ class SoundCloudSource implements TrackSource {
             scheduleNotify();
           }
         } on TimeoutException {
-          // best-effort: не кэшируем и не ломаем UI
-        } catch (_) {
-          // best-effort
-        }
+        } catch (_) {}
       }
     }
 
@@ -427,68 +356,182 @@ class SoundCloudSource implements TrackSource {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  СТРИМ
+  //  СТРИМ И РЕЗОЛВ ТРАНСКОДИНГОВ
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Резолвит финальную CDN-ссылку на MP3.
-  ///
-  /// `transcodingUrl` — это authorized-endpoint. GET к нему с client_id
-  /// отдаёт JSON `{"url": "https://cf-media.sndcdn.com/...mp3?..."}`.
-  Future<String> _resolveProgressiveUrl(String transcodingUrl) async {
+  Future<String> _resolveTranscodingUrl(
+    String transcodingUrl, {
+    String? trackAuthorization,
+  }) async {
     final clientId = await _ensureClientId();
     if (clientId == null) {
       throw StateError('SoundCloud: нет client_id для резолва стрима');
     }
 
+    final queryParams = <String, dynamic>{
+      'client_id': clientId,
+      if (trackAuthorization != null && trackAuthorization.isNotEmpty)
+        'track_authorization': trackAuthorization,
+    };
+
     Future<Response<dynamic>> hit(String cid) => _dio.get<dynamic>(
           transcodingUrl,
-          queryParameters: {'client_id': cid},
+          queryParameters: {
+            ...queryParams,
+            'client_id': cid,
+          },
         );
 
     var resp = await hit(clientId);
     if (resp.statusCode == 401) {
+      if (kDebugMode) debugPrint('[SoundCloud] Токен протух (401), инвалидируем client_id...');
       _invalidateClientId();
       final fresh = await _ensureClientId();
       if (fresh != null) resp = await hit(fresh);
     }
 
     if (resp.statusCode != 200) {
-      throw StateError(
-          'SoundCloud: транскодинг вернул HTTP ${resp.statusCode}');
+      if (kDebugMode) {
+        debugPrint(
+            '[SoundCloud] ОШИБКА РЕЗОЛВА: HTTP ${resp.statusCode} от $transcodingUrl. Ответ: ${resp.data}');
+      }
+      throw StateError('HTTP ${resp.statusCode}');
     }
 
     final map = _asMap(resp.data);
     final url = map?['url'] as String?;
     if (url == null || url.isEmpty) {
-      throw StateError('SoundCloud: в ответе транскодинга нет url');
+      throw StateError('В ответе нет параметра url');
     }
     return url;
   }
 
   @override
   Future<String> resolveStreamUrl(Track track) async {
-    final transcodingUrl = track.extra['transcodingUrl'] as String?;
-    if (transcodingUrl != null && transcodingUrl.isNotEmpty) {
-      return _resolveProgressiveUrl(transcodingUrl);
+    if (kDebugMode) {
+      debugPrint('[SoundCloud] Резолв стрима для "${track.artist} - ${track.title}" (ID: ${track.id})');
     }
 
-    // Трек восстановлен из плейлиста/БД, где extra (а значит и
-    // transcodingUrl) не сохраняется — см. Track.toMap(). Заново ищем
-    // трек повторным /search по "artist title" и сопоставляем по id.
-    final reResolved = await _reResolveTranscodingUrl(track);
-    if (reResolved != null && reResolved.isNotEmpty) {
-      return _resolveProgressiveUrl(reResolved);
+    final rawTranscodings = track.extra['transcodings'] as List?;
+    var trackAuth = track.extra['trackAuthorization'] as String?;
+
+    List<Map<String, dynamic>> transcodings = [];
+
+    if (rawTranscodings != null && rawTranscodings.isNotEmpty) {
+      for (final t in rawTranscodings) {
+        if (t is Map<String, dynamic>) {
+          transcodings.add(t);
+        } else if (t is Map) {
+          transcodings.add(Map<String, dynamic>.from(t));
+        }
+      }
     }
 
-    throw StateError('SoundCloud: не удалось переразрешить stream URL для '
-        '"${track.artist} - ${track.title}"');
+    // Исключаем зашифрованные потоки
+    transcodings.removeWhere((t) {
+      final format = t['format'];
+      final protocol = (format is Map ? format['protocol'] as String? : '') ?? '';
+      return protocol.contains('encrypted');
+    });
+
+    if (transcodings.isEmpty) {
+      if (kDebugMode) debugPrint('[SoundCloud] Незашифрованные транскодинги отсутствуют в extra. Запрашиваем через API...');
+      final resolvedData = await _fetchTranscodingsForTrack(track);
+      if (resolvedData != null) {
+        transcodings = resolvedData.transcodings;
+        trackAuth ??= resolvedData.trackAuthorization;
+      }
+    }
+
+    if (transcodings.isEmpty) {
+      throw StateError(
+          'SoundCloud: Для трека "${track.artist} - ${track.title}" нет доступных незашифрованных потоков.');
+    }
+
+    // Сортируем: сначала пробуем MP3 (progressive), затем стандартный HLS
+    transcodings.sort((a, b) {
+      final protoA = (a['format'] is Map ? a['format']['protocol'] : '') ?? '';
+      final protoB = (b['format'] is Map ? b['format']['protocol'] : '') ?? '';
+      if (protoA == 'progressive' && protoB != 'progressive') return -1;
+      if (protoA != 'progressive' && protoB == 'progressive') return 1;
+      return 0;
+    });
+
+    Object? lastError;
+    for (final t in transcodings) {
+      final tUrl = t['url'] as String?;
+      final protocol = (t['format'] is Map ? t['format']['protocol'] : 'unknown');
+      if (tUrl == null || tUrl.isEmpty) continue;
+
+      if (kDebugMode) {
+        debugPrint('[SoundCloud] Пробуем транскодинг ($protocol): $tUrl');
+      }
+
+      try {
+        final cdnUrl = await _resolveTranscodingUrl(
+          tUrl,
+          trackAuthorization: trackAuth,
+        );
+        if (kDebugMode) {
+          debugPrint('[SoundCloud] УСПЕХ! Получен CDN URL: ${cdnUrl.substring(0, cdnUrl.length > 60 ? 60 : cdnUrl.length)}...');
+        }
+        return cdnUrl;
+      } catch (e) {
+        lastError = e;
+        if (kDebugMode) {
+          debugPrint('[SoundCloud] Транскодинг $protocol не сработал ($e). Пробуем следующий...');
+        }
+      }
+    }
+
+    throw StateError(
+        'SoundCloud: Ни один открытый транскодинг не сработал для "${track.artist} - ${track.title}". Ошибка: $lastError');
   }
 
-  /// Повторно находит progressive-transcoding URL для трека без
-  /// extra['transcodingUrl']. Делает поиск по "artist title" и ищет
-  /// совпадение сначала по точному id, затем по artist+title, иначе —
-  /// первый результат. Возвращает null, если ничего не нашли.
-  Future<String?> _reResolveTranscodingUrl(Track track) async {
+  Future<_TrackResolvedData?> _fetchTranscodingsForTrack(Track track) async {
+    final clientId = await _ensureClientId();
+    if (clientId == null) return null;
+
+    try {
+      if (kDebugMode) debugPrint('[SoundCloud] GET $_apiBase/tracks/${track.id}');
+      final resp = await _dio.get<dynamic>(
+        '$_apiBase/tracks/${track.id}',
+        queryParameters: {'client_id': clientId},
+      );
+
+      if (resp.statusCode == 200) {
+        final map = _asMap(resp.data);
+        if (map != null) {
+          final media = map['media'];
+          final rawTranscodings = media is Map ? media['transcodings'] : null;
+          final trackAuth = map['track_authorization'] as String?;
+
+          if (rawTranscodings is List && rawTranscodings.isNotEmpty) {
+            final transcodings = <Map<String, dynamic>>[];
+            for (final t in rawTranscodings) {
+              if (t is Map) {
+                final format = t['format'];
+                final protocol = (format is Map ? format['protocol'] as String? : '') ?? '';
+                if (!protocol.contains('encrypted')) {
+                  transcodings.add(Map<String, dynamic>.from(t));
+                }
+              }
+            }
+            return _TrackResolvedData(
+              transcodings: transcodings,
+              trackAuthorization: trackAuth,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('[SoundCloud] Ошибка запроса трека по ID: $e');
+    }
+
+    return _reResolveTranscodingsBySearch(track);
+  }
+
+  Future<_TrackResolvedData?> _reResolveTranscodingsBySearch(Track track) async {
     final query = '${track.artist} ${track.title}'.trim();
     if (query.isEmpty) return null;
 
@@ -496,66 +539,109 @@ class SoundCloudSource implements TrackSource {
       final clientId = await _ensureClientId();
       if (clientId == null) return null;
 
-      final found = await _searchWith(clientId, query, 20);
-      if (found.isEmpty) return null;
+      final resp = await _dio.get<dynamic>(
+        '$_apiBase/search/tracks',
+        queryParameters: {'q': query, 'client_id': clientId, 'limit': 10},
+      );
 
-      // 1) Точное совпадение по id.
-      for (final t in found) {
-        if (t.id == track.id) {
-          final url = t.extra['transcodingUrl'] as String?;
-          if (url != null && url.isNotEmpty) return url;
+      if (resp.statusCode != 200) return null;
+      final map = _asMap(resp.data);
+      if (map == null) return null;
+
+      final collection = (map['collection'] as List?) ?? const [];
+      for (final item in collection) {
+        if (item is! Map) continue;
+        final media = item['media'];
+        final rawTranscodings = media is Map ? media['transcodings'] : null;
+        if (rawTranscodings is! List || rawTranscodings.isEmpty) continue;
+
+        final itemId = item['id']?.toString();
+        final itemTitle = (item['title'] as String? ?? '').toLowerCase().trim();
+        final wantTitle = track.title.toLowerCase().trim();
+
+        if (itemId == track.id || itemTitle == wantTitle) {
+          final transcodings = <Map<String, dynamic>>[];
+          for (final t in rawTranscodings) {
+            if (t is Map) {
+              final format = t['format'];
+              final protocol = (format is Map ? format['protocol'] as String? : '') ?? '';
+              if (!protocol.contains('encrypted')) {
+                transcodings.add(Map<String, dynamic>.from(t));
+              }
+            }
+          }
+          final trackAuth = item['track_authorization'] as String?;
+          return _TrackResolvedData(
+            transcodings: transcodings,
+            trackAuthorization: trackAuth,
+          );
         }
       }
-
-      // 2) Фолбэк: совпадение по artist+title (без учёта регистра).
-      final wantTitle = track.title.toLowerCase().trim();
-      final wantArtist = track.artist.toLowerCase().trim();
-      for (final t in found) {
-        if (t.title.toLowerCase().trim() == wantTitle &&
-            t.artist.toLowerCase().trim() == wantArtist) {
-          final url = t.extra['transcodingUrl'] as String?;
-          if (url != null && url.isNotEmpty) return url;
-        }
-      }
-
-      // 3) Мягкий фолбэк: первый результат.
-      final first = found.first.extra['transcodingUrl'] as String?;
-      return (first != null && first.isNotEmpty) ? first : null;
-    } catch (_) {
-      return null;
+    } catch (e) {
+      if (kDebugMode) debugPrint('[SoundCloud] Ошибка повторного поиска: $e');
     }
+    return null;
   }
 
   @override
   Future<AudioSource> createAudioSource(Track track) async {
-    // Офлайн: если трек уже в кэше — играем локальный файл, не лезем в сеть.
+    if (kDebugMode) {
+      debugPrint('[SoundCloud] === Запуск воспроизведения: "${track.artist} - ${track.title}" ===');
+    }
+
     final offlineSource = await offline.createOfflineAudioSource(track);
-    if (offlineSource != null) return offlineSource;
+    if (offlineSource != null) {
+      return offlineSource;
+    }
 
-    final directUrl = await resolveStreamUrl(track);
+    try {
+      final directUrl = await resolveStreamUrl(track);
+      final isHls = directUrl.contains('.m3u8') || directUrl.contains('/hls');
 
-    final cacheFile = await YoutubeCache.instance.fileForTrack(
-      track,
-      extension: 'mp3',
-    );
+      // ИСПРАВЛЕНИЕ: Передаем 'Accept-Encoding': 'identity', чтобы исключить ZipException в ExoPlayer
+      final headers = const {
+        'User-Agent': _userAgent,
+        'Referer': 'https://soundcloud.com/',
+        'Accept-Encoding': 'identity',
+      };
 
-    return LockCachingAudioSource(
-      Uri.parse(directUrl),
-      cacheFile: cacheFile,
-      tag: track.globalId,
-    );
+      if (isHls) {
+        if (kDebugMode) {
+          debugPrint('[SoundCloud] Создаем HLS AudioSource.uri');
+        }
+        return AudioSource.uri(
+          Uri.parse(directUrl),
+          headers: headers,
+          tag: track.globalId,
+        );
+      }
+
+      if (kDebugMode) {
+        debugPrint('[SoundCloud] Создаем LockCachingAudioSource (MP3)');
+      }
+
+      final cacheFile = await YoutubeCache.instance.fileForTrack(
+        track,
+        extension: 'mp3',
+      );
+
+      return LockCachingAudioSource(
+        Uri.parse(directUrl),
+        headers: headers,
+        cacheFile: cacheFile,
+        tag: track.globalId,
+      );
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('[SoundCloud] Ошибка в createAudioSource: $e');
+        debugPrint('$st');
+      }
+      rethrow;
+    }
   }
 
-  /// Битрейт progressive mp3 SoundCloud по умолчанию (стандарт «sq»).
   static const int _defaultProgressiveKbps = 128;
 
-  /// Ленивый битрейт для «Деталей трека»: считаем по размеру MP3 и
-  /// длительности. Размер узнаём Range-GET с `bytes=0-0`.
-  ///
-  /// Важно: CDN SoundCloud может проигнорировать Range и ответить `200`
-  /// потоком без Content-Length. Поэтому тело читаем как stream (а не
-  /// bytes — иначе Dio скачает весь mp3 ради заголовков) и при
-  /// неизвестном размере фолбэкаемся на оценку из preset.
   @override
   Future<int?> resolveBitrate(Track track) async {
     final dur = track.duration;
@@ -576,7 +662,6 @@ class SoundCloudSource implements TrackSource {
 
       int? bytes;
 
-      // 1) 206: Content-Range: bytes 0-0/123456 → число после '/'.
       final contentRange = resp.headers.value('content-range');
       if (contentRange != null) {
         final slash = contentRange.lastIndexOf('/');
@@ -585,59 +670,48 @@ class SoundCloudSource implements TrackSource {
         }
       }
 
-      // 2) Фолбэк: Content-Length при полном ответе (200).
       if ((bytes == null || bytes <= 0) && resp.statusCode == 200) {
         final lenStr = resp.headers.value('content-length');
         final len = lenStr != null ? int.tryParse(lenStr) : null;
         if (len != null && len > 1) bytes = len;
       }
 
-      // Заголовки прочитаны — тело не нужно. Обрываем стрим, чтобы CDN,
-      // проигнорировавший Range, не лил нам весь файл.
       final body = resp.data;
       if (body != null) {
         unawaited(body.stream.listen(null, cancelOnError: true).cancel());
       }
 
       if (bytes == null || bytes <= 0) {
-        if (kDebugMode) {
-          debugPrint('[SoundCloud] resolveBitrate: размер неизвестен '
-              '(HTTP ${resp.statusCode}, Content-Range: $contentRange) — '
-              'фолбэк на preset');
-        }
         return track.qualityScore ?? _defaultProgressiveKbps;
       }
 
       final kbps = (bytes * 8) / dur.inSeconds / 1000;
       return kbps.round();
     } catch (e) {
-      if (kDebugMode) {
-        debugPrint('[SoundCloud] resolveBitrate threw: $e');
-      }
       return track.qualityScore ?? _defaultProgressiveKbps;
     }
   }
 
   @override
   Future<void> prefetch(Track track) async {
-    // Прогреваем client_id
     await _ensureClientId();
-    
-    // Если у трека уже есть transcodingUrl — резолвим финальный CDN-URL
-    // и начнём фоновое скачивание через LockCachingAudioSource
-    final transcodingUrl = track.extra['transcodingUrl'] as String?;
-    if (transcodingUrl != null && transcodingUrl.isNotEmpty) {
-      try {
-        // Резолвим финальный URL (это самая долгая операция)
-        await _resolveProgressiveUrl(transcodingUrl);
-      } catch (_) {
-        // best-effort, не критично
-      }
-    }
+    try {
+      await resolveStreamUrl(track);
+    } catch (_) {}
   }
 
   @override
   Future<void> dispose() async {
     _dio.close(force: true);
   }
+}
+
+class _TrackResolvedData {
+  final List<Map<String, dynamic>> transcodings;
+  final String? trackAuthorization;
+
+  _TrackResolvedData({
+    required this.transcodings,
+    this.trackAuthorization,
+  });
 }
