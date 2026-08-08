@@ -3,63 +3,70 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../core/app_database.dart';
-
-
-
-/// Поиск обложек для треков, у которых источник (например, Muzmo) их не
-/// отдаёт.
-///
-/// Стратегия:
-/// 1. Сначала пробуем Genius API (нужен Client Access Token). Genius
-///    очень хорош на западной музыке, отдаёт квадратные крупные арты.
-/// 2. Если Genius не нашёл / нет токена / упал — пробуем iTunes Search
-///    API. Он публичный, без токенов, отлично покрывает почти всё, в
-///    том числе русскую попсу. URL обложки расширяем до 600x600.
-/// 3. Результат (включая «не нашлось» как пустую строку) кэшируется:
-///    - в RAM на время жизни процесса,
-///    - в SQLite между запусками — чтобы не дёргать API
-///      повторно для тех же треков.
-///
-/// Класс — синглтон, инициализируется лениво. Все операции best-effort:
-/// при любой ошибке возвращается `null` и трек просто будет показан с
-/// дефолтным плейсхолдером.
+/// Поиск обложек. Genius + iTunes fallback.
 class ArtworkProvider {
   ArtworkProvider._();
   static final ArtworkProvider instance = ArtworkProvider._();
 
-  /// Genius Client Access Token. Получается на https://genius.com/api-clients.
-  /// Задаётся при сборке: `--dart-define=GENIUS_TOKEN=<token>`.
-  /// Если токена нет — провайдер тихо пропустит Genius и пойдёт сразу
-  /// в iTunes-фолбэк.
   static const String _geniusToken =
       String.fromEnvironment('GENIUS_TOKEN', defaultValue: '');
 
-  // Версия кэша входит в префикс. При смене токена негативные ('')
-  // результаты, накопленные БЕЗ Genius, не должны блокировать новый
-  // поиск — поэтому ключ зависит от наличия токена.
   static const String _prefsPrefixBase = 'artwork_v3';
 
-  String get _prefsPrefix =>
+  late final String _prefsPrefix =
       '${_prefsPrefixBase}_${_geniusToken.isEmpty ? 'noauth' : 'auth'}:';
+
+  // --- static final RegExp: компилируем один раз ---
+  static final _reParen = RegExp(r'\s*\([^)]*\)');
+  static final _reBracket = RegExp(r'\s*\[[^\]]*\]');
+  static final _reFeat = RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$', caseSensitive: false);
+  static final _reSuffix = RegExp(
+    r'\s+-\s+(?:Radio|Club|Extended|Original|Alternative|Acoustic|Instrumental|Live|Remix|Remastered|Demo|Single|EP|Album|Version|Edit|Mix|Cut).*$',
+    caseSensitive: false,
+  );
+  static final _reSpaces = RegExp(r'\s+');
 
   final Dio _dio = Dio(
     BaseOptions(
       connectTimeout: const Duration(seconds: 5),
       receiveTimeout: const Duration(seconds: 5),
-      // Не бросаем исключение на 4xx/5xx — обрабатываем сами.
       validateStatus: (_) => true,
     ),
   );
 
-  /// In-memory кеш: ключ -> url ('' означает «искали, не нашли»).
   final Map<String, String> _memCache = {};
-
-  /// In-flight запросы: ключ -> future. Предотвращает дублирование
-  /// одновременных поисков одной и той же обложки из разных виджетов.
   final Map<String, Future<String?>> _inFlight = {};
+
+  SharedPreferences? _prefs;
+  Future<void>? _prefsInit;
+
+  Future<void> _ensurePrefs() {
+    _prefsInit ??= () async {
+      _prefs = await SharedPreferences.getInstance();
+      await _purgeLegacyPrefs();
+    }();
+    return _prefsInit!;
+  }
+
+  static const List<String> _legacyPrefsPrefixes = ['artwork_v1', 'artwork_v2'];
+
+  Future<void> _purgeLegacyPrefs() async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    try {
+      final keys = prefs.getKeys();
+      for (final k in keys) {
+        for (final prefix in _legacyPrefsPrefixes) {
+          if (k.startsWith(prefix)) {
+            await prefs.remove(k);
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+  }
 
   bool _tokenStatusLogged = false;
   void _logTokenStatusOnce() {
@@ -82,23 +89,8 @@ class ArtworkProvider {
     }
   }
 
-  /// Есть ли токен Genius в текущей сборке.
   bool get hasGeniusToken => _geniusToken.isNotEmpty;
 
-  Future<void> _cacheToDb(String key, String value) async {
-    try {
-      final db = await AppDatabase.instance.database;
-      await db.insert(
-        'settings',
-        {'key': key, 'value': value},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    } catch (_) {}
-  }
-
-  /// Приводит тело ответа к Map. Некоторые API (в частности iTunes)
-  /// отдают JSON с заголовком `text/javascript`, и Dio не парсит его
-  /// автоматически — приходит `String`. Декодируем вручную.
   Map<String, dynamic>? _asMap(Object? data) {
     if (data is Map<String, dynamic>) return data;
     if (data is String && data.isNotEmpty) {
@@ -110,51 +102,28 @@ class ArtworkProvider {
     return null;
   }
 
-
   String _key(String artist, String title) {
-
-    // Нормализуем: lowercase + collapse whitespace. Это важно, чтобы
-    // «Imagine Dragons» и «imagine  dragons» давали один ключ кэша.
-    final a = artist.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
-    final t = title.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
+    final a = artist.toLowerCase().trim().replaceAll(_reSpaces, ' ');
+    final t = title.toLowerCase().trim().replaceAll(_reSpaces, ' ');
     return '$a|$t';
   }
 
-  /// Получить URL обложки для трека. Возвращает `null`, если ничего не
-  /// нашли (или всё упало). Никогда не кидает исключений наружу.
-  ///
-  /// Кэширование:
-  /// - Нашли URL → кэшируем URL (в RAM + БД).
-  /// - Оба API явно вернули пустой результат → кэшируем '' в БД
-  ///   (не дёргаем снова).
-  /// - Ошибка сети / таймаут / rate limit → НЕ кэшируем: следующий
-  ///   вызов повторит попытку.
   Future<String?> findArtwork(String artist, String title) async {
     final key = _key(artist, title);
 
-    // 1) RAM.
+    // 1) RAM
     final mem = _memCache[key];
     if (mem != null) return mem.isEmpty ? null : mem;
 
-    // 2) Persistent (SQLite).
-    try {
-      final db = await AppDatabase.instance.database;
-      final rows = await db.query(
-        'settings',
-        columns: ['value'],
-        where: 'key = ?',
-        whereArgs: ['$_prefsPrefix$key'],
-      );
-      if (rows.isNotEmpty) {
-        final saved = rows.first['value'] as String?;
-        if (saved != null) {
-          _memCache[key] = saved;
-          return saved.isEmpty ? null : saved;
-        }
-      }
-    } catch (_) {}
+    // 2) Persistent
+    await _ensurePrefs();
+    final saved = _prefs?.getString('$_prefsPrefix$key');
+    if (saved != null) {
+      _memCache[key] = saved;
+      return saved.isEmpty ? null : saved;
+    }
 
-    // 3) Дедупликация in-flight запросов.
+    // 3) In-flight dedup
     final existing = _inFlight[key];
     if (existing != null) return existing;
 
@@ -169,64 +138,81 @@ class ArtworkProvider {
     }
   }
 
-  /// Сетевой поиск обложки. Запускает Genius и iTunes параллельно и
-  /// возвращает первый успешный непустой результат.
+  /// Запускает Genius и iTunes ПАРАЛЛЕЛЬНО.
   Future<String?> _findArtworkNetwork(
     String artist,
     String title,
     String key,
   ) async {
-    String? geniusResult;
-    bool geniusError = false;
-    try {
-      geniusResult = await _fetchGenius(artist, title);
-    } catch (e) {
-      if (kDebugMode) debugPrint('[ArtworkProvider] Genius threw: $e');
-      geniusError = true;
-    }
+    // Параллельный запуск обоих провайдеров
+    final geniusFuture = _safeFetch(() => _fetchGenius(artist, title));
+    final itunesFuture = _safeFetch(() => _fetchItunes(artist, title));
 
-    String? itunesResult;
-    bool itunesError = false;
-    try {
-      itunesResult = await _fetchItunes(artist, title);
-    } catch (e) {
-      if (kDebugMode) debugPrint('[ArtworkProvider] iTunes threw: $e');
-      itunesError = true;
-    }
+    final results = await Future.wait([
+      geniusFuture,
+      itunesFuture,
+    ]);
 
-    // Приоритет: Genius, если он вернул непустой результат; иначе iTunes.
-    final url = (geniusResult != null && geniusResult.isNotEmpty)
+    final geniusResult = results[0];
+    final itunesResult = results[1];
+
+    final geniusError = geniusResult == _networkErrorMarker;
+    final itunesError = itunesResult == _networkErrorMarker;
+
+    // Приоритет: Genius, затем iTunes
+    final url = (geniusResult != null &&
+            geniusResult.isNotEmpty &&
+            geniusResult != _networkErrorMarker)
         ? geniusResult
-        : (itunesResult != null && itunesResult.isNotEmpty)
+        : (itunesResult != null &&
+                itunesResult.isNotEmpty &&
+                itunesResult != _networkErrorMarker)
             ? itunesResult
             : null;
 
     final found = url != null && url.isNotEmpty;
     final networkError = geniusError || itunesError;
 
-    debugPrint(
-      '[ArtworkProvider] "$artist - $title" -> '
-      '${found ? (geniusResult != null && geniusResult.isNotEmpty ? 'GENIUS' : 'ITUNES') : (networkError ? 'ERROR' : 'NONE')}'
-      '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        '[ArtworkProvider] "$artist - $title" -> '
+        '${found ? (geniusResult != null && geniusResult != _networkErrorMarker && geniusResult.isNotEmpty ? 'GENIUS' : 'ITUNES') : (networkError ? 'ERROR' : 'NONE')}'
+        '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
+      );
+    }
 
     if (found) {
       _memCache[key] = url;
-      _cacheToDb('$_prefsPrefix$key', url);
+      unawaited(
+        _prefs?.setString('$_prefsPrefix$key', url) ?? Future.value(),
+      );
       return url;
     }
 
     if (!networkError) {
-      // Оба API честно ответили «не нашёл» — кэшируем '' в БД,
-      // чтобы не дёргать снова.
+      // Оба честно ответили «не нашёл»
       _memCache[key] = '';
-      _cacheToDb('$_prefsPrefix$key', '');
+      unawaited(
+        _prefs?.setString('$_prefsPrefix$key', '') ?? Future.value(),
+      );
     }
-    // При networkError НЕ кэшируем ничего. Раньше '' попадал в RAM до
-    // перезапуска, и после одного таймаута/429 трек оставался без
-    // обложки всю сессию — отсюда «то есть, то нет». Теперь следующий
-    // поиск просто повторит попытку.
     return null;
+  }
+
+  /// Маркер сетевой ошибки, отличный от null и ''.
+  static const String _networkErrorMarker = '__NETWORK_ERROR__';
+
+  /// Оборачивает fetch в try/catch, возвращая маркер при ошибке.
+  Future<String?> _safeFetch(Future<String?> Function() fetch) async {
+    try {
+      return await fetch();
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('[ArtworkProvider] fetch error: $e');
+        debugPrint('$st');
+      }
+      return _networkErrorMarker;
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -236,175 +222,196 @@ class ArtworkProvider {
   Future<String?> _fetchGenius(String artist, String title) async {
     if (_geniusToken.isEmpty) return null;
 
-    // Чистим title от мусора, который сбивает поиск: (Radio Edit),
-    // [Explicit], (feat. ...), (Original Mix) и т.п. Оставляем
-    // основной заголовок — это повышает точность матчинга и для
-    // Genius, и для iTunes.
     final cleanArtist = _cleanSearchTerm(artist);
     final cleanTitle = _cleanSearchTerm(title);
-
     final q = '$cleanArtist $cleanTitle';
+
     final resp = await _dio.get<dynamic>(
-      'https://api.genius.com/search/songs',
-      queryParameters: {'q': q, 'per_page': 20},
+      'https://api.genius.com/search',
+      queryParameters: {'q': q, 'per_page': 5},
       options: Options(
         headers: {'Authorization': 'Bearer $_geniusToken'},
       ),
     );
-    if (resp.statusCode != 200) {
 
-      // 401/403 = неверный/протухший токен. Это самая частая причина
-      // «обложки не подтягиваются» — выводим в лог явно.
-      if (kDebugMode) {
+    // 1. ОШИБКА СЕТИ / АВТОРИЗАЦИИ: Бросаем исключение, чтобы _safeFetch
+    // вернул _networkErrorMarker и НЕ заблокировал трек в кэше навсегда.
+    if (resp.statusCode != 200) {
+      if (kDebugMode && (resp.statusCode == 401 || resp.statusCode == 403)) {
         debugPrint(
-          '[ArtworkProvider] Genius search HTTP ${resp.statusCode} '
-          'for "$q". '
-          '${resp.statusCode == 401 || resp.statusCode == 403 ? 'Проверь GENIUS_TOKEN (нужен Client Access Token).' : ''}',
+          '[ArtworkProvider] Genius HTTP ${resp.statusCode} — '
+          'проверь GENIUS_TOKEN (нужен Client Access Token).',
         );
       }
-      return null;
+      throw DioException(
+        requestOptions: resp.requestOptions,
+        response: resp,
+        error: 'Genius HTTP status ${resp.statusCode}',
+      );
     }
 
     final data = _asMap(resp.data);
     if (data == null) return null;
 
-    // 200 + пустая выдача = честное «не нашлось» ('' по контракту
-    // findArtwork), а не ошибка — можно кэшировать.
     final hits = (data['response']?['hits'] as List?) ?? const [];
-    if (hits.isEmpty) return '';
-
-    // Ищем первый hit, у которого артист похож на запрошенного.
-    // Раньше брали hits.first без проверки — из-за этого каверы
-    // и ремиксы могли вытеснить оригинальную песню.
-    final best = _findBestHit(hits, cleanArtist, cleanTitle);
-    if (best == null) return '';
-
-    // Приоритет: song_art_image_url (обложка песни, квадратная).
-    // header_image_url — фоновый баннер альбома/артиста, он часто
-    // не квадратный и хуже подходит как обложка. Если song_art нет —
-    // лучше вернуть пустой результат (уйдёт в iTunes-фолбэк), чем
-    // header, который может быть широким баннером.
-    final art = best['song_art_image_url'] as String?;
-    if (art == null || art.isEmpty) return '';
-
-    // Genius отдаёт оригинальное изображение — оно может быть любого
-    // размера. Для квадратной обложки подставляем параметры resize,
-    // чтобы получить ровно 600x600 (квадрат, центрированный crop).
-    return _geniusSquareUrl(art, size: 600);
-  }
-
-  /// Убирает из поискового запроса типичный «мусор», который снижает
-  /// точность поиска обложек: (Radio Edit), [Explicit], feat.,
-  /// Original Mix, Remix, и т.д.
-  ///
-  /// Не трогает символ "&" и апострофы — они важны для названий групп
-  /// (например, "Simon & Garfunkel").
-  String _cleanSearchTerm(String term) {
-    var cleaned = term
-        // Скобочные суффиксы: (Radio Edit), (feat. ...), (Remix) и т.д.
-        .replaceAll(RegExp(r'\s*\([^)]*\)'), '')
-        // Квадратные скобки: [Explicit], [Clean], [Bonus Track] и т.д.
-        .replaceAll(RegExp(r'\s*\[[^\]]*\]'), '')
-        // feat./ft. с артистом
-        .replaceAll(RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$',
-            caseSensitive: false), '')
-        // Суффиксы через тире: " - Radio Edit", " - Remix", и т.д.
-        .replaceAll(RegExp(r'\s+-\s+(?:Radio|Club|Extended|Original|Alternative|Acoustic|Instrumental|Live|Remix|Remastered|Demo|Single|EP|Album|Version|Edit|Mix|Cut).*$',
-            caseSensitive: false), '')
-        .trim();
-    // Если после чистки ничего не осталось — отдаём исходную строку.
-    return cleaned.isEmpty ? term.trim() : cleaned;
-  }
-
-  /// Ищет среди хитов Genius первый, у которого имя артиста похоже на
-  /// запрошенное. Сравнение регистронезависимое, по первому исполнителю
-  /// из списка (artist_names обычно "Artist1, Artist2").
-  ///
-  /// Если ни один hit не подходит по артисту — возвращаем первый
-  /// результат как есть (best-effort), но с пониженным приоритетом
-  /// проверяем song_art_image_url (см. выше).
-  Map<String, dynamic>? _findBestHit(
-    List hits,
-    String cleanArtist,
-    String cleanTitle,
-  ) {
-    // Для запросов без артиста или с артистом "Unknown" — берём первый.
-    final wantArtist = cleanArtist.toLowerCase().trim();
-    if (wantArtist.isEmpty || wantArtist == 'unknown') {
-      return hits.first['result'] as Map<String, dynamic>?;
+    if (hits.isEmpty) {
+      if (kDebugMode) debugPrint('[ArtworkProvider] Genius: пустая выдача для "$q"');
+      return '';
     }
 
-    Map<String, dynamic>? firstResult;
+    final wantArtist = cleanArtist.toLowerCase().trim();
+    final wantTitle = cleanTitle.toLowerCase().trim();
+
+    // Собираем hits с обложкой
+    final candidates = <Map<String, dynamic>>[];
     for (final hit in hits) {
       final result = hit['result'] as Map<String, dynamic>?;
       if (result == null) continue;
-      firstResult ??= result;
 
-      final artistNames = (result['artist_names'] as String?) ?? '';
-      // artist_names — строка вида "Eminem" или "Drake, Rihanna".
-      // Разбиваем по запятой и сравниваем каждый элемент.
-      final names =
-          artistNames.toLowerCase().split(',').map((n) => n.trim()).toList();
-      for (final name in names) {
-        // Достаточно, чтобы запрошенный артист содержался в одном из
-        // имён (или наоборот — имя содержит запрошенного). Это ловит
-        // случаи "Eminem" vs "Eminem (feat. Rihanna)".
-        if (name.contains(wantArtist) || wantArtist.contains(name)) {
-          return result;
-        }
+      final art = _extractArtworkUrl(result);
+      if (art == null || art.isEmpty) continue;
+
+      candidates.add(result);
+    }
+
+    if (candidates.isEmpty) {
+      if (kDebugMode) {
+        debugPrint('[ArtworkProvider] Genius: нет hits с обложкой для "$q"');
+      }
+      return '';
+    }
+
+    if (kDebugMode) {
+      debugPrint('[ArtworkProvider] Genius: ${candidates.length} candidates для "$q"');
+      for (final c in candidates) {
+        final t = c['title'] as String? ?? '?';
+        final a = (c['primary_artist']?['name'] as String?) ?? '?';
+        debugPrint('  -> "$a — $t"');
       }
     }
 
-    // Ни один hit не подошёл по артисту — отдаём первый (best-effort),
-    // но song_art_image_url обязателен (см. выше), так что если у него
-    // нет обложки песни, уйдём в iTunes.
+    Map<String, dynamic>? exactMatch;
+    Map<String, dynamic>? partialMatch;
+
+    for (final result in candidates) {
+      final apiArtist =
+          ((result['primary_artist']?['name'] as String?) ?? '').toLowerCase().trim();
+
+      // 2. БЕЗОПАСНЫЙ ПОИСК ИСПОЛНИТЕЛЯ: Защита от коротких строк (чтобы 'art' не совпадал с 'Arctic Monkeys')
+      final artistMatch = wantArtist.isEmpty ||
+          wantArtist == 'unknown' ||
+          apiArtist == wantArtist ||
+          (wantArtist.length > 3 && (apiArtist.contains(wantArtist) || wantArtist.contains(apiArtist)));
+
+      if (!artistMatch) continue;
+
+      // Проверяем варианты title
+      final titleFields = [
+        result['title'],
+        result['title_with_featured'],
+        result['full_title'],
+      ];
+      for (final raw in titleFields) {
+        if (raw is! String) continue;
+        final cleanedTitle = _cleanSearchTerm(raw).toLowerCase().trim();
+
+        // 2. БЕЗОПАСНЫЙ ПОИСК НАЗВАНИЯ
+        final titleMatch = wantTitle.isEmpty ||
+            cleanedTitle == wantTitle ||
+            (wantTitle.length > 3 && (cleanedTitle.contains(wantTitle) || wantTitle.contains(cleanedTitle)));
+
+        if (!titleMatch) continue;
+
+        if (cleanedTitle == wantTitle && apiArtist == wantArtist) {
+          exactMatch = result;
+          break;
+        }
+        partialMatch ??= result;
+      }
+      if (exactMatch != null) break;
+    }
+
+    // 3. УБРАН ОПАСНЫЙ FALLBACK: Больше не берем `candidates.first`, если ни один результат не подошел!
+    final chosen = exactMatch ?? partialMatch;
+
+    if (chosen == null) {
+      if (kDebugMode) {
+        debugPrint('[ArtworkProvider] Genius: ни один из результатов не подошел под "$wantArtist — $wantTitle"');
+      }
+      return ''; // Отдаем пустую строку, чтобы включился iTunes fallback
+    }
+
     if (kDebugMode) {
+      final matchType = chosen == exactMatch ? 'EXACT' : 'PARTIAL';
+      final chosenTitle = (chosen['title'] as String?) ?? '?';
+      final chosenArtist = (chosen['primary_artist']?['name'] as String?) ?? '?';
       debugPrint(
-        '[ArtworkProvider] Genius: ни один hit не совпал по артисту '
-        '"$cleanArtist" — фолбэк на первый результат.',
+        '[ArtworkProvider] Genius $matchType: '
+        '"$chosenArtist — $chosenTitle"',
       );
     }
-    return firstResult;
+
+    final art = _extractArtworkUrl(chosen);
+    if (art == null || art.isEmpty) return '';
+
+    return _geniusSquareUrl(art, size: 600);
   }
 
-  /// Приводит URL Genius-изображения к квадратному тумбнейлу.
-  ///
-  /// Genius CDN (images.genius.com) поддерживает параметры:
-  ///   `?w=<width>&h=<height>&fit=crop&crop=faces,edges`
-  ///
-  /// Для квадратной обложки используем fit=crop + crop=faces,edges,
-  /// чтобы центрировать обрезку на лицах/краях.
+  String? _extractArtworkUrl(Map<String, dynamic> result) {
+    // Приоритет отдаем обложке трека/альбома.
+    final songArt = result['song_art_image_url'] as String?;
+    if (songArt != null && songArt.isNotEmpty) return songArt;
+
+    final thumb = result['song_art_image_thumbnail_url'] as String?;
+    if (thumb != null && thumb.isNotEmpty) return thumb;
+
+    // header_image_url берём в последнюю очередь, так как там часто баннеры, а не квадратные обложки
+    final header = result['header_image_url'] as String?;
+    if (header != null && header.isNotEmpty) return header;
+
+    return null;
+  }
+
+  String _cleanSearchTerm(String term) {
+    var cleaned = term
+        .replaceAll(_reParen, '')
+        .replaceAll(_reBracket, '')
+        .replaceAll(_reFeat, '')
+        .replaceAll(_reSuffix, '')
+        .trim();
+    return cleaned.isEmpty ? term.trim() : cleaned;
+  }
+
   String _geniusSquareUrl(String rawUrl, {required int size}) {
-    // Убираем уже существующие query-параметры, если есть.
     final base = rawUrl.split('?').first;
     return '$base?w=$size&h=$size&fit=crop&crop=faces,edges';
   }
 
   // ---------------------------------------------------------------------
-  //  iTunes Search API (fallback, без токена)
+  //  iTunes
   // ---------------------------------------------------------------------
 
   Future<String?> _fetchItunes(String artist, String title) async {
     final cleanArtist = _cleanSearchTerm(artist);
     final cleanTitle = _cleanSearchTerm(title);
     final term = '$cleanArtist $cleanTitle';
+
     final resp = await _dio.get<dynamic>(
       'https://itunes.apple.com/search',
       queryParameters: {'term': term, 'entity': 'song', 'limit': 1},
     );
+
     if (resp.statusCode != 200) return null;
+
     final data = _asMap(resp.data);
     if (data == null) return null;
 
-
-    // 200 + пустая выдача = честное «не нашлось», а не ошибка.
     final results = (data['results'] as List?) ?? const [];
     if (results.isEmpty) return '';
 
     final raw = results.first['artworkUrl100'] as String?;
     if (raw == null || raw.isEmpty) return '';
 
-    // iTunes отдаёт 100x100. Поднимаем до 600x600 — обычная замена.
     return raw.replaceAll('100x100bb', '600x600bb');
   }
 }
