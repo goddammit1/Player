@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../models/track.dart';
+import '../sources/artwork_provider.dart';
 import 'app_database.dart';
 
 /// Дисковый кэш приложения.
@@ -403,23 +404,39 @@ class YoutubeCache {
     await _persistPinnedIds();
   }
 
-  /// Чистит дисковый кэш обложек CachedNetworkImage. RAM ImageCache
-  /// Flutter вызывающая сторона чистит сама (PaintingBinding).
+  /// Чистит дисковый кэш обложек CachedNetworkImage, сбрасывает
+  /// SQLite-кэш URL обложек (artwork_v3_*) и in-memory кэш ArtworkProvider,
+  /// чтобы обложки были перезапрошены заново при следующем воспроизведении.
+  /// RAM ImageCache Flutter вызывающая сторона чистит сама (PaintingBinding).
   Future<void> clearArtworkCache() async {
     final dir = await ensureArtworkDir();
-    if (dir == null || !await dir.exists()) return;
-    await for (final entity in dir.list(followLinks: false)) {
-      if (entity is File) {
-        try {
-          await entity.delete();
-        } catch (_) {}
+    if (dir != null && await dir.exists()) {
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is File) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+        }
       }
     }
+
+    // Очищаем SQLite-кэш URL обложек и in-memory кэш ArtworkProvider.
+    try {
+      await AppDatabase.instance.clearArtworkCacheDb();
+    } catch (_) {}
+    ArtworkProvider.instance.clearMemCache();
   }
 
+  /// Очищает абсолютно всё: аудио, обложки с диска, SQLite-кэш URL обложек,
+  /// in-memory кэш ArtworkProvider.
   Future<void> clearAllCache() async {
     await clearAudioCache();
     await clearArtworkCache();
+    // Дополнительно чистим custom artwork cache и любые оставшиеся кэш-записи.
+    try {
+      await AppDatabase.instance.clearCacheData();
+    } catch (_) {}
+    ArtworkProvider.instance.clearMemCache();
   }
 
   // ═══════════════════════════════════════════════════════════════════

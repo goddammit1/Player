@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
+
+import '../core/app_database.dart';
 
 class ArtworkProvider {
   ArtworkProvider._();
@@ -38,32 +40,32 @@ class ArtworkProvider {
   final Map<String, String> _memCache = {};
   final Map<String, Future<String?>> _inFlight = {};
 
-  SharedPreferences? _prefs;
-  Future<void>? _prefsInit;
-
-  Future<void> _ensurePrefs() {
-    _prefsInit ??= () async {
-      _prefs = await SharedPreferences.getInstance();
-      await _purgeLegacyPrefs();
-    }();
-    return _prefsInit!;
+  /// Сбрасывает in-memory кэш URL обложек, заставляя [findArtwork]
+  /// перечитать SQLite и/или перезапросить сеть при следующем вызове.
+  void clearMemCache() {
+    _memCache.clear();
+    _inFlight.clear();
   }
 
-  static const List<String> _legacyPrefsPrefixes = ['artwork_v1', 'artwork_v2'];
-
-  Future<void> _purgeLegacyPrefs() async {
-    final prefs = _prefs;
-    if (prefs == null) return;
+  Future<void> _cacheToDb(String key, String value) async {
     try {
-      final keys = prefs.getKeys();
-      for (final k in keys) {
-        for (final prefix in _legacyPrefsPrefixes) {
-          if (k.startsWith(prefix)) {
-            await prefs.remove(k);
-            break;
-          }
-        }
-      }
+      final db = await AppDatabase.instance.database;
+      await db.insert(
+        'settings',
+        {'key': key, 'value': value},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _cleanupEmptyCache(String rawKey) async {
+    try {
+      final db = await AppDatabase.instance.database;
+      await db.delete(
+        'settings',
+        where: 'key = ?',
+        whereArgs: ['$_prefsPrefix$rawKey'],
+      );
     } catch (_) {}
   }
 
@@ -126,12 +128,28 @@ class ArtworkProvider {
     final mem = _memCache[key];
     if (mem != null) return mem.isEmpty ? null : mem;
 
-    await _ensurePrefs();
-    final saved = _prefs?.getString('$_prefsPrefix$key');
-    if (saved != null) {
-      _memCache[key] = saved;
-      return saved.isEmpty ? null : saved;
-    }
+    try {
+      final db = await AppDatabase.instance.database;
+      final rows = await db.query(
+        'settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: ['$_prefsPrefix$key'],
+      );
+      if (rows.isNotEmpty) {
+        final saved = rows.first['value'] as String?;
+        if (saved != null) {
+          _memCache[key] = saved;
+          if (saved.isEmpty) {
+            // Удаляем «пустой» кэш из БД — он мог остаться от старых версий.
+            // После удаления пробуем перезапросить сеть.
+            unawaited(_cleanupEmptyCache(key));
+            return null;
+          }
+          return saved;
+        }
+      }
+    } catch (_) {}
 
     final existing = _inFlight[key];
     if (existing != null) return existing;
@@ -190,16 +208,24 @@ class ArtworkProvider {
     if (found) {
       _memCache[key] = url;
       unawaited(
-        _prefs?.setString('$_prefsPrefix$key', url) ?? Future.value(),
+        _cacheToDb('$_prefsPrefix$key', url),
       );
       return url;
     }
 
+    // Пустой результат кэшируем только в память (на сессию).
+    // В БД не пишем — чтобы при следующем запуске был шанс перезапросить
+    // (актуально для треков, которые могут появиться в Genius позже,
+    //  а также для случаев временной недоступности API).
     if (!networkError) {
       _memCache[key] = '';
-      unawaited(
-        _prefs?.setString('$_prefsPrefix$key', '') ?? Future.value(),
-      );
+      // Инвалидируем кэш через 2 минуты — позволяет перезапросить обложку
+      // в рамках одной сессии (например, после восстановления сети).
+      Timer(const Duration(minutes: 2), () {
+        if (_memCache[key] == '') {
+          _memCache.remove(key);
+        }
+      });
     }
     return null;
   }
@@ -263,9 +289,52 @@ class ArtworkProvider {
     final hits = (data['response']?['hits'] as List?) ?? const [];
     if (hits.isEmpty) {
       if (kDebugMode) debugPrint('[ArtworkProvider] Genius: пустая выдача для "$q"');
+      // Для запросов с кириллицей Genius часто возвращает 0.
+      // Пробуем fallback: поиск только по артисту (без тайтла).
+      if (_hasCyrillic(q) && artists.isNotEmpty) {
+        final fallbackQ = artists.join(' ').trim();
+        if (fallbackQ.isNotEmpty && fallbackQ != q) {
+          if (kDebugMode) {
+            debugPrint('[ArtworkProvider] Genius: retry with artist-only "$fallbackQ"');
+          }
+          final fbResp = await _dio.get<dynamic>(
+            'https://api.genius.com/search',
+            queryParameters: {'q': fallbackQ, 'per_page': 5},
+            options: Options(
+              headers: {'Authorization': 'Bearer $_geniusToken'},
+            ),
+          );
+          if (fbResp.statusCode == 200) {
+            final fbData = _asMap(fbResp.data);
+            final fbHits = (fbData?['response']?['hits'] as List?) ?? const [];
+            if (fbHits.isNotEmpty) {
+              if (kDebugMode) {
+                debugPrint('[ArtworkProvider] Genius fallback: ${fbHits.length} hits');
+              }
+              // Продолжаем обработку с fallback-результатами
+              return _processGeniusHits(fbHits, wantArtists, wantTitleNorm, isFallback: true);
+            }
+          }
+        }
+      }
       return '';
     }
 
+    return _processGeniusHits(hits, wantArtists, wantTitleNorm, isFallback: false);
+  }
+
+  /// Проверяет, содержит ли строка кириллические символы.
+  static bool _hasCyrillic(String s) {
+    return RegExp(r'[а-яё]', caseSensitive: false).hasMatch(s);
+  }
+
+  /// Обрабатывает хиты Genius (основной или fallback) и возвращает URL обложки.
+  Future<String?> _processGeniusHits(
+    List hits,
+    List<String> wantArtists,
+    String wantTitleNorm, {
+    required bool isFallback,
+  }) async {
     final candidates = <Map<String, dynamic>>[];
     for (final hit in hits) {
       final result = hit['result'] as Map<String, dynamic>?;
@@ -277,23 +346,9 @@ class ArtworkProvider {
       candidates.add(result);
     }
 
-    if (candidates.isEmpty) {
-      if (kDebugMode) {
-        debugPrint('[ArtworkProvider] Genius: нет hits с обложкой для "$q"');
-      }
-      return '';
-    }
+    if (candidates.isEmpty) return '';
 
-    if (kDebugMode) {
-      debugPrint('[ArtworkProvider] Genius: ${candidates.length} candidates для "$q"');
-      for (final c in candidates) {
-        final t = c['title'] as String? ?? '?';
-        final a = (c['primary_artist']?['name'] as String?) ?? '?';
-        debugPrint('  -> "$a — $t"');
-      }
-    }
-
-    // Собираем всех артистов из API-ответа: primary + featured
+    // Собираем всех артистов из API-ответа
     List<String> extractApiArtists(Map<String, dynamic> result) {
       final list = <String>[];
       final primary = (result['primary_artist']?['name'] as String?)?.toLowerCase().trim();
@@ -315,7 +370,8 @@ class ArtworkProvider {
       if (wantArtists.isEmpty || wantArtists.contains('unknown')) return true;
       for (final want in wantArtists) {
         if (want.isEmpty) continue;
-        for (final api in apiArtists) {
+        for (final apiRaw in apiArtists) {
+          final api = apiRaw.toLowerCase();
           if (api == want) return true;
           if (want.length > 2 && (api.contains(want) || want.contains(api))) return true;
         }
@@ -340,7 +396,6 @@ class ArtworkProvider {
       final apiArtists = extractApiArtists(result);
       final hasArtist = artistMatch(apiArtists);
 
-      // Проверяем все варианты title
       final titleFields = [
         result['title'],
         result['title_with_featured'],
@@ -358,12 +413,10 @@ class ArtworkProvider {
 
       if (!hasArtist) continue;
 
-      // Запоминаем первого с совпадающим artist (fallback)
       artistFallback ??= result;
 
       if (!hasTitle) continue;
 
-      // Проверяем exact: title exact && любой artist exact
       final apiTitleNorm = _normalize((result['title'] as String?) ?? '');
       final isExactTitle = apiTitleNorm == wantTitleNorm;
       final isExactArtist = wantArtists.any((w) => apiArtists.any((a) => a == w));
@@ -375,15 +428,15 @@ class ArtworkProvider {
       partialMatch ??= result;
     }
 
-    // Приоритет: exact → partial → artistFallback (хоть какая-то обложка)
-    final chosen = exactMatch ?? partialMatch ?? artistFallback;
+    // Для fallback-запроса (только по артисту) смягчаем требования:
+    // если не нашли по тайтлу, берём первого с подходящим артистом.
+    // Для обычного запроса artistFallback НЕ применяем — он даёт ложные
+    // обложки (например, "Psychosis — Outcast" вместо "Psychosis — Исчезаю").
+    final chosen = exactMatch ??
+        partialMatch ??
+        (isFallback ? artistFallback : null);
 
-    if (chosen == null) {
-      if (kDebugMode) {
-        debugPrint('[ArtworkProvider] Genius: ни один не подошёл под "$q"');
-      }
-      return '';
-    }
+    if (chosen == null) return '';
 
     if (kDebugMode) {
       final matchType = chosen == exactMatch
@@ -443,7 +496,7 @@ class ArtworkProvider {
 
     final resp = await _dio.get<dynamic>(
       'https://itunes.apple.com/search',
-      queryParameters: {'term': term, 'entity': 'song', 'limit': 1},
+      queryParameters: {'term': term, 'entity': 'song', 'limit': 5},
     );
 
     if (resp.statusCode != 200) return null;
@@ -454,7 +507,38 @@ class ArtworkProvider {
     final results = (data['results'] as List?) ?? const [];
     if (results.isEmpty) return '';
 
-    final raw = results.first['artworkUrl100'] as String?;
+    // Фильтруем результаты: артист должен совпадать хотя бы примерно.
+    // Без этой проверки iTunes может вернуть подкаст/чужака
+    // (пример: "psychosis outcast" → Ncrypta "Psychosis (Podcast Mix)" из
+    //  FEARTHEGEAR Podcast).
+    final wantArtistsLower = artists.map((a) => a.toLowerCase().trim()).toList();
+    Map? best;
+    for (final r in results) {
+      final rawArt = r['artworkUrl100'] as String?;
+      if (rawArt == null || rawArt.isEmpty) continue;
+      final apiArtist = ((r['artistName'] as String?) ?? '').toLowerCase().trim();
+      // Проверяем: артист совпадает (в любую сторону).
+      final artistOk = wantArtistsLower.any(
+        (w) => apiArtist.contains(w) || w.contains(apiArtist),
+      );
+      if (artistOk) {
+        best = r;
+        break;
+      }
+      best ??= r; // fallback — первый попавшийся, если ничего не подошло
+    }
+
+    if (best == null) return '';
+    // Если артист не совпал — не возвращаем fallback.
+    // Лучше оставить место для Genius / повторной попытки,
+    // чем показать обложку подкаста/чужого трека.
+    final bestArtist = ((best['artistName'] as String?) ?? '').toLowerCase().trim();
+    final bestArtistOk = wantArtistsLower.any(
+      (w) => bestArtist.contains(w) || w.contains(bestArtist),
+    );
+    if (!bestArtistOk) return '';
+
+    final raw = best['artworkUrl100'] as String?;
     if (raw == null || raw.isEmpty) return '';
 
     return raw.replaceAll('100x100bb', '600x600bb');

@@ -43,7 +43,7 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = 'player_data.db';
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 4;
 
   Database? _db;
 
@@ -71,16 +71,47 @@ class AppDatabase {
       version: _dbVersion,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
+      onConfigure: (db) async {
+        // WAL-mode: параллельные чтения не блокируются записью.
+        // Не все версии sqflite/SQLite поддерживают WAL на всех платформах,
+        // поэтому оборачиваем в try-catch.
+        try {
+          await db.execute('PRAGMA journal_mode = WAL');
+        } catch (_) {}
+      },
     );
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     debugPrint('[AppDatabase] DB upgraded: $oldVersion -> $newVersion');
-    // v1 → v2: структура БД не изменилась, просто поменялся путь к файлу.
-    // При первом запуске после обновления sqflite создаст новую БД
-    // (старая лежала в external storage, который удалён).
-    // Данные восстановятся из системного авто-бэкапа Android или
-    // из ручного полного бэкапа пользователя.
+    if (oldVersion < 3) {
+      // v2 → v3: удаляем пустые artwork-кэши, оставшиеся от предыдущих версий.
+      // Раньше пустые результаты тоже писались в БД, что блокировало повторный
+      // поиск обложек для треков, которые однажды не нашлись.
+      try {
+        final deleted = await db.delete(
+          'settings',
+          where: "key LIKE 'artwork_v3_%' AND (value IS NULL OR value = '')",
+        );
+        if (deleted > 0) {
+          debugPrint('[AppDatabase] v3 migration: removed $deleted empty artwork cache entries');
+        }
+      } catch (_) {}
+    }
+    if (oldVersion < 4) {
+      // v3 → v4: полная очистка artwork-кэша. После фикса iTunes-фильтрации
+      // (artist matching) старые записи могут содержать неверные обложки
+      // Удаляем всё, чтобы запустить чистый пересбор кэша.
+      try {
+        final deleted = await db.delete(
+          'settings',
+          where: "key LIKE 'artwork_v3_%'",
+        );
+        if (deleted > 0) {
+          debugPrint('[AppDatabase] v4 migration: removed $deleted artwork cache entries (full refresh)');
+        }
+      } catch (_) {}
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -862,6 +893,35 @@ class AppDatabase {
       currentIndex: (row['current_index'] as int?) ?? -1,
       positionMs: (row['position_ms'] as int?) ?? 0,
     );
+  }
+
+  // ==============================================================
+  //  CACHE CLEANUP (SQLite)
+  // ==============================================================
+
+  /// Полная очистка кэша URL обложек (artwork_v3_*) из таблицы settings.
+  ///
+  /// Удаляет все записи, которые ArtworkProvider сохраняет как результат
+  /// поиска обложек через Genius / iTunes. После очистки обложки будут
+  /// перезапрошены заново при следующем воспроизведении трека.
+  Future<void> clearArtworkCacheDb() async {
+    final db = await database;
+    await db.delete(
+      'settings',
+      where: "key LIKE 'artwork_v3_%'",
+    );
+  }
+
+  /// Удаляет все кэш-данные из SQLite, сохраняя пользовательские данные
+  /// (плейлисты, историю прослушивания, настройки приложения).
+  ///
+  /// Очищает:
+  /// - artwork URL cache (artwork_v3_*)
+  /// - custom artwork cache (custom_art_v*)
+  Future<void> clearCacheData() async {
+    final db = await database;
+    await db.delete('settings', where: "key LIKE 'artwork_v3_%'");
+    await db.delete('settings', where: "key LIKE 'custom_art_v%'");
   }
 
   // ==============================================================
