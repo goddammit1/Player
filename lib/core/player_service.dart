@@ -13,6 +13,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/track.dart';
 import '../sources/source_registry.dart';
+import '../sources/artwork_provider.dart';
 import 'app_database.dart';
 import 'history_repository.dart';
 import 'youtube_cache.dart';
@@ -487,14 +488,39 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   void _warmArtwork(int index) {
     if (index >= 0 && index < _queue.length) {
-      final url = _queue[index].artworkUrl;
-      if (url != null) _precacheImage(url);
+      final track = _queue[index];
+      final url = track.artworkUrl;
+      if (url != null && url.isNotEmpty) {
+        _precacheImage(url);
+      } else {
+        // Обложки нет — пытаемся найти через Genius/iTunes
+        _fetchAndApplyArtwork(track, index);
+      }
     }
     final next = index + 1;
     if (next < _queue.length) {
-      final url = _queue[next].artworkUrl;
-      if (url != null) _precacheImage(url);
+      final nextTrack = _queue[next];
+      final url = nextTrack.artworkUrl;
+      if (url != null && url.isNotEmpty) {
+        _precacheImage(url);
+      } else {
+        _fetchAndApplyArtwork(nextTrack, next);
+      }
     }
+  }
+
+  void _fetchAndApplyArtwork(Track track, int queueIndex) {
+    ArtworkProvider.instance.findArtwork(track.artist, track.title).then((url) {
+      if (url == null || url.isEmpty) return;
+      if (queueIndex < 0 || queueIndex >= _queue.length) return;
+      // Обновляем трек в очереди
+      final updated = track.copyWith(artworkUrl: url);
+      _queue[queueIndex] = updated;
+      // Обновляем mediaItem для UI (шторка, виджет)
+      mediaItem.add(_toMediaItem(updated));
+      // Обновляем queue stream
+      queue.add(_queue.map(_toMediaItem).toList());
+    }).catchError((_) {});
   }
 
   void _precacheImage(String url) {
