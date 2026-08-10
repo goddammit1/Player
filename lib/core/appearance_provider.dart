@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app_database.dart';
@@ -20,10 +21,20 @@ final appThemeModeProvider =
 });
 
 class AppThemeModeNotifier extends StateNotifier<AppThemeMode> {
-  // Устанавливаем дефолтный режим AppThemeMode.dynamic, если пользователь еще не делал выбор
-  AppThemeModeNotifier() : super(AppThemeMode.dynamic) {
-    _load();
+  // Дефолт — фиксированная чёрно-серая палитра, как требует дизайн-контракт
+  // (см. main.dart: «никакого цветного акцента»). Раньше по умолчанию была
+  // dynamic-тема, и при жёлтой обложке трека вся панель (слайдер, бордеры,
+  // разделители) заливалась производными цветами обложки. Пользователь
+  // может включить dynamic в настройках — выбор сохраняется в БД.
+  AppThemeModeNotifier() : super(AppThemeMode.fixed) {
+    _ready = _load();
   }
+
+  /// Завершается после окончания инициализации (нужно в тестах для
+  /// детерминизма вместо `Future.delayed(Duration.zero)`).
+  @visibleForTesting
+  Future<void> get ready => _ready;
+  late final Future<void> _ready;
 
   static const _key = 'app_theme_mode';
 
@@ -32,7 +43,7 @@ class AppThemeModeNotifier extends StateNotifier<AppThemeMode> {
     if (saved != null) {
       final mode = AppThemeMode.values.firstWhere(
         (e) => e.name == saved,
-        orElse: () => AppThemeMode.dynamic,
+        orElse: () => AppThemeMode.fixed,
       );
       state = mode;
     }
