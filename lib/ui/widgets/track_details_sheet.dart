@@ -93,6 +93,7 @@ class _TrackDetailsSheetState extends ConsumerState<_TrackDetailsSheet> {
                 children: [
                   Artwork(
                     url: t.artworkUrl,
+                    trackId: t.id,
                     size: 64,
                     borderRadius: 12,
                   ),

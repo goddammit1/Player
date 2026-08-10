@@ -830,11 +830,36 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
         mediaItem.add(updated);
       }
     }
+
+    // 6. Синхронизируем сброс с репозиториями (плейлисты, история), чтобы
+    //    обложка в БД вернулась к оригинальной (как в updateCustomArtwork).
+    String? globalId;
+    for (final t in _queue) {
+      if (t.id == trackId) {
+        globalId = t.globalId;
+        break;
+      }
+    }
+    if (globalId != null && globalId.isNotEmpty && originalUrl != null) {
+      PlaylistRepository.instance.updateTrackArtwork(globalId, originalUrl);
+      unawaited(
+        HistoryRepository.instance.updateTrackArtwork(globalId, originalUrl),
+      );
+    }
   }
 
   /// Обновляет обложку трека (и в текущем проигрывателе, и во всей очереди)
   Future<void> updateCustomArtwork(String trackId, String newPath) async {
     final newArtUri = Uri.file(newPath);
+
+    // 0. Находим globalId трека по trackId — по нему репозитории/БД знают трек.
+    String? globalId;
+    for (final t in _queue) {
+      if (t.id == trackId) {
+        globalId = t.globalId;
+        break;
+      }
+    }
 
     // 1. Обновляем трек в локальном списке очереди _queue
     bool queueUpdated = false;
@@ -865,6 +890,15 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
         );
         mediaItem.add(updated);
       }
+    }
+
+    // 4. Синхронизируем обложку с репозиториями (плейлисты, история), чтобы
+    //    она сохранилась в БД и отражалась при экспорте бэкапа.
+    if (globalId != null && globalId.isNotEmpty) {
+      PlaylistRepository.instance.updateTrackArtwork(globalId, newPath);
+      unawaited(
+        HistoryRepository.instance.updateTrackArtwork(globalId, newPath),
+      );
     }
   }
 

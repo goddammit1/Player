@@ -59,6 +59,14 @@ class Playlist {
       .take(4)
       .toList();
 
+  /// trackId первых четырёх треков с обложкой — синхронно с [coverThumbnails],
+  /// чтобы мозаика могла подставить кастомные обложки отдельных треков.
+  List<String> get coverTrackIds => tracks
+      .where((t) => t.artworkUrl != null && t.artworkUrl!.isNotEmpty)
+      .take(4)
+      .map((t) => t.id)
+      .toList();
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,

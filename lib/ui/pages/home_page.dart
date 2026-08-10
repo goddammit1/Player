@@ -333,6 +333,7 @@ class _PlaylistCard extends StatelessWidget {
                   Positioned.fill(
                                     child: ArtworkMosaic(
                                       urls: playlist.coverThumbnails,
+                                      trackIds: playlist.coverTrackIds,
                                       size: c.maxWidth,
                                       borderRadius: 20,
                                       coverCustomUrl: playlist.coverCustomPath,

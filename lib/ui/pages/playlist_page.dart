@@ -592,6 +592,7 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                           borderRadius: BorderRadius.circular(_Dimens.radiusL),
                           child: ArtworkMosaic(
                             urls: p.coverThumbnails,
+                            trackIds: p.coverTrackIds,
                             size: _Dimens.artworkSize,
                             borderRadius: 0,
                             coverCustomUrl: p.coverCustomPath,

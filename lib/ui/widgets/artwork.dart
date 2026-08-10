@@ -162,12 +162,17 @@ class ArtworkMosaic extends ConsumerWidget {
     required this.size,
     this.borderRadius = 16,
     this.coverCustomUrl,
+    this.trackIds = const [],
   });
 
   final List<String> urls;
   final double size;
   final double borderRadius;
   final String? coverCustomUrl;
+
+  /// Исходные trackId (по одному на каждый [url]) — для подстановки
+  /// кастомных обложек треков в ячейках мозаики.
+  final List<String> trackIds;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -183,6 +188,7 @@ class ArtworkMosaic extends ConsumerWidget {
     if (effectiveUrls.length == 1) {
       return Artwork(
         url: effectiveUrls.first,
+        trackId: trackIds.isNotEmpty ? trackIds.first : null,
         size: size,
         borderRadius: borderRadius,
         memCacheSize: size * 2,
@@ -206,28 +212,48 @@ class ArtworkMosaic extends ConsumerWidget {
               left: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[0], size: cell, colors: colors),
+              child: _Tile(
+                url: cells[0],
+                trackId: trackIds.isNotEmpty ? trackIds[0] : null,
+                size: cell,
+                colors: colors,
+              ),
             ),
             Positioned(
               top: 0,
               right: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[1], size: cell, colors: colors),
+              child: _Tile(
+                url: cells[1],
+                trackId: trackIds.length > 1 ? trackIds[1] : null,
+                size: cell,
+                colors: colors,
+              ),
             ),
             Positioned(
               bottom: 0,
               left: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[2], size: cell, colors: colors),
+              child: _Tile(
+                url: cells[2],
+                trackId: trackIds.length > 2 ? trackIds[2] : null,
+                size: cell,
+                colors: colors,
+              ),
             ),
             Positioned(
               bottom: 0,
               right: 0,
               width: cell,
               height: cell,
-              child: _Tile(url: cells[3], size: cell, colors: colors),
+              child: _Tile(
+                url: cells[3],
+                trackId: trackIds.length > 3 ? trackIds[3] : null,
+                size: cell,
+                colors: colors,
+              ),
             ),
           ],
         ),
@@ -237,26 +263,38 @@ class ArtworkMosaic extends ConsumerWidget {
 }
 
 class _Tile extends StatelessWidget {
-  const _Tile({required this.url, required this.size, required this.colors});
+  const _Tile({
+    required this.url,
+    required this.size,
+    required this.colors,
+    this.trackId,
+  });
   final String? url;
   final double size;
   final dynamic colors;
+  final String? trackId;
 
   @override
   Widget build(BuildContext context) {
     final dpr = MediaQuery.of(context).devicePixelRatio;
     final cache = (size * dpr).round();
 
-    if (url == null || url!.isEmpty) {
+    // Подставляем кастомную обложку трека, если она есть на диске.
+    final customPath =
+        trackId != null ? ArtworkHelper.getCustomArtworkSync(trackId!) : null;
+    final effectiveUrl = customPath ?? url;
+
+    if (effectiveUrl == null || effectiveUrl.isEmpty) {
       return Container(color: colors.elevatedVariant);
     }
 
-    final isLocalFile = url!.startsWith('/') || url!.startsWith('file://');
-    final filePath = url!.startsWith('file://')
-        ? Uri.parse(url!).toFilePath()
-        : url!;
+    final isLocalFile =
+        effectiveUrl.startsWith('/') || effectiveUrl.startsWith('file://');
+    final filePath = effectiveUrl.startsWith('file://')
+        ? Uri.parse(effectiveUrl).toFilePath()
+        : effectiveUrl;
 
-    final aspectRatio = urlAspectRatio(url!);
+    final aspectRatio = urlAspectRatio(effectiveUrl);
     final imageWidth = size * aspectRatio;
     final imageHeight = size;
     final cacheWidth = (cache * aspectRatio).round();
@@ -282,7 +320,7 @@ class _Tile extends StatelessWidget {
                         Container(color: colors.elevatedVariant),
                   )
                 : CachedNetworkImage(
-                    imageUrl: url!,
+                    imageUrl: effectiveUrl,
                     width: imageWidth,
                     height: imageHeight,
                     fit: BoxFit.fill,

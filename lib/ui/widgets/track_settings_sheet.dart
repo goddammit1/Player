@@ -227,6 +227,7 @@ class _TrackHeader extends StatelessWidget {
         children: [
           Artwork(
             url: track.artworkUrl,
+            trackId: track.id,
             size: 56,
             borderRadius: 12,
           ),

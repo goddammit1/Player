@@ -480,6 +480,7 @@ class _PlaylistTile extends ConsumerWidget {
                   playlist.coverThumbnails.isNotEmpty || playlist.coverCustomPath != null
                       ? ArtworkMosaic(
                           urls: playlist.coverThumbnails,
+                          trackIds: playlist.coverTrackIds,
                           size: size,
                           borderRadius: 0,
                           coverCustomUrl: playlist.coverCustomPath,
