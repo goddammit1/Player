@@ -47,12 +47,19 @@ class AppDatabase {
 
   Database? _db;
 
+  /// Переопределение пути для тестов. Если задано — используется вместо
+  /// `getApplicationDocumentsDirectory()`.
+  @visibleForTesting
+  // ignore: invalid_use_of_visible_for_testing_member
+  static String? testDbPath;
+
   /// Путь, по которому лежит (или будет создан) файл базы.
   ///
   /// Используется `getApplicationDocumentsDirectory()` — стандартный каталог
   /// документов приложения. На Android этот каталог автоматически попадает
   /// в системный авто-бэкап (Android 6+), на iOS — бэкапится iCloud.
   Future<String> get _dbPath async {
+    if (testDbPath != null) return testDbPath!;
     final dir = await getApplicationDocumentsDirectory();
     return p.join(dir.path, _dbName);
   }
@@ -896,7 +903,7 @@ class AppDatabase {
     }
 
     final queue = raw.cast<Map<String, dynamic>>().map((r) {
-      return _trackFromRow(r);
+      return Track.fromMap(r);
     }).toList();
 
     if (queue.isEmpty) return null;
@@ -935,6 +942,82 @@ class AppDatabase {
     final db = await database;
     await db.delete('settings', where: "key LIKE 'artwork_v3_%'");
     await db.delete('settings', where: "key LIKE 'custom_art_v%'");
+  }
+
+  // ==============================================================
+  //  CUSTOM ARTWORK PATHS (settings table)
+  // ==============================================================
+
+  /// Ключ в таблице settings для кастомной обложки трека.
+  static String customArtworkKey(String trackId) => 'custom_art_v1_$trackId';
+
+  /// Возвращает путь к кастомной обложке трека из таблицы settings.
+  /// null — обложка не установлена.
+  Future<String?> getCustomArtworkPath(String trackId) async {
+    final db = await database;
+    final rows = await db.query(
+      'settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [customArtworkKey(trackId)],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) {
+      final val = rows.first['value'] as String?;
+      if (val != null && val.isNotEmpty) return val;
+    }
+    return null;
+  }
+
+  /// Сохраняет путь к кастомной обложке трека (REPLACE).
+  Future<void> setCustomArtworkPath(String trackId, String path) async {
+    final db = await database;
+    await db.insert(
+      'settings',
+      {'key': customArtworkKey(trackId), 'value': path},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Удаляет запись о кастомной обложке трека.
+  Future<void> removeCustomArtworkPath(String trackId) async {
+    final db = await database;
+    await db.delete(
+      'settings',
+      where: 'key = ?',
+      whereArgs: [customArtworkKey(trackId)],
+    );
+  }
+
+  /// Возвращает все кастомные обложки (trackId -> path), которые есть на диске.
+  /// [existingFiles] — set путей, реально существующих (проверено вызывающей стороной).
+  Future<Map<String, String>> loadCustomArtworks(
+      Set<String> existingFiles) async {
+    final db = await database;
+    final rows = await db.query(
+      'settings',
+      columns: ['key', 'value'],
+      where: "key LIKE 'custom_art_v1_%'",
+    );
+    final result = <String, String>{};
+    for (final row in rows) {
+      final key = row['key'] as String;
+      final trackId = key.replaceFirst('custom_art_v1_', '');
+      final path = row['value'] as String;
+      if (path.isNotEmpty && existingFiles.contains(path)) {
+        result[trackId] = path;
+      }
+    }
+    return result;
+  }
+
+  /// Удаляет legacy-ключи custom_art_ (без версионного суффикса v1).
+  Future<void> cleanupLegacyCustomArtKeys() async {
+    final db = await database;
+    await db.delete(
+      'settings',
+      where: "key LIKE 'custom_art_%' AND key NOT LIKE 'custom_art_v%'",
+    );
   }
 
   // ==============================================================
