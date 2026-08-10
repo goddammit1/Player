@@ -1,12 +1,22 @@
 # Player
 
-Мобильный музыкальный плеер с поиском и стримингом треков с разных площадок.
+Музыкальный плеер с поиском и стримингом треков с разных площадок.
 Только для личного использования.
+
+Поддерживаемые платформы:
+
+- **Android / iOS** — мобильный UI (полноэкранный плеер, мини-плеер-оверлей, lock-screen контролы)
+- **Windows / Linux / macOS** — десктопный UI (боковая навигация + контент + панель плеера снизу)
+
+Логика (провайдеры, репозитории, источники, плеер) общая; отличается
+только слой UI и реализация плеера.
 
 ## Стек
 
-- **Flutter** (Android + iOS)
-- **just_audio** + **audio_service** — воспроизведение, фон, lock-screen контролы
+- **Flutter** (Android + iOS + Windows + Linux + macOS)
+- **just_audio** + **audio_service** — воспроизведение, фон, lock-screen контролы (мобильные)
+- **just_audio_windows** — нативная Windows-реализация для just_audio
+- **sqflite_common_ffi** + **sqlite3_flutter_libs** — SQLite на десктопе
 - **youtube_explode_dart** — парсинг YouTube
 - **dio** + **dio_cookie_manager** + **cookie_jar** + **html** — парсинг
   HTML-источников (Muzmo, SoundCloud)
@@ -30,9 +40,11 @@
 
 ```
 lib/
-├── main.dart                          инициализация audio_service + Riverpod
+├── main.dart                          выбор реализации плеера + root (моб. UI / DesktopShell)
 ├── core/
-│   ├── player_service.dart            AudioHandler поверх just_audio
+│   ├── player_service_interface.dart  общий контракт PlayerServiceInterface
+│   ├── player_service.dart            мобильная реализация (audio_service + just_audio)
+│   ├── player_service_desktop.dart    десктопная реализация (чистый just_audio)
 │   ├── providers.dart                 Riverpod-провайдеры (плеер, поиск, UI)
 │   ├── appearance_provider.dart       провайдер темы (светлая / тёмная / система)
 │   ├── global_theme_provider.dart     генерация цветовой схемы из обложек
@@ -55,24 +67,55 @@ lib/
 │   ├── soundcloud_source.dart         реализация для SoundCloud
 │   └── artwork_provider.dart          обложки: Genius API + iTunes fallback
 └── ui/
-    ├── pages/
-    │   ├── home_page.dart             главный экран с табами
+    ├── pages/                         ← мобильный UI (Android/iOS)
+    │   ├── home_page.dart             главный экран
     │   ├── search_page.dart           поиск по источникам
     │   ├── player_page.dart           полноэкранный плеер
-    │   ├── playlist_page.dart         список плейлистов / содержимое
+    │   ├── playlist_page.dart         содержимое плейлиста
     │   ├── history_page.dart          история прослушивания
     │   ├── settings_page.dart         настройки
     │   └── cache_page.dart            управление кэшем
-    └── widgets/
-        ├── now_playing_overlay.dart   мини-плеер поверх контента
-        ├── artwork.dart               виджет обложки с эффектами
-        ├── queue_sheet.dart           очередь воспроизведения
-        ├── track_details_sheet.dart   детали трека (битрейт, источник)
-        ├── track_settings_sheet.dart  настройки конкретного трека
-        ├── add_to_playlist_sheet.dart добавление трека в плейлист
-        ├── update_dialog.dart         диалог обновления приложения
-        └── snack.dart                 снек-бары
+    ├── widgets/
+    │   ├── now_playing_overlay.dart   мини-плеер поверх контента (моб.)
+    │   ├── desktop_layout.dart        isDesktop + адаптивные хелперы
+    │   ├── artwork.dart               виджет обложки с эффектами
+    │   ├── queue_sheet.dart           очередь воспроизведения
+    │   ├── track_details_sheet.dart   детали трека (битрейт, источник)
+    │   ├── track_settings_sheet.dart  настройки конкретного трека
+    │   ├── add_to_playlist_sheet.dart добавление трека в плейлист
+    │   ├── update_dialog.dart         диалог обновления приложения
+    │   └── snack.dart                 снек-бары
+    └── desktop/                       ← десктопный UI (Windows/Linux/macOS)
+        ├── desktop_shell.dart         каркас: боковая панель + контент + плеер
+        ├── desktop_home_page.dart     главная: сетка плейлистов
+        └── desktop_player_bar.dart    нижняя панель плеера (прогресс, управление)
 ```
+
+### Разделение UI по платформам
+
+Корень выбирается в `lib/main.dart` по `isDesktop` (см. `desktop_layout.dart`):
+
+```dart
+home: isDesktop
+    ? const DesktopShell()   // Windows/Linux/macOS
+    : const HomePage(),      // Android/iOS
+```
+
+- Мобильные страницы (`ui/pages/`) остаются нетронутыми и не знают о десктопе.
+- Десктопный `DesktopShell` переиспользует мобильные страницы (Search, History,
+  Settings, Cache) как разделы `IndexedStack` — состояние сохраняется при
+  переключении. Плейлист открывается в собственном стеке контента
+  (внутри окна), а не через `Navigator.push` поверх всей раскладки.
+- Страницам, встроенным в shell, отключается встроенный мини-плеер
+  (`showNowPlayingOverlay: false`), т.к. свою панель рисует
+  `DesktopPlayerBar` внизу окна — иначе были бы две панели.
+- Реализации плеера тоже две, выбор в `main.dart`:
+  `Platform.isAndroid || Platform.isIOS` → `PlayerService`
+  (audio_service, фоновые уведомления), иначе → `DesktopPlayerService`
+  (чистый just_audio, без audio_service).
+- Десктопные экраны докручиваются независимо: сетка плейлистов
+  (`desktop_home_page.dart`), панель плеера (`desktop_player_bar.dart`),
+  клавиатурные шорткаты — без риска сломать мобильную вёрстку.
 
 ### Идея плагинной системы
 
@@ -169,7 +212,7 @@ flutter build apk --release --dart-define-from-file=env.json
 авторизации (401/403) в логи пишется предупреждение.
 
 Примечание про кэш: результаты («нашли»/«не нашли») кэшируются в
-`SharedPreferences`. Префикс ключа зависит от наличия токена, поэтому
+SQLite. Префикс ключа зависит от наличия токена, поэтому
 после добавления токена негативные результаты, накопленные без него,
 больше не блокируют повторный поиск через Genius.
 
@@ -179,6 +222,14 @@ flutter build apk --release --dart-define-from-file=env.json
 flutter pub get
 tools\run.ps1            # запуск на Android-устройстве/эмуляторе (токен из env.json)
 tools\build_release.ps1  # релизный APK (токен из env.json)
+```
+
+Для Windows (нужны Visual Studio Build Tools 2022 и Windows 10/11 SDK):
+
+```bash
+tools\run.ps1 -d windows     # запуск десктопной сборки в debug (токен из env.json)
+tools\build_windows.ps1      # релизная Windows-сборка player.exe (токен из env.json)
+tools\build_windows.ps1 -Zip # дополнительно упакует Release-папку в build\player-windows-x64.zip
 ```
 
 Для iOS:
@@ -276,6 +327,10 @@ APK из GitHub Releases обычно не вызывает такого пре�
 - [x] Поиск одновременно по всем источникам
 - [x] Импорт / экспорт плейлистов (JSON)
 - [x] Автообновление из GitHub Releases
+- [x] Десктопная реализация плеера (Windows: чистый just_audio)
+- [x] Десктопный UI: боковая навигация + панель плеера (DesktopShell)
+- [ ] Десктоп: клавиатурные шорткаты (пробел — play/pause, стрелки — скип)
+- [ ] Десктоп: очередь и детали трека в панели плеера
 - [ ] Источник VK Music (reverse-engineered API + токен)
 - [ ] Источник Bandcamp (официальный, простой scraping)
 - [ ] Эквалайзер (через `just_audio`'s `AndroidLoudnessEnhancer`)
