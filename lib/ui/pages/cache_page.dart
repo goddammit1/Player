@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../core/playlist_repository.dart';
 import '../../core/youtube_cache.dart';
+import '../widgets/desktop_layout.dart';
 
 /// Страница управления кэшем.
 ///
@@ -32,7 +34,13 @@ class _CachePageState extends ConsumerState<CachePage> {
 
   // Опции лимита: 0 = unlimited
   static const List<int> _limitOptions = [100, 500, 1024, 5120, 0];
-  static const List<String> _limitLabels = ['100 MB', '500 MB', '1 GB', '5 GB', 'Unlimited'];
+  static const List<String> _limitLabels = [
+    '100 MB',
+    '500 MB',
+    '1 GB',
+    '5 GB',
+    'Unlimited',
+  ];
 
   @override
   void initState() {
@@ -46,7 +54,7 @@ class _CachePageState extends ConsumerState<CachePage> {
 
   Future<void> _refreshStats() async {
     final audioDir = YoutubeCache.instance.audioDir;
-    
+
     // Инициализирует пути кэша, если их ещё никто не трогал.
     final artworkDir = await YoutubeCache.instance.ensureArtworkDir();
 
@@ -79,9 +87,6 @@ class _CachePageState extends ConsumerState<CachePage> {
     return (bytes, count);
   }
 
-  
-
-
   // ===== Форматирование =====
 
   String _formatBytes(int bytes) {
@@ -104,7 +109,8 @@ class _CachePageState extends ConsumerState<CachePage> {
   Future<void> _clearAudioCache() async {
     final confirmed = await _showConfirmDialog(
       title: 'Clear audio cache?',
-      body: 'All cached tracks will be deleted. They will be re-downloaded on next play.',
+      body:
+          'All cached tracks will be deleted. They will be re-downloaded on next play.',
     );
     if (confirmed != true) return;
 
@@ -117,7 +123,8 @@ class _CachePageState extends ConsumerState<CachePage> {
   Future<void> _clearArtworkCache() async {
     final confirmed = await _showConfirmDialog(
       title: 'Clear artwork cache?',
-      body: 'All cached artwork will be deleted. They will be re-downloaded on next view.',
+      body:
+          'All cached artwork will be deleted. They will be re-downloaded on next view.',
     );
     if (confirmed != true) return;
 
@@ -128,6 +135,10 @@ class _CachePageState extends ConsumerState<CachePage> {
     // Дисковый кэш CachedNetworkImage чистит YoutubeCache.
     await YoutubeCache.instance.clearArtworkCache();
 
+    // Сбрасываем artworkUrl у треков в плейлистах, чтобы они
+    // перезапросили обложки через Genius/iTunes при следующем проигрывании.
+    PlaylistRepository.instance.resetAllTrackArtworks();
+
     await _refreshStats();
     if (mounted) _showSnack('Artwork cache cleared');
   }
@@ -135,19 +146,27 @@ class _CachePageState extends ConsumerState<CachePage> {
   Future<void> _clearAllCache() async {
     final confirmed = await _showConfirmDialog(
       title: 'Clear all cache?',
-      body: 'All cached tracks and artwork will be deleted. This cannot be undone.',
+      body:
+          'All cached tracks and artwork will be deleted. This cannot be undone.',
     );
     if (confirmed != true) return;
 
     await YoutubeCache.instance.clearAllCache();
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
+
+    // Сбрасываем artworkUrl у треков в плейлистах.
+    PlaylistRepository.instance.resetAllTrackArtworks();
+
     await _refreshStats();
 
     if (mounted) _showSnack('All cache cleared');
   }
 
-  Future<bool?> _showConfirmDialog({required String title, required String body}) {
+  Future<bool?> _showConfirmDialog({
+    required String title,
+    required String body,
+  }) {
     final colors = ref.read(animatedPaletteProvider);
     return showDialog<bool>(
       context: context,
@@ -158,7 +177,10 @@ class _CachePageState extends ConsumerState<CachePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text('Cancel', style: TextStyle(color: colors.textSecondary)),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: colors.textSecondary),
+            ),
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
@@ -192,10 +214,23 @@ class _CachePageState extends ConsumerState<CachePage> {
         backgroundColor: colors.background,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.chevron_left_rounded, size: 28, color: colors.textPrimary),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
+        automaticallyImplyLeading: false,
+        // Назад показываем только когда страница реально открыта через
+        // Navigator.push (мобильные экраны, десктопный push из настроек).
+        // Когда CachePage встроена как раздел десктопного shell
+        // (DesktopShell → IndexedStack), она живёт на корневом маршруте,
+        // и Navigator.pop оставил бы приложение с пустым Navigator'ом
+        // (тёмный экран без UI) — поэтому кнопку прячем.
+        leading: Navigator.of(context).canPop()
+            ? IconButton(
+                icon: Icon(
+                  Icons.chevron_left_rounded,
+                  size: 28,
+                  color: colors.textPrimary,
+                ),
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         title: Text(
           'Cache',
           style: TextStyle(
@@ -212,61 +247,72 @@ class _CachePageState extends ConsumerState<CachePage> {
           ),
         ],
       ),
-      body: ListView(
-        padding: EdgeInsets.only(
-          top: 8,
-          bottom: 8 + MediaQuery.of(context).padding.bottom,
-        ),
-        children: [
-          // === AUDIO CACHE ===
-          _buildSectionHeader('Audio Cache', colors),
-          _buildCacheCard(
-            icon: Icons.music_note_rounded,
-            title: 'Cached tracks',
-            usedBytes: _audioSize,
-            fileCount: _audioCount,
-            limitMB: _audioLimitMB,
-            colors: colors,
-            onLimitChanged: (mb) async {
-              setState(() => _audioLimitMB = mb);
-              await YoutubeCache.setAudioLimitMB(mb);
-              await _refreshStats();
-            },
-            onClear: _clearAudioCache,
-          ),
+      body: LayoutBuilder(
+        builder: (context, c) => Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: isDesktop ? 760 : double.infinity,
+              maxHeight: c.maxHeight,
+            ),
+            child: ListView(
+              padding: EdgeInsets.only(
+                top: 8,
+                bottom: 8 + MediaQuery.of(context).padding.bottom,
+              ),
+              children: [
+                // === AUDIO CACHE ===
+                _buildSectionHeader('Audio Cache', colors),
+                _buildCacheCard(
+                  icon: Icons.music_note_rounded,
+                  title: 'Cached tracks',
+                  usedBytes: _audioSize,
+                  fileCount: _audioCount,
+                  limitMB: _audioLimitMB,
+                  colors: colors,
+                  onLimitChanged: (mb) async {
+                    setState(() => _audioLimitMB = mb);
+                    await YoutubeCache.setAudioLimitMB(mb);
+                    await _refreshStats();
+                  },
+                  onClear: _clearAudioCache,
+                ),
 
-          const SizedBox(height: 16),
+                const SizedBox(height: 16),
 
-          // === ARTWORK CACHE ===
-          _buildSectionHeader('Artwork Cache', colors),
-          _buildCacheCard(
-            icon: Icons.image_rounded,
-            title: 'Cached artwork',
-            usedBytes: _artworkSize,
-            fileCount: _artworkCount,
-            limitMB: _artworkLimitMB,
-            colors: colors,
-            onLimitChanged: (mb) async {
-              setState(() => _artworkLimitMB = mb);
-              await YoutubeCache.setArtworkLimitMB(mb);
-              await _refreshStats();
-            },
-            onClear: _clearArtworkCache,
-          ),
+                // === ARTWORK CACHE ===
+                _buildSectionHeader('Artwork Cache', colors),
+                _buildCacheCard(
+                  icon: Icons.image_rounded,
+                  title: 'Cached artwork',
+                  usedBytes: _artworkSize,
+                  fileCount: _artworkCount,
+                  limitMB: _artworkLimitMB,
+                  colors: colors,
+                  onLimitChanged: (mb) async {
+                    setState(() => _artworkLimitMB = mb);
+                    await YoutubeCache.setArtworkLimitMB(mb);
+                    await _refreshStats();
+                  },
+                  onClear: _clearArtworkCache,
+                ),
 
-          const SizedBox(height: 24),
+                const SizedBox(height: 24),
 
-          // === CLEAR ALL ===
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: _buildDangerButton(
-              icon: Icons.delete_sweep_rounded,
-              label: 'Clear all cache',
-              onTap: _clearAllCache,
-              colors: colors,
+                // === CLEAR ALL ===
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: _buildDangerButton(
+                    icon: Icons.delete_sweep_rounded,
+                    label: 'Clear all cache',
+                    onTap: _clearAllCache,
+                    colors: colors,
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -382,8 +428,8 @@ class _CachePageState extends ConsumerState<CachePage> {
                       percent > 0.9
                           ? Colors.orangeAccent
                           : percent > 0.75
-                              ? Colors.yellowAccent
-                              : colors.accent,
+                          ? Colors.yellowAccent
+                          : colors.accent,
                     ),
                     minHeight: 6,
                   ),
@@ -489,7 +535,9 @@ class _LimitChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: isSelected ? colors.accent.withValues(alpha: 0.15) : colors.background,
+      color: isSelected
+          ? colors.accent.withValues(alpha: 0.15)
+          : colors.background,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: onTap,
@@ -499,7 +547,9 @@ class _LimitChip extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: isSelected ? colors.accent.withValues(alpha: 0.4) : colors.outline,
+              color: isSelected
+                  ? colors.accent.withValues(alpha: 0.4)
+                  : colors.outline,
               width: 1,
             ),
           ),

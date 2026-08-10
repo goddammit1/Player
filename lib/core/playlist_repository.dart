@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
+import '../sources/artwork_provider.dart';
 import 'app_database.dart';
 import 'artwork_helper.dart';
 import '../models/track.dart';
@@ -53,6 +54,34 @@ class PlaylistRepository {
       // Если были данные (reload после ошибки) — сохраняем их в памяти.
     }
     _controller.add(List.unmodifiable(_list));
+
+    // Лениво дозагружаем обложки для треков без artworkUrl.
+    // Запускаем в фоне, не блокируя UI.
+    _enrichMissingArtworks();
+  }
+
+  void _enrichMissingArtworks() {
+    // Собираем все треки без обложек со всех плейлистов.
+    final Set<String> seen = {};
+    for (final p in _list) {
+      for (final t in p.tracks) {
+        if (t.artworkUrl == null || t.artworkUrl!.isEmpty) {
+          final key = t.globalId;
+          if (seen.add(key)) {
+            _fetchAndApplyArtworkForTrack(t);
+          }
+        }
+      }
+    }
+  }
+
+  void _fetchAndApplyArtworkForTrack(Track track) {
+    // Отложенный импорт во избежание циклической зависимости.
+    // ArtworkProvider лежит в sources/, он не зависит от playlist_repository.
+    ArtworkProvider.instance.findArtwork(track.artist, track.title, preferredSize: 600).then((url) {
+      if (url == null || url.isEmpty) return;
+      updateTrackArtwork(track.globalId, url);
+    }).catchError((_) {});
   }
 
   void _notifyAndSchedulePersist() {
@@ -308,6 +337,9 @@ class PlaylistRepository {
   /// Сбрасывает внутреннее состояние (для тестов и аварийного восстановления).
   @visibleForTesting
   Future<void> resetForTesting() async {
+    // Отменяем отложенную запись, чтобы debounce-таймер не сработал
+    // уже после завершения теста.
+    _persistTimer?.cancel();
     _initFuture = null;
     _list = [];
     // ignore: invalid_use_of_visible_for_testing_member
@@ -341,6 +373,29 @@ class PlaylistRepository {
       _list = newList;
       _notifyAndSchedulePersist();
     }
+  }
+
+  /// Сбрасывает [artworkUrl] на null у всех треков во всех плейлистах.
+  /// Нужно после очистки кэша обложек — треки перезапросят обложки
+  /// через ArtworkProvider при следующем проигрывании.
+  void resetAllTrackArtworks() {
+    var anyChanged = false;
+    _list = _list.map((p) {
+      var playlistChanged = false;
+      final newTracks = p.tracks.map((t) {
+        if (t.artworkUrl != null) {
+          playlistChanged = true;
+          return t.copyWith(artworkUrl: null);
+        }
+        return t;
+      }).toList();
+      if (playlistChanged) {
+        anyChanged = true;
+        return p.copyWith(tracks: newTracks);
+      }
+      return p;
+    }).toList();
+    if (anyChanged) _notifyAndSchedulePersist();
   }
 
   /// Перечитывает данные из БД (нужно после импорта полного бэкапа).
