@@ -539,7 +539,18 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
   /// устаревший — перезапрашивается у Genius/iTunes. Это позволяет
   /// подхватывать смену обложки на стороне Genius при очередном
   /// проигрывании трека, не дёргая API на каждый трек.
+  ///
+  /// Если у трека уже есть «родная» обложка источника (SoundCloud
+  /// `sndcdn.com`, YouTube `i.ytimg.com`, локальный файл) — не трогаем её:
+  /// она стабильна, и перезапрос через Genius/iTunes может только заменить
+  /// её на чужую картинку или ничего не дать.
   void _fetchAndApplyArtwork(Track track, int queueIndex) {
+    final existing = track.artworkUrl;
+    if (existing != null &&
+        existing.isNotEmpty &&
+        !ArtworkProvider.isProviderArtworkUrl(existing)) {
+      return;
+    }
     ArtworkProvider.instance.findArtwork(track.artist, track.title, preferredSize: 600).then((url) {
       if (url == null || url.isEmpty) return;
       if (queueIndex < 0 || queueIndex >= _queue.length) return;

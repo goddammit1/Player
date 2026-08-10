@@ -10,6 +10,69 @@ import 'package:player/sources/artwork_provider.dart';
 /// Запуск:
 ///   flutter test --tags unit test/sources/artwork_provider_test.dart
 void main() {
+  group('isProviderArtworkUrl', () {
+    test('Genius URL считается провайдерской обложкой', () {
+      expect(
+        ArtworkProvider.isProviderArtworkUrl(
+          'https://images.genius.com/abc_600x600.png',
+        ),
+        isTrue,
+      );
+    });
+
+    test('iTunes (mzstatic) URL считается провайдерской обложкой', () {
+      expect(
+        ArtworkProvider.isProviderArtworkUrl(
+          'https://is1-ssl.mzstatic.com/image/thumb/xyz.jpg',
+        ),
+        isTrue,
+      );
+    });
+
+    test('SoundCloud (sndcdn) — обложка источника, не провайдерская', () {
+      expect(
+        ArtworkProvider.isProviderArtworkUrl(
+          'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
+        ),
+        isFalse,
+      );
+    });
+
+    test('YouTube (ytimg) — обложка источника, не провайдерская', () {
+      expect(
+        ArtworkProvider.isProviderArtworkUrl(
+          'https://i.ytimg.com/vi/abc/hqdefault.jpg',
+        ),
+        isFalse,
+      );
+    });
+
+    test('локальные пути не провайдерские', () {
+      expect(
+        ArtworkProvider.isProviderArtworkUrl('/data/player/art/1.jpg'),
+        isFalse,
+      );
+      expect(
+        ArtworkProvider.isProviderArtworkUrl('file:///data/player/art/1.jpg'),
+        isFalse,
+      );
+    });
+
+    test('пустая строка не провайдерская', () {
+      expect(ArtworkProvider.isProviderArtworkUrl(''), isFalse);
+    });
+
+    test('регистр домена не важен', () {
+      expect(
+        ArtworkProvider.isProviderArtworkUrl(
+          'https://images.GENIUS.com/abc_600x600.png',
+        ),
+        isTrue,
+      );
+    });
+  });
+
+
   group('_extractVersionHints', () {
     test('Remix в круглых скобках', () {
       final r = ArtworkProvider.extractVersionHintsForTest('Исчезаю (Remix)');

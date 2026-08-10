@@ -185,12 +185,6 @@ class PlaylistRepository {
     }
   }
 
-  /// Локальный путь кастомной обложки трека — его нельзя сбрасывать при
-  /// очистке кэша (файл на диске не зависит от кэша обложек) и нельзя
-  /// перетирать результатами Genius/iTunes.
-  static bool _isLocalArtworkPath(String url) =>
-      url.startsWith('/') || url.startsWith('file://');
-
   /// Копия трека без обложки. Нужна в [resetAllTrackArtworks]: обычный
   /// `copyWith(artworkUrl: null)` не сбрасывает URL — copyWith игнорирует null.
   static Track _withoutArtwork(Track t) => Track(
@@ -480,13 +474,16 @@ class PlaylistRepository {
     _applyArtworkUpdates([(globalId: globalId, url: artworkUrl)]);
   }
 
-  /// Сбрасывает [artworkUrl] на null у всех треков во всех плейлистах
-  /// и сразу запускает фоновую дозагрузку обложек через
-  /// [_enrichMissingArtworks], чтобы плейлисты снова заполнились без
-  /// ручного воспроизведения каждого трека.
+  /// Сбрасывает [artworkUrl] на null только у тех треков, чья обложка
+  /// была найдена самим ArtworkProvider (Genius/iTunes), и сразу
+  /// запускает фоновую дозагрузку обложек через [_enrichMissingArtworks],
+  /// чтобы плейлисты снова заполнились без ручного воспроизведения
+  /// каждого трека.
   ///
-  /// Не трогает локальные пути кастомных обложек (`/...`, `file://...`) —
-  /// они живут на диске и не зависят от кэша обложек. Также отменяет
+  /// Обложки, которые дал сам источник (SoundCloud `sndcdn.com`,
+  /// YouTube `i.ytimg.com`, локальные файлы `/...` и `file://...`),
+  /// НЕ сбрасываются: они стабильны, и после очистки дискового кэша
+  /// CachedNetworkImage скачает их заново по тому же URL. Также отменяет
   /// накопленный батч и инвалидирует in-flight запросы, чтобы URL,
   /// прилетевшие ДО сброса, не вернули обложки обратно; запросы, запущенные
   /// самим сбросом (уже после инкремента [_artworkGeneration]), применяются
@@ -501,7 +498,8 @@ class PlaylistRepository {
     _list = _list.map((p) {
       var playlistChanged = false;
       final newTracks = p.tracks.map((t) {
-        if (t.artworkUrl != null && !_isLocalArtworkPath(t.artworkUrl!)) {
+        final url = t.artworkUrl;
+        if (url != null && ArtworkProvider.isProviderArtworkUrl(url)) {
           playlistChanged = true;
           return _withoutArtwork(t);
         }

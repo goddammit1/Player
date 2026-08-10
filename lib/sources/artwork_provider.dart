@@ -169,6 +169,24 @@ class ArtworkProvider {
 
   bool get hasGeniusToken => _geniusToken.isNotEmpty;
 
+  /// True, если [url] — обложка, найденная самим ArtworkProvider
+  /// (Genius/iTunes), а не выданная источником трека.
+  ///
+  /// Такие URL нестабильны (Genius может сменить обложку) и потому:
+  /// - сбрасываются при очистке кэша обложек (см. resetAllTrackArtworks);
+  /// - перезапрашиваются по TTL при следующем воспроизведении.
+  ///
+  /// «Родные» обложки источников (SoundCloud `sndcdn.com`, YouTube
+  /// `i.ytimg.com`, локальные файлы) стабильны: после очистки дискового
+  /// кэша CachedNetworkImage просто скачает их заново по тому же URL,
+  /// поэтому сбрасывать и перезапрашивать их не нужно.
+  static bool isProviderArtworkUrl(String url) {
+    if (url.isEmpty) return false;
+    final lower = url.toLowerCase();
+    if (lower.startsWith('/') || lower.startsWith('file://')) return false;
+    return lower.contains('genius.com') || lower.contains('mzstatic.com');
+  }
+
   Map<String, dynamic>? _asMap(Object? data) {
     if (data is Map<String, dynamic>) return data;
     if (data is String && data.isNotEmpty) {

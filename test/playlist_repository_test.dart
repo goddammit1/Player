@@ -225,7 +225,7 @@ void main() {
     setUp(() => ArtworkProvider.instance.clearMemCache());
 
     test(
-      'resetAllTrackArtworks clears network urls but keeps local paths',
+      'resetAllTrackArtworks clears provider urls but keeps source/local paths',
       () async {
         await PlaylistRepository.instance.ensureLoaded();
         final p = PlaylistRepository.instance.create('Test');
@@ -233,10 +233,10 @@ void main() {
           p.id,
           const Track(
             id: '1',
-            sourceId: 'youtube',
-            title: 'Net',
+            sourceId: 'muzmo',
+            title: 'Genius',
             artist: 'A',
-            artworkUrl: 'http://example.com/net.jpg',
+            artworkUrl: 'https://images.genius.com/genius.jpg',
           ),
         );
         PlaylistRepository.instance.addTrack(
@@ -261,7 +261,17 @@ void main() {
         );
         PlaylistRepository.instance.addTrack(
           p.id,
-          const Track(id: '4', sourceId: 'youtube', title: 'None', artist: 'D'),
+          const Track(
+            id: '4',
+            sourceId: 'soundcloud',
+            title: 'Cloud',
+            artist: 'D',
+            artworkUrl: 'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
+          ),
+        );
+        PlaylistRepository.instance.addTrack(
+          p.id,
+          const Track(id: '5', sourceId: 'youtube', title: 'None', artist: 'E'),
         );
 
         // Сидим mem-cache ДО сброса: запущенный сбросом enrichment вернёт
@@ -269,14 +279,15 @@ void main() {
         // отрицательный кэш: трек останется без обложки.
         ArtworkProvider.instance.cacheArtworkForTesting(
           'A',
-          'Net',
-          'http://example.com/net-new.jpg',
+          'Genius',
+          'https://images.genius.com/genius-new.jpg',
         );
-        ArtworkProvider.instance.cacheArtworkForTesting('D', 'None', '');
+        ArtworkProvider.instance.cacheArtworkForTesting('E', 'None', '');
 
         PlaylistRepository.instance.resetAllTrackArtworks();
 
-        // Сброс обнуляет только сетевые URL; локальные пути остаются.
+        // Сброс обнуляет только провайдерские (Genius/iTunes) URL;
+        // обложки источника (sndcdn) и локальные пути остаются.
         var tracks = PlaylistRepository.instance.current.first.tracks;
         expect(tracks[0].artworkUrl, isNull);
         expect(
@@ -287,14 +298,21 @@ void main() {
           tracks[2].artworkUrl,
           'file:///data/user/0/player/custom_artworks/3.jpg',
         );
-        expect(tracks[3].artworkUrl, isNull);
+        expect(
+          tracks[3].artworkUrl,
+          'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
+        );
+        expect(tracks[4].artworkUrl, isNull);
 
-        // Сброс сам запустил фоновую дозагрузку: Net перезапрошен,
-        // None остаётся без обложки, локальные пути не тронуты.
+        // Сброс сам запустил фоновую дозагрузку: Genius перезапрошен,
+        // None остаётся без обложки, sndcdn/локальные пути не тронуты.
         await PlaylistRepository.instance.flushEnrichmentForTesting();
 
         tracks = PlaylistRepository.instance.current.first.tracks;
-        expect(tracks[0].artworkUrl, 'http://example.com/net-new.jpg');
+        expect(
+          tracks[0].artworkUrl,
+          'https://images.genius.com/genius-new.jpg',
+        );
         expect(
           tracks[1].artworkUrl,
           '/data/user/0/player/custom_artworks/2.jpg',
@@ -303,7 +321,11 @@ void main() {
           tracks[2].artworkUrl,
           'file:///data/user/0/player/custom_artworks/3.jpg',
         );
-        expect(tracks[3].artworkUrl, isNull);
+        expect(
+          tracks[3].artworkUrl,
+          'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
+        );
+        expect(tracks[4].artworkUrl, isNull);
       },
     );
 
@@ -470,10 +492,10 @@ void main() {
           p.id,
           const Track(
             id: '1',
-            sourceId: 'youtube',
+            sourceId: 'muzmo',
             title: 'Song Reset',
             artist: 'Artist',
-            artworkUrl: 'http://example.com/old.jpg',
+            artworkUrl: 'https://images.genius.com/old.jpg',
           ),
         );
 
@@ -482,22 +504,22 @@ void main() {
         ArtworkProvider.instance.cacheArtworkForTesting(
           'Artist',
           'Song Reset',
-          'http://example.com/new.jpg',
+          'https://images.genius.com/new.jpg',
         );
 
-        // Сброс обнуляет сетевой URL и сам запускает фоновую дозагрузку.
+        // Сброс обнуляет провайдерский URL и сам запускает фоновую дозагрузку.
         PlaylistRepository.instance.resetAllTrackArtworks();
         expect(
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
           isNull,
-          reason: 'сетевой URL обнулён сразу после сброса',
+          reason: 'провайдерский URL обнулён сразу после сброса',
         );
 
         await PlaylistRepository.instance.flushEnrichmentForTesting();
 
         expect(
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
-          'http://example.com/new.jpg',
+          'https://images.genius.com/new.jpg',
           reason:
               'обложка перезапрошена после сброса без ручного воспроизведения',
         );
@@ -508,6 +530,7 @@ void main() {
       await PlaylistRepository.instance.ensureLoaded();
       final p = PlaylistRepository.instance.create('Test');
       const n = 52;
+
       for (var i = 0; i < n; i++) {
         PlaylistRepository.instance.addTrack(
           p.id,
@@ -535,6 +558,38 @@ void main() {
         withArt,
         50,
         reason: 'за один load обогащается не более 50 треков',
+      );
+    });
+    test('resetAllTrackArtworks keeps soundcloud source artwork', () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final p = PlaylistRepository.instance.create('Test');
+      PlaylistRepository.instance.addTrack(
+        p.id,
+        const Track(
+          id: 'sc1',
+          sourceId: 'soundcloud',
+          title: 'SC Track',
+          artist: 'SC Artist',
+          artworkUrl: 'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
+        ),
+      );
+
+      // Даже если Genius/iTunes ничего не знают про трек, сброс не должен
+      // стирать «родную» обложку SoundCloud — она стабильна и после
+      // очистки дискового кэша перекачается по тому же URL.
+      PlaylistRepository.instance.resetAllTrackArtworks();
+
+      expect(
+        PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
+        'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
+        reason: 'обложка источника (sndcdn.com) не сбрасывается',
+      );
+
+      // Enrichment тоже не должен трогать трек с уже заполненным URL.
+      await PlaylistRepository.instance.flushEnrichmentForTesting();
+      expect(
+        PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
+        'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
       );
     });
   });
