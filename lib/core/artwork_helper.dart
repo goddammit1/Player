@@ -5,7 +5,6 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:player/core/app_database.dart';
 
 import '../models/track.dart';
@@ -61,31 +60,23 @@ class ArtworkHelper {
       await Directory('${appDir.path}/custom_artworks').create(recursive: true);
       await Directory('${appDir.path}/custom_artworks/playlists').create(recursive: true);
 
+      // Удаляем legacy-ключи custom_art_ (без версионного суффикса),
+      // оставшиеся от версий приложения до sqflite-миграции.
       try {
-        final db = await AppDatabase.instance.database;
+        await AppDatabase.instance.cleanupLegacyCustomArtKeys();
+      } catch (_) {}
 
-        // Удаляем legacy-ключи custom_art_ (без версионного суффикса),
-        // оставшиеся от версий приложения до sqflite-миграции.
-        try {
-          await db.delete(
-            'settings',
-            where: "key LIKE 'custom_art_%' AND key NOT LIKE 'custom_art_v%'",
-          );
-        } catch (_) {}
-
-        final rows = await db.query(
-          'settings',
-          columns: ['key', 'value'],
-          where: "key LIKE 'custom_art_v1_%'",
+      // Загружаем кастомные обложки через AppDatabase
+      try {
+        final loaded = await AppDatabase.instance.loadCustomArtworks(
+          // Передаём set реальных файлов на диске для проверки
+          Directory('${appDir.path}/custom_artworks')
+              .listSync()
+              .whereType<File>()
+              .map((f) => f.path)
+              .toSet(),
         );
-        for (final row in rows) {
-          final key = row['key'] as String;
-          final trackId = key.replaceFirst('custom_art_v1_', '');
-          final path = row['value'] as String;
-          if (path.isNotEmpty && File(path).existsSync()) {
-            _customArtCache[trackId] = path;
-          }
-        }
+        _customArtCache.addAll(loaded);
       } catch (_) {}
     } catch (e) {
       debugPrint('[ArtworkHelper.init] Failed to initialize: $e');
@@ -140,12 +131,7 @@ class ArtworkHelper {
       _customArtCache[trackId] = savedFile.path;
 
       try {
-        final db = await AppDatabase.instance.database;
-        await db.insert(
-          'settings',
-          {'key': 'custom_art_v1_$trackId', 'value': savedFile.path},
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+        await AppDatabase.instance.setCustomArtworkPath(trackId, savedFile.path);
       } catch (_) {}
 
       return savedFile.path;
@@ -165,12 +151,7 @@ class ArtworkHelper {
       // Удаляем из кэша и БД
       _customArtCache.remove(trackId);
       try {
-        final db = await AppDatabase.instance.database;
-        await db.delete(
-          'settings',
-          where: 'key = ?',
-          whereArgs: ['custom_art_v1_$trackId'],
-        );
+        await AppDatabase.instance.removeCustomArtworkPath(trackId);
       } catch (_) {}
     } catch (e) {
       debugPrint('[ArtworkHelper.removeCustomArtwork] Failed: $e');

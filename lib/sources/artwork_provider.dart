@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:sqflite/sqflite.dart';
 
 import '../core/app_database.dart';
 
@@ -19,6 +18,9 @@ class ArtworkProvider {
   late final String _prefsPrefix =
       '${_prefsPrefixBase}_${_geniusToken.isEmpty ? 'noauth' : 'auth'}:';
 
+  // -----------------------------------------------------------------
+  //  Regex'ы для _cleanSearchTerm (удаляют всё содержимое скобок / feat)
+  // -----------------------------------------------------------------
   static final _reParen = RegExp(r'\s*\([^)]*\)');
   static final _reBracket = RegExp(r'\s*\[[^\]]*\]');
   static final _reFeat = RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$', caseSensitive: false);
@@ -26,6 +28,31 @@ class ArtworkProvider {
     r'\s+-\s+(?:Radio|Club|Extended|Original|Alternative|Acoustic|Instrumental|Live|Remix|Remastered|Demo|Single|EP|Album|Version|Edit|Mix|Cut).*$',
     caseSensitive: false,
   );
+
+  // -----------------------------------------------------------------
+  //  Для _extractVersionHints: захват содержимого скобок
+  // -----------------------------------------------------------------
+  static final _reParenContent = RegExp(r'\(([^)]*)\)');
+  static final _reBracketContent = RegExp(r'\[([^\]]*)\]');
+  /// Слова, которые НЕ являются версией трека, а «шум»:
+  /// feat/ft/director/collab — матчинг по артистам уже есть отдельно,
+  /// «official video / audio / lyric / music video» — не меняет обложку,
+  /// «prod. / produced by / prod by» — не версия,
+  /// «original mix / ost / soundtrack / intro / interlude / outro /
+  ///  skit / album version / short edit / clean / explicit», etc.
+  /// Регистро-независимый.
+  static final _reNoiseTag = RegExp(
+    r'^(?:feat|ft)\b.*|'
+    r'^(?:prod(?:uced)?\.?\s+by|prod\.?)\b.*|'
+    r'^(?:official\s+(?:video|audio|lyric|music\s+video|clip)|'
+    r'official|клип|официальный\s+клип|премьера\s+клипа)\b.*|'
+    r'^(?:original\s+mix|ost|саундтрек|soundtrack|intro|interlude|'
+    r'outro|skit|album\s+version|short\s+edit|clean|explicit|'
+    r'cover|кавер|tribute|live\s+session|unplugged|акустика|клип|'
+    r'видеоклип|lyric\s+video|visualizer|video|audio)$',
+    caseSensitive: false,
+  );
+
   static final _reSpaces = RegExp(r'\s+');
   static final _reNonWord = RegExp(r'[^\w\s]');
 
@@ -49,23 +76,13 @@ class ArtworkProvider {
 
   Future<void> _cacheToDb(String key, String value) async {
     try {
-      final db = await AppDatabase.instance.database;
-      await db.insert(
-        'settings',
-        {'key': key, 'value': value},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await AppDatabase.instance.setSetting(key, value);
     } catch (_) {}
   }
 
   Future<void> _cleanupEmptyCache(String rawKey) async {
     try {
-      final db = await AppDatabase.instance.database;
-      await db.delete(
-        'settings',
-        where: 'key = ?',
-        whereArgs: ['$_prefsPrefix$rawKey'],
-      );
+      await AppDatabase.instance.removeSetting('$_prefsPrefix$rawKey');
     } catch (_) {}
   }
 
@@ -117,6 +134,70 @@ class ArtworkProvider {
         .toList();
   }
 
+  /// Прокси для юнит-тестов — вызывает приватный [_extractVersionHints].
+  @visibleForTesting
+  static ({String cleanTitle, List<String> versionHints}) extractVersionHintsForTest(
+    String title,
+  ) {
+    return _extractVersionHints(title);
+  }
+
+  /// Извлекает «версионные хинты» из заголовка — слова, которые помогут
+  /// Genius/iTunes найти именно ремикс/radio edit/..., а не оригинал.
+  ///
+  /// Возвращает запись (cleanTitle, versionHints), где:
+  /// - cleanTitle — заголовок БЕЗ содержимого скобок и feat/ft-хвостов;
+  /// - versionHints — список слов из скобок/суффикса, которые НЕ являются шумом.
+  ///
+  /// Примеры:
+  /// - 'Исчезаю (Remix)'          → ('исчезаю', ['remix'])
+  /// - 'Song (feat. X) (Radio Edit)' → ('song', ['radio edit'])
+  /// - 'Song (Official Video)'    → ('song', [])
+  /// - 'Track - Remix'            → ('track', ['remix'])
+  /// - 'Обычная песня'            → ('обычная песня', [])
+  static ({String cleanTitle, List<String> versionHints}) _extractVersionHints(
+    String title,
+  ) {
+    final hints = <String>[];
+
+    // Собираем всё содержимое круглых и квадратных скобок
+    for (final re in [_reParenContent, _reBracketContent]) {
+      for (final m in re.allMatches(title)) {
+        final raw = (m.group(1) ?? '').trim();
+        if (raw.isEmpty) continue;
+        // Разбиваем по '|', '/' — бывает «(Club Mix | Extended Mix)»
+        for (final part in raw.split(RegExp(r'\s*[|/]\s*'))) {
+          final p = part.trim();
+          if (p.isEmpty) continue;
+          // Отбрасываем шум: feat, official video, prod. by и т.п.
+          if (_reNoiseTag.hasMatch(p)) continue;
+          hints.add(p);
+        }
+      }
+    }
+
+    // Захват суффикса после " - ", если он что-то добавляет
+    {
+      final m = _reSuffix.firstMatch(title);
+      if (m != null) {
+        final suffix = m.group(0)?.trim() ?? '';
+        if (suffix.isNotEmpty) {
+          final withoutDash = suffix.replaceFirst(RegExp(r'^\s*-\s*'), '');
+          hints.add(withoutDash.trim());
+        }
+      }
+    }
+
+    // Удаляем дубликаты с сохранением порядка
+    final seen = <String>{};
+    final unique = hints.where((h) => seen.add(h.toLowerCase())).toList();
+
+    // Очищенный заголовок
+    final cleanTitle = _cleanSearchTerm(title);
+
+    return (cleanTitle: cleanTitle, versionHints: unique);
+  }
+
   /// Нормализует строку для сравнения: убирает non-word символы (в т.ч. *).
   String _normalize(String s) {
     return s.toLowerCase().replaceAll(_reNonWord, '').replaceAll(_reSpaces, ' ').trim();
@@ -129,25 +210,16 @@ class ArtworkProvider {
     if (mem != null) return mem.isEmpty ? null : mem;
 
     try {
-      final db = await AppDatabase.instance.database;
-      final rows = await db.query(
-        'settings',
-        columns: ['value'],
-        where: 'key = ?',
-        whereArgs: ['$_prefsPrefix$key'],
-      );
-      if (rows.isNotEmpty) {
-        final saved = rows.first['value'] as String?;
-        if (saved != null) {
-          _memCache[key] = saved;
-          if (saved.isEmpty) {
-            // Удаляем «пустой» кэш из БД — он мог остаться от старых версий.
-            // После удаления пробуем перезапросить сеть.
-            unawaited(_cleanupEmptyCache(key));
-            return null;
-          }
-          return saved;
+      final saved = await AppDatabase.instance.getSetting('$_prefsPrefix$key');
+      if (saved != null) {
+        _memCache[key] = saved;
+        if (saved.isEmpty) {
+          // Удаляем «пустой» кэш из БД — он мог остаться от старых версий.
+          // После удаления пробуем перезапросить сеть.
+          unawaited(_cleanupEmptyCache(key));
+          return null;
         }
+        return saved;
       }
     } catch (_) {}
 
@@ -252,71 +324,85 @@ class ArtworkProvider {
     if (_geniusToken.isEmpty) return null;
 
     final artists = _splitArtists(artist);
-    final cleanTitle = _cleanSearchTerm(title);
+    final (:cleanTitle, :versionHints) = _extractVersionHints(title);
 
-    // Поиск: все артисты через пробел + title (запятые мешают API)
-    final q = '${artists.join(' ')} $cleanTitle'.trim();
-
-    // Для матчинга: нормализованные строки (убираем *, скобки и т.д.)
-    final wantTitleNorm = _normalize(_cleanSearchTerm(title));
+    // wantTitleNorm включает хинты — чтобы exactMatch сработал для ремикса
+    final wantTitleNorm = _normalize(
+      versionHints.isNotEmpty ? '$cleanTitle ${versionHints.join(' ')}' : cleanTitle,
+    );
     final wantArtists = artists.map((a) => a.toLowerCase().trim()).toList();
 
-    final resp = await _dio.get<dynamic>(
-      'https://api.genius.com/search',
-      queryParameters: {'q': q, 'per_page': 5},
-      options: Options(
-        headers: {'Authorization': 'Bearer $_geniusToken'},
-      ),
-    );
+    Future<(int status, Map<String, dynamic>? data)> searchGenius(String q) async {
+      final resp = await _dio.get<dynamic>(
+        'https://api.genius.com/search',
+        queryParameters: {'q': q, 'per_page': 5},
+        options: Options(
+          headers: {'Authorization': 'Bearer $_geniusToken'},
+        ),
+      );
+      return (resp.statusCode ?? 0, _asMap(resp.data));
+    }
 
-    if (resp.statusCode != 200) {
-      if (kDebugMode && (resp.statusCode == 401 || resp.statusCode == 403)) {
+    String buildQ(List<String> extraWords) {
+      final parts = <String>[...artists, cleanTitle, ...extraWords];
+      return parts.where((s) => s.isNotEmpty).join(' ').trim();
+    }
+
+    // ---------- запрос №1: с versionHints --------------------------------
+    var q = buildQ(versionHints);
+    var (status, data) = await searchGenius(q);
+
+    // Если Genius не авторизован — сразу стоп
+    if (status == 401 || status == 403) {
+      if (kDebugMode) {
         debugPrint(
-          '[ArtworkProvider] Genius HTTP ${resp.statusCode} — '
+          '[ArtworkProvider] Genius HTTP $status — '
           'проверь GENIUS_TOKEN (нужен Client Access Token).',
         );
       }
-      throw DioException(
-        requestOptions: resp.requestOptions,
-        response: resp,
-        error: 'Genius HTTP status ${resp.statusCode}',
-      );
+      return null;
     }
 
-    final data = _asMap(resp.data);
-    if (data == null) return null;
+    if (status != 200) data = null;
 
-    final hits = (data['response']?['hits'] as List?) ?? const [];
-    if (hits.isEmpty) {
-      if (kDebugMode) debugPrint('[ArtworkProvider] Genius: пустая выдача для "$q"');
-      // Для запросов с кириллицей Genius часто возвращает 0.
-      // Пробуем fallback: поиск только по артисту (без тайтла).
-      if (_hasCyrillic(q) && artists.isNotEmpty) {
-        final fallbackQ = artists.join(' ').trim();
-        if (fallbackQ.isNotEmpty && fallbackQ != q) {
-          if (kDebugMode) {
-            debugPrint('[ArtworkProvider] Genius: retry with artist-only "$fallbackQ"');
-          }
-          final fbResp = await _dio.get<dynamic>(
-            'https://api.genius.com/search',
-            queryParameters: {'q': fallbackQ, 'per_page': 5},
-            options: Options(
-              headers: {'Authorization': 'Bearer $_geniusToken'},
-            ),
+    List hits = (data?['response']?['hits'] as List?) ?? const [];
+
+    // ---------- запрос №2: без хинтов (retry) ----------------------------
+    if (hits.isEmpty && versionHints.isNotEmpty) {
+      final qNoHints = buildQ([]);
+      if (qNoHints != q) {
+        if (kDebugMode) {
+          debugPrint(
+            '[ArtworkProvider] Genius: no hits for "$q", retry without hints "$qNoHints"',
           );
-          if (fbResp.statusCode == 200) {
-            final fbData = _asMap(fbResp.data);
-            final fbHits = (fbData?['response']?['hits'] as List?) ?? const [];
-            if (fbHits.isNotEmpty) {
-              if (kDebugMode) {
-                debugPrint('[ArtworkProvider] Genius fallback: ${fbHits.length} hits');
-              }
-              // Продолжаем обработку с fallback-результатами
-              return _processGeniusHits(fbHits, wantArtists, wantTitleNorm, isFallback: true);
-            }
+        }
+        (status, data) = await searchGenius(qNoHints);
+        if (status == 200) {
+          hits = (data?['response']?['hits'] as List?) ?? const [];
+          q = qNoHints;
+        }
+      }
+    }
+
+    // ---------- запрос №3: только по артисту (кириллический fallback) ----
+    if (hits.isEmpty && _hasCyrillic(q) && artists.isNotEmpty) {
+      final fallbackQ = artists.join(' ').trim();
+      if (fallbackQ.isNotEmpty && fallbackQ != q) {
+        if (kDebugMode) {
+          debugPrint('[ArtworkProvider] Genius: retry with artist-only "$fallbackQ"');
+        }
+        (status, data) = await searchGenius(fallbackQ);
+        if (status == 200) {
+          hits = (data?['response']?['hits'] as List?) ?? const [];
+          if (kDebugMode && hits.isNotEmpty) {
+            debugPrint('[ArtworkProvider] Genius fallback: ${hits.length} hits');
           }
         }
       }
+    }
+
+    if (hits.isEmpty) {
+      if (kDebugMode) debugPrint('[ArtworkProvider] Genius: пустая выдача для "$q"');
       return '';
     }
 
@@ -469,7 +555,7 @@ class ArtworkProvider {
     return null;
   }
 
-  String _cleanSearchTerm(String term) {
+  static String _cleanSearchTerm(String term) {
     var cleaned = term
         .replaceAll(_reParen, '')
         .replaceAll(_reBracket, '')
@@ -490,9 +576,9 @@ class ArtworkProvider {
 
   Future<String?> _fetchItunes(String artist, String title) async {
     final artists = _splitArtists(artist);
+    final (:cleanTitle, :versionHints) = _extractVersionHints(title);
     final cleanArtist = _cleanSearchTerm(artists.firstOrNull ?? artist);
-    final cleanTitle = _cleanSearchTerm(title);
-    final term = '$cleanArtist $cleanTitle';
+    final term = '$cleanArtist $cleanTitle ${versionHints.join(' ')}'.trim();
 
     final resp = await _dio.get<dynamic>(
       'https://itunes.apple.com/search',

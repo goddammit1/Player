@@ -9,8 +9,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener, Size;
-import 'package:sqflite/sqflite.dart';
-
 import '../models/track.dart';
 import '../sources/source_registry.dart';
 import '../sources/artwork_provider.dart';
@@ -228,19 +226,11 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   Future<void> _initBoost() async {
     try {
-      try {
-        final db = await AppDatabase.instance.database;
-        final rows = await db.query(
-          'settings',
-          columns: ['value'],
-          where: 'key = ?',
-          whereArgs: [_boostDbKey],
-        );
-        if (rows.isNotEmpty) {
-          final saved = double.tryParse(rows.first['value'] as String? ?? '') ?? 0.0;
-          await setBoost(saved);
-        }
-      } catch (_) {}
+      final savedStr = await AppDatabase.instance.getSetting(_boostDbKey);
+      if (savedStr != null) {
+        final saved = double.tryParse(savedStr) ?? 0.0;
+        await setBoost(saved);
+      }
     } catch (e) {
       _log('boost init failed: $e');
     }
@@ -261,12 +251,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   Future<void> _persistBoost(double db) async {
     try {
-      final database = await AppDatabase.instance.database;
-      await database.insert(
-        'settings',
-        {'key': _boostDbKey, 'value': db.toString()},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await AppDatabase.instance.setSetting(_boostDbKey, db.toString());
     } catch (_) {}
   }
 

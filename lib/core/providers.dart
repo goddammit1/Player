@@ -189,7 +189,7 @@ class SearchController extends StateNotifier<SearchState> {
       results[index] = list;
 
       // Round-robin слияние уже полученных результатов.
-      final merged = _interleave(
+      final merged = SearchController.interleave(
         List.generate(results.length, (i) => completed[i] ? results[i] : const []),
       );
 
@@ -235,7 +235,7 @@ class SearchController extends StateNotifier<SearchState> {
   }
 
   /// Round-robin слияние нескольких списков в один.
-  List<Track> _interleave(List<List<Track>> lists) {
+  static List<Track> interleave(List<List<Track>> lists) {
     final merged = <Track>[];
     var i = 0;
     var added = true;
@@ -468,28 +468,27 @@ class SearchHistoryNotifier extends StateNotifier<List<String>> {
     state = await AppDatabase.instance.getSearchHistory(_maxItems);
   }
 
-  Future<void> _persist() async {
-    await AppDatabase.instance.setSearchHistory(state, _maxItems);
-  }
-
   Future<void> add(String query) async {
     final q = query.trim();
     if (q.isEmpty) return;
+    // Дедуплицируем в памяти
     state = [
       q,
       ...state.where((e) => e.toLowerCase() != q.toLowerCase()),
     ].take(_maxItems).toList();
-    await _persist();
+    // Атомарная запись одной строки + чистка лишних
+    await AppDatabase.instance.addSearchQuery(q);
+    await AppDatabase.instance.trimSearchHistory(_maxItems);
   }
 
   Future<void> remove(String query) async {
     state = state.where((e) => e != query).toList();
-    await _persist();
+    await AppDatabase.instance.removeSearchQuery(query);
   }
 
   Future<void> clear() async {
     state = const [];
-    await _persist();
+    await AppDatabase.instance.clearSearchHistory();
   }
 
   /// Перечитывает значение из БД (нужно после импорта полного бэкапа).
