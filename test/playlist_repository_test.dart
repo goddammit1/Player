@@ -1,17 +1,22 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/playlist_backup.dart';
 import 'package:player/core/playlist_repository.dart';
 import 'package:player/models/playlist.dart';
 import 'package:player/models/track.dart';
 
-void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
+import 'setup/test_harness.dart';
 
-  setUp(() {
-    SharedPreferences.setMockInitialValues({});
-    PlaylistRepository.instance.resetForTesting();
+void main() {
+  TestHarness.ensureInitialized();
+
+  setUp(() async {
+    await TestHarness.setUpDb();
+    await PlaylistRepository.instance.resetForTesting();
+  });
+
+  tearDown(() async {
+    await TestHarness.tearDownDb();
   });
 
   group('PlaylistRepository', () {

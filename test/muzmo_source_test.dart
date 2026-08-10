@@ -1,3 +1,6 @@
+@Tags(['live'])
+library;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:player/sources/muzmo_source.dart';
 import 'package:player/models/track.dart';
