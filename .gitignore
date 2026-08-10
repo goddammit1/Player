@@ -67,3 +67,10 @@ analyze_result.txt
 muzmo_cookies.tmp
 muzmo_search.html
 /Runner.app/
+
+# Local build/run logs and window screenshots
+analyze_log.txt
+build_*.txt
+doctor_log.txt
+run_*.txt
+window_shot*.png
