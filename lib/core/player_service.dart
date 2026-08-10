@@ -551,7 +551,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
         !ArtworkProvider.isProviderArtworkUrl(existing)) {
       return;
     }
-    ArtworkProvider.instance.findArtwork(track.artist, track.title, preferredSize: 600).then((url) {
+    _fetchArtworkUrl(track).then((url) {
       if (url == null || url.isEmpty) return;
       if (queueIndex < 0 || queueIndex >= _queue.length) return;
 
@@ -576,6 +576,26 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       // И в историю прослушивания
       unawaited(HistoryRepository.instance.updateTrackArtwork(current.globalId, url));
     }).catchError((_) {});
+  }
+
+  /// Выбирает URL обложки для трека в очереди:
+  /// 1. Если у трека нет обложки — пробуем восстановить «родную» из
+  ///    источника (SoundCloud по ID и т.п.), т.к. Genius/iTunes её не знают.
+  /// 2. Иначе — Genius/iTunes (с TTL-кэшем, устаревший URL перезапрашивается).
+  Future<String?> _fetchArtworkUrl(Track track) async {
+    final existing = track.artworkUrl;
+    if (existing == null || existing.isEmpty) {
+      try {
+        final url = await SourceRegistry.instance
+            .get(track.sourceId)
+            ?.resolveArtwork(track);
+        if (url != null && url.isNotEmpty) return url;
+      } catch (_) {
+        // Падение источника не мешает фолбэку на Genius/iTunes.
+      }
+    }
+    return ArtworkProvider.instance
+        .findArtwork(track.artist, track.title, preferredSize: 600);
   }
 
   void _precacheImage(String url) {

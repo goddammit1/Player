@@ -5,8 +5,31 @@ import 'package:player/core/playlist_repository.dart';
 import 'package:player/models/playlist.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';
+import 'package:player/sources/source_registry.dart';
+import 'package:player/sources/track_source.dart';
 
 import 'setup/test_harness.dart';
+
+/// Фейковый источник SoundCloud, который умеет восстанавливать обложку
+/// по ID трека (как настоящий SoundCloudSource через GET /tracks/{id}).
+class _ArtworkRestoreFakeSource extends TrackSource {
+  @override
+  String get id => 'soundcloud';
+
+  @override
+  String get displayName => 'Fake SoundCloud';
+
+  @override
+  Future<List<Track>> search(String query, {int limit = 20}) async => const [];
+
+  @override
+  Future<String> resolveStreamUrl(Track track) async =>
+      'https://example.com/stream.mp3';
+
+  @override
+  Future<String?> resolveArtwork(Track track) async =>
+      'https://i1.sndcdn.com/artworks-restored-t500x500.jpg';
+}
 
 void main() {
   TestHarness.ensureInitialized();
@@ -592,5 +615,41 @@ void main() {
         'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
       );
     });
+
+    test(
+      'enrichment restores lost artwork from the source when Genius has none',
+      () async {
+        SourceRegistry.instance.register(_ArtworkRestoreFakeSource());
+        addTearDown(() => SourceRegistry.instance.disposeAll());
+
+        await PlaylistRepository.instance.ensureLoaded();
+        final p = PlaylistRepository.instance.create('Test');
+        // artworkUrl потерян — его стёрла очистка кэша обложек в старой
+        // версии и сохранила null в БД. Genius/iTunes такую обложку не знают,
+        // поэтому восстановить её может только сам источник по ID трека.
+        PlaylistRepository.instance.addTrack(
+          p.id,
+          const Track(
+            id: 'sc1',
+            sourceId: 'soundcloud',
+            title: 'SC Track',
+            artist: 'SC Artist',
+          ),
+        );
+        await PlaylistRepository.instance.flush();
+        // reload запускает волну обогащения для треков без обложек.
+        await PlaylistRepository.instance.reload();
+
+        await PlaylistRepository.instance.flushEnrichmentForTesting();
+
+        expect(
+          PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
+          'https://i1.sndcdn.com/artworks-restored-t500x500.jpg',
+          reason:
+              'обложка восстановлена из источника (SoundCloud), '
+              'а не из Genius/iTunes',
+        );
+      },
+    );
   });
 }

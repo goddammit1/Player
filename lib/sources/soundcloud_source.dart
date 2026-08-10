@@ -543,6 +543,41 @@ class SoundCloudSource implements TrackSource {
         'SoundCloud: Ни один открытый транскодинг не сработал для "${track.artist} - ${track.title}". Ошибка: $lastError');
   }
 
+  /// Восстанавливает «родную» обложку трека из SoundCloud по ID.
+  ///
+  /// Нужно для треков, чей artworkUrl был стёрт очисткой кэша обложек
+  /// (старые версии), а Genius/iTunes такую обложку не знают. GET
+  /// /tracks/{id} отдаёт полный объект трека, включая artwork_url.
+  @override
+  Future<String?> resolveArtwork(Track track) async {
+    var clientId = await _ensureClientId();
+    if (clientId == null) return null;
+
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final resp = await _dio.get<dynamic>(
+          '$_apiBase/tracks/${track.id}',
+          queryParameters: {'client_id': clientId},
+        );
+
+        if (resp.statusCode == 401) {
+          _invalidateClientId();
+          final fresh = await _ensureClientId();
+          if (fresh == null || fresh == clientId) return null;
+          clientId = fresh;
+          continue;
+        }
+        if (resp.statusCode != 200) return null;
+
+        final map = _asMap(resp.data);
+        return map == null ? null : _bestArtwork(map);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
   Future<_TrackResolvedData?> _fetchTranscodingsForTrack(Track track) async {
     final clientId = await _ensureClientId();
     if (clientId == null) return null;

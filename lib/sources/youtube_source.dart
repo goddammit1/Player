@@ -357,6 +357,12 @@ class YoutubeSource implements TrackSource {
     _streamInfoCache.clear();
     _yt.close();
   }
+
+  /// Восстановить обложку из YouTube нельзя без перепоиска (ID видео
+  /// не даёт прямой ссылки на artwork) — поэтому оставляем дефолт null,
+  /// и обогащение откатывается на Genius/iTunes.
+  @override
+  Future<String?> resolveArtwork(Track track) async => null;
 }
 
 /// Вспомогательный класс для ранжирования видео по качеству

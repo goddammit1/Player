@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
 import '../sources/artwork_provider.dart';
+import '../sources/source_registry.dart';
 import 'app_database.dart';
 import 'artwork_helper.dart';
 import '../models/track.dart';
@@ -122,11 +123,24 @@ class PlaylistRepository {
     await _enrichSemaphore.acquire();
     final generation = _artworkGeneration;
     try {
-      final url = await ArtworkProvider.instance.findArtwork(
-        track.artist,
-        track.title,
-        preferredSize: 600,
-      );
+      // Сначала пробуем восстановить «родную» обложку из самого источника
+      // (например, SoundCloud по ID трека): для таких треков Genius/iTunes
+      // часто пуст, а без источника потерянный URL уже не вернуть.
+      String? url;
+      try {
+        url = await SourceRegistry.instance
+            .get(track.sourceId)
+            ?.resolveArtwork(track);
+      } catch (_) {
+        url = null;
+      }
+      if (url == null || url.isEmpty) {
+        url = await ArtworkProvider.instance.findArtwork(
+          track.artist,
+          track.title,
+          preferredSize: 600,
+        );
+      }
       // Пока запрос летел, обложки могли сбросить (очистка кэша) или
       // плейлисты перезагрузить — устаревший результат не применяем,
       // иначе «сброс» откатился бы прилетевшим URL.

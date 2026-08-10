@@ -49,6 +49,17 @@ abstract class TrackSource {
   /// YouTube берёт из манифеста, Muzmo — из размера mp3.
   Future<int?> resolveBitrate(Track track) async => track.qualityScore;
 
+  /// Восстановить «родную» обложку трека из самого источника.
+  ///
+  /// Нужно для треков, у которых [Track.artworkUrl] потерялся (например,
+  /// очистка кэша обложек в старой версии стёрла URL и сохранила null в БД),
+  /// а Genius/iTunes такую обложку не знают. Источник может запросить свои
+  /// данные по ID трека и вернуть artworkUrl (например, SoundCloud —
+  /// GET /tracks/{id}, где лежит artwork_url).
+  ///
+  /// Дефолт — null (источник не умеет восстанавливать); вызывающий код
+  /// в этом случае откатывается на [ArtworkProvider].
+  Future<String?> resolveArtwork(Track track) async => null;
 
   /// Закрыть ресурсы (HTTP-клиенты и т.п.).
   Future<void> dispose() async {}

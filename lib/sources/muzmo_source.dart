@@ -426,6 +426,11 @@ class MuzmoSource implements TrackSource {
     await _ensureSession();
   }
 
+  /// У Muzmo нет стабильного API для получения трека по ID вне поиска,
+  /// поэтому «родную» обложку восстановить нельзя — фолбэк на Genius/iTunes.
+  @override
+  Future<String?> resolveArtwork(Track track) async => null;
+
   @override
   Future<void> dispose() async {
     _dio.close(force: true);
