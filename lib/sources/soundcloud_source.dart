@@ -168,7 +168,7 @@ class SoundCloudSource implements TrackSource {
       return const [];
     }
 
-    return _parseTracks(resp.data, limit);
+    return parseTracks(resp.data, limit);
   }
 
   Future<List<Track>> _searchWith(
@@ -181,7 +181,7 @@ class SoundCloudSource implements TrackSource {
       queryParameters: {'q': q, 'client_id': clientId, 'limit': limit},
     );
     if (resp.statusCode != 200) return const [];
-    return _parseTracks(resp.data, limit);
+    return parseTracks(resp.data, limit);
   }
 
   Map<String, dynamic>? _asMap(Object? data) {
@@ -195,7 +195,7 @@ class SoundCloudSource implements TrackSource {
     return null;
   }
 
-  List<Track> _parseTracks(Object? data, int limit) {
+  List<Track> parseTracks(Object? data, int limit) {
     final map = _asMap(data);
     if (map == null) return const [];
 

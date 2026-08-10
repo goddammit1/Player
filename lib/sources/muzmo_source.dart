@@ -77,7 +77,7 @@ class MuzmoSource implements TrackSource {
     final resp = await _dio.get<String>('/search', queryParameters: {'q': q});
     if (resp.statusCode != 200 || resp.data == null) return const [];
 
-    final tracks = _parseTracks(resp.data!).take(limit).toList();
+    final tracks = parseTracks(resp.data!).take(limit).toList();
 
     // Предзагружаем реальные mp3 для Type 2 в фоне — пока юзер скроллит,
     // ссылки уже будут готовы. Не ждём завершения.
@@ -99,7 +99,7 @@ class MuzmoSource implements TrackSource {
   //  Парсинг HTML
   // ---------------------------------------------------------------------
 
-  List<Track> _parseTracks(String htmlText) {
+  List<Track> parseTracks(String htmlText) {
     final doc = html_parser.parse(htmlText);
     final items = doc.querySelectorAll('.item-song');
     final result = <Track>[];
@@ -116,7 +116,7 @@ class MuzmoSource implements TrackSource {
       if (playTd != null) {
         final dataFile = playTd.attributes['data-file'];
         if (dataFile != null && dataFile.isNotEmpty) {
-          streamUrl = _normalizeUrl(dataFile);
+          streamUrl = normalizeUrl(dataFile);
         }
         trackId = playTd.attributes['id'];
 
@@ -144,7 +144,7 @@ class MuzmoSource implements TrackSource {
         final outerLink = item.querySelector('a.block');
         final href = outerLink?.attributes['href'];
         if (href != null && href.contains('get_new')) {
-          streamUrl = _normalizeUrl(href);
+          streamUrl = normalizeUrl(href);
           trackId = href.hashCode.toString();
         }
       }
@@ -179,7 +179,7 @@ class MuzmoSource implements TrackSource {
 
       final timeCell = item.querySelector('td.song-time small');
       if (timeCell != null) {
-        duration = _parseDuration(timeCell.text.trim());
+        duration = parseDuration(timeCell.text.trim());
       }
 
       result.add(Track(
@@ -196,14 +196,14 @@ class MuzmoSource implements TrackSource {
     return result;
   }
 
-  String _normalizeUrl(String url) {
+  String normalizeUrl(String url) {
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
     if (url.startsWith('//')) return 'https:$url';
     return '$_baseUrl${url.startsWith('/') ? '' : '/'}$url';
   }
 
 
-  Duration? _parseDuration(String s) {
+  Duration? parseDuration(String s) {
     final parts = s.split(':');
     try {
       if (parts.length == 2) {
@@ -329,7 +329,7 @@ class MuzmoSource implements TrackSource {
       throw StateError('Muzmo: data-file пуст на info page');
     }
 
-    final resolved = _normalizeUrl(dataFile);
+    final resolved = normalizeUrl(dataFile);
     if (kDebugMode) debugPrint('[Muzmo] Type 2 resolved to: $resolved');
     return resolved;
   }
@@ -344,7 +344,7 @@ class MuzmoSource implements TrackSource {
       final resp = await _dio.get<String>('/search', queryParameters: {'q': query});
       if (resp.statusCode != 200 || resp.data == null) return null;
 
-      final found = _parseTracks(resp.data!);
+      final found = parseTracks(resp.data!);
       if (found.isEmpty) return null;
 
       for (final t in found) {

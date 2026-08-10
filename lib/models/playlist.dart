@@ -95,6 +95,8 @@ class Playlist {
     'artist': t.artist,
     'duration_ms': t.duration?.inMilliseconds,
     'artwork_url': t.artworkUrl,
+    'quality_score': t.qualityScore,
+    'quality_label': t.qualityLabel,
     // extra нужен для muzmo (там лежит streamUrl).
     // Сохраняем примитивы как есть: null, строки, числа, булы
     'extra': t.extra.map((k, v) => MapEntry(k, v)),
@@ -109,6 +111,8 @@ class Playlist {
         ? Duration(milliseconds: (m['duration_ms'] as num).toInt())
         : null,
     artworkUrl: m['artwork_url'] as String?,
+    qualityScore: m['quality_score'] as int?,
+    qualityLabel: m['quality_label'] as String?,
     extra: ((m['extra'] as Map?) ?? const {}).map(
       (k, v) => MapEntry(k.toString(), v),
     ),
