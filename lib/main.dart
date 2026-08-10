@@ -7,16 +7,22 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'core/app_database.dart';
 import 'core/haptic_helper.dart';
 import 'core/history_repository.dart';
 import 'core/player_service.dart';
+import 'core/player_service_desktop.dart';
+import 'core/player_service_interface.dart';
 import 'core/playlist_backup.dart';
 import 'core/playlist_repository.dart';
 import 'core/providers.dart';
 import 'sources/source_registry.dart';
+import 'ui/desktop/desktop_shell.dart';
+import 'ui/desktop/desktop_player_bar.dart';
 import 'ui/pages/home_page.dart';
+import 'ui/widgets/desktop_layout.dart' show isDesktop;
 import 'core/youtube_cache.dart';
 import 'core/artwork_helper.dart';
 
@@ -30,6 +36,16 @@ Future<void> main() async {
   runZonedGuarded<Future<void>>(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+
+      // === ДЕСКТОП: ИНИЦИАЛИЗАЦИЯ SQLITE FFI (Windows/Linux) ===
+      // На Android/iOS sqflite работает через нативные плагины.
+      // На десктопе нужен sqflite_common_ffi + sqlite3_flutter_libs.
+      if (!Platform.isAndroid && !Platform.isIOS) {
+        // ignore: avoid_web_libraries_in_flutter
+        sqfliteFfiInit();
+        databaseFactory = databaseFactoryFfi;
+      }
+      // ==========================================================
 
       await ArtworkHelper.init();
 
@@ -85,15 +101,25 @@ Future<void> main() async {
 
       SourceRegistry.instance.registerDefaults();
 
-      final playerService = await AudioService.init<PlayerService>(
-        builder: PlayerService.new,
-        config: const AudioServiceConfig(
-          androidNotificationChannelId: 'com.player.player.audio',
-          androidNotificationChannelName: 'Player',
-          androidNotificationOngoing: true,
-          androidStopForegroundOnPause: true,
-        ),
-      );
+      // === ИНИЦИАЛИЗАЦИЯ ПЛЕЕРА (платформозависимая) ===
+      // Android/iOS: AudioService + PlayerService (системные уведомления,
+      // lock-screen контролы, фоновая служба).
+      // Десктоп: DesktopPlayerService (чистый just_audio, без audio_service).
+      final PlayerServiceInterface playerService;
+      if (Platform.isAndroid || Platform.isIOS) {
+        playerService = await AudioService.init<PlayerService>(
+          builder: PlayerService.new,
+          config: const AudioServiceConfig(
+            androidNotificationChannelId: 'com.player.player.audio',
+            androidNotificationChannelName: 'Player',
+            androidNotificationOngoing: true,
+            androidStopForegroundOnPause: true,
+          ),
+        );
+      } else {
+        playerService = DesktopPlayerService();
+      }
+      // =========================================================
 
       runApp(
         ProviderScope(
@@ -105,6 +131,13 @@ Future<void> main() async {
       );
     },
     (Object error, StackTrace stack) {
+      // Windows: LockCachingAudioSource (just_audio) не может переименовать
+      // .part → final, пока just_audio_windows держит файл открытым
+      // (errno=32). Это безвредный шум — воспроизведение продолжается.
+      if (error is PathAccessException) {
+        debugPrint('[Cache] rename skipped, file in use: $error');
+        return;
+      }
       debugPrint('[UncaughtZoneError] $error\n$stack');
     },
   );
@@ -262,6 +295,10 @@ class PlayerApp extends ConsumerWidget {
       brightness: Brightness.dark,
       useMaterial3: true,
       fontFamily: 'Geist',
+      // Geist не содержит кириллицы (только latin) — русские названия
+      // падали на системный шрифт со скачком метрик. Явный фолбэк на
+      // Segoe UI (Windows) / Roboto (остальные) убирает «рваный» вид.
+      fontFamilyFallback: const ['Segoe UI', 'Roboto', 'Arial'],
       scaffoldBackgroundColor: colors.background,
       canvasColor: colors.background,
       colorScheme: ColorScheme.dark(
@@ -283,6 +320,7 @@ class PlayerApp extends ConsumerWidget {
           bodyColor: colors.textPrimary,
           displayColor: colors.textPrimary,
           fontFamily: 'Geist',
+          fontFamilyFallback: const ['Segoe UI', 'Roboto', 'Arial'],
         ),
         appBarTheme: AppBarTheme(
           backgroundColor: colors.background,
@@ -315,7 +353,56 @@ class PlayerApp extends ConsumerWidget {
         ),
         splashFactory: InkRipple.splashFactory,
       ),
-      home: const _SessionAutoSave(child: HomePage()),
+      // На десктопе панель плеера должна оставаться видимой поверх всех
+      // маршрутов (включая Settings/SearchHistory, которые открываются через
+      // Navigator.push из SearchPage). Поэтому она выносится на уровень
+      // MaterialApp.builder, а не живёт внутри DesktopShell.
+      builder: isDesktop
+          ? (context, child) => _DesktopFrame(child: child)
+          : null,
+      home: isDesktop
+          ? const _SessionAutoSave(child: DesktopShell())
+          : const _SessionAutoSave(child: HomePage()),
+    );
+  }
+}
+
+/// Десктопная рамка: [Navigator] (child) сверху + [DesktopPlayerBar] снизу.
+/// Расположение поверх всех маршрутов гарантирует, что панель не скрывается
+/// при push Settings/SearchHistory из поиска.
+///
+/// ВАЖНО: builder' MaterialApp находится ВЫШЕ Navigator'а, поэтому у панели
+/// нет ни Material-предка (Slider без него падает «No Material widget found»),
+/// ни Overlay — а Slider во Flutter 3.4x сам использует OverlayPortal (value
+/// indicator) и без Overlay кидает «No Overlay widget found» на КАЖДОЙ
+/// пересборке (десятки ошибок в run_exe_log.txt), а вместо трека рисует
+/// гигантскую серую плашку (именно «залитый слайдер» из багрепорта).
+/// Поэтому панель оборачивается в Material + собственный Overlay.
+class _DesktopFrame extends ConsumerWidget {
+  const _DesktopFrame({required this.child});
+
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = ref.watch(animatedPaletteProvider);
+    return Material(
+      color: colors.background,
+      child: Column(
+        children: [
+          Expanded(child: child ?? const SizedBox.shrink()),
+          SizedBox(
+            height: DesktopPlayerBar.height,
+            child: Overlay(
+              initialEntries: [
+                // DesktopPlayerBar сам читает провайдеры, поэтому закрытие
+                // entry не устаревает при смене палитры.
+                OverlayEntry(builder: (_) => DesktopPlayerBar()),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -5,10 +5,12 @@ import '../../core/providers.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
+import 'desktop_layout.dart';
 
 Future<void> showTrackDetailsSheet(BuildContext context, Track track) {
-  return showModalBottomSheet<void>(
+  return showDesktopModalSheet<void>(
     context: context,
+    maxWidth: 520,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
     showDragHandle: false,
@@ -157,7 +159,11 @@ class _TrackDetailsSheetState extends ConsumerState<_TrackDetailsSheet> {
 }
 
 class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.label, required this.value, required this.colors});
+  const _DetailRow({
+    required this.label,
+    required this.value,
+    required this.colors,
+  });
   final String label;
   final String value;
   final dynamic colors;
@@ -170,10 +176,7 @@ class _DetailRow extends StatelessWidget {
         children: [
           Text(
             label,
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 14,
-            ),
+            style: TextStyle(color: colors.textSecondary, fontSize: 14),
           ),
           const Spacer(),
           Text(
@@ -191,7 +194,11 @@ class _DetailRow extends StatelessWidget {
 }
 
 class _BitrateRow extends StatelessWidget {
-  const _BitrateRow({required this.loading, required this.bitrate, required this.colors});
+  const _BitrateRow({
+    required this.loading,
+    required this.bitrate,
+    required this.colors,
+  });
   final bool loading;
   final int? bitrate;
   final dynamic colors;
@@ -203,7 +210,10 @@ class _BitrateRow extends StatelessWidget {
       trailing = SizedBox(
         width: 16,
         height: 16,
-        child: CircularProgressIndicator(strokeWidth: 2, color: colors.textPrimary),
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: colors.textPrimary,
+        ),
       );
     } else if (bitrate == null || bitrate! <= 0) {
       trailing = Text(

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -8,6 +10,7 @@ import '../../core/playlist_backup.dart';
 import '../../core/playlist_repository.dart';
 import '../../core/providers.dart';
 import 'cache_page.dart';
+import '../widgets/desktop_layout.dart';
 import '../widgets/snack.dart';
 import '../widgets/update_dialog.dart';
 
@@ -29,14 +32,24 @@ class SettingsPage extends ConsumerWidget {
           backgroundColor: colors.background,
           surfaceTintColor: Colors.transparent,
           elevation: 0,
-          leading: IconButton(
-            icon: Icon(
-              Icons.chevron_left_rounded,
-              size: 28,
-              color: colors.textPrimary,
-            ),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
+          automaticallyImplyLeading: false,
+          // Назад показываем только когда страница реально открыта через
+          // Navigator.push (мобильные экраны, десктопные push из поиска,
+          // истории и плейлиста). Когда страница встроена как раздел
+          // десктопного shell (DesktopShell → IndexedStack), она живёт на
+          // корневом маршруте, и Navigator.pop оставил бы приложение
+          // с пустым Navigator'ом (тёмный экран без UI) — поэтому кнопку
+          // прячем: назад там работает через левую панель разделов.
+          leading: Navigator.of(context).canPop()
+              ? IconButton(
+                  icon: Icon(
+                    Icons.chevron_left_rounded,
+                    size: 28,
+                    color: colors.textPrimary,
+                  ),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                )
+              : null,
           title: Text(
             'Settings',
             style: TextStyle(
@@ -47,20 +60,31 @@ class SettingsPage extends ConsumerWidget {
             ),
           ),
         ),
-        body: ListView(
-          padding: EdgeInsets.only(
-            top: 8,
-            bottom: 8 + MediaQuery.of(context).padding.bottom,
+        body: LayoutBuilder(
+          builder: (context, c) => Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: isDesktop ? 760 : double.infinity,
+                maxHeight: c.maxHeight,
+              ),
+              child: ListView(
+                padding: EdgeInsets.only(
+                  top: 8,
+                  bottom: 8 + MediaQuery.of(context).padding.bottom,
+                ),
+                children: [
+                  _AppearanceSection(colors: colors),
+                  _SearchViewSection(colors: colors),
+                  _HistorySection(colors: colors),
+                  _HapticsSection(colors: colors),
+                  _CacheTile(colors: colors),
+                  _BackupSection(colors: colors),
+                  _AboutSection(colors: colors),
+                ],
+              ),
+            ),
           ),
-          children: [
-            _AppearanceSection(colors: colors),
-            _SearchViewSection(colors: colors),
-            _HistorySection(colors: colors),
-            _HapticsSection(colors: colors),
-            _CacheTile(colors: colors),
-            _BackupSection(colors: colors),
-            _AboutSection(colors: colors),
-          ],
         ),
       ),
     );
@@ -571,8 +595,10 @@ class _BackupSection extends ConsumerWidget {
           },
         ),
         ListTile(
-          leading:
-              Icon(Icons.file_download_outlined, color: colors.textPrimary),
+          leading: Icon(
+            Icons.file_download_outlined,
+            color: colors.textPrimary,
+          ),
           title: Text(
             'Import everything',
             style: TextStyle(color: colors.textPrimary),
@@ -656,21 +682,25 @@ class _AboutSection extends StatelessWidget {
             );
           },
         ),
-        ListTile(
-          leading: Icon(
-            Icons.system_update_alt_rounded,
-            color: colors.textPrimary,
+        // Проверка обновлений работает только на мобильных: GitHub-релизы
+        // содержат APK, а in-app установка доступна лишь на Android.
+        // На десктопе пункт бесполезен (и бросил бы UnsupportedError).
+        if (Platform.isAndroid || Platform.isIOS)
+          ListTile(
+            leading: Icon(
+              Icons.system_update_alt_rounded,
+              color: colors.textPrimary,
+            ),
+            title: Text(
+              'Check for updates',
+              style: TextStyle(color: colors.textPrimary),
+            ),
+            subtitle: Text(
+              'Latest release on GitHub',
+              style: TextStyle(color: colors.textSecondary),
+            ),
+            onTap: () => showUpdateFlow(context, colors),
           ),
-          title: Text(
-            'Check for updates',
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          subtitle: Text(
-            'Latest release on GitHub',
-            style: TextStyle(color: colors.textSecondary),
-          ),
-          onTap: () => showUpdateFlow(context, colors),
-        ),
       ],
     );
   }

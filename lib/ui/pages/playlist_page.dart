@@ -10,6 +10,7 @@ import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import '../widgets/artwork.dart';
 import '../../core/artwork_helper.dart';
+import '../widgets/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';
@@ -42,11 +43,11 @@ abstract final class _Dimens {
 // ═══════════════════════════════════════════════════════════════════════════
 
 BorderRadius _trackBorderRadius(bool isFirst, bool isLast) => BorderRadius.only(
-      topLeft: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
-      topRight: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
-      bottomLeft: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
-      bottomRight: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
-    );
+  topLeft: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
+  topRight: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
+  bottomLeft: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
+  bottomRight: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
+);
 
 String _fmtDuration(Duration d) {
   final h = d.inHours;
@@ -97,8 +98,17 @@ enum _SortMode {
 // ═══════════════════════════════════════════════════════════════════════════
 
 class PlaylistPage extends ConsumerStatefulWidget {
-  const PlaylistPage({super.key, required this.playlistId});
+  const PlaylistPage({
+    super.key,
+    required this.playlistId,
+    this.showNowPlayingOverlay = true,
+  });
   final String playlistId;
+
+  /// Отключает встроенный мини-плеер поверх страницы. Нужно, когда страница
+  /// открывается из десктопного shell — там свою панель плеера рисует
+  /// [DesktopPlayerBar] (см. ui/desktop/desktop_player_bar.dart).
+  final bool showNowPlayingOverlay;
 
   @override
   ConsumerState<PlaylistPage> createState() => _PlaylistPageState();
@@ -170,10 +180,14 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
       case _SortMode.manual:
         break;
       case _SortMode.title:
-        result.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+        result.sort(
+          (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+        );
         break;
       case _SortMode.artist:
-        result.sort((a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()));
+        result.sort(
+          (a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()),
+        );
         break;
     }
 
@@ -182,17 +196,18 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   }
 
   static Duration _totalDuration(List<Track> tracks) => tracks.fold<Duration>(
-        Duration.zero,
-        (prev, t) => prev + (t.duration ?? Duration.zero),
-      );
+    Duration.zero,
+    (prev, t) => prev + (t.duration ?? Duration.zero),
+  );
 
   // ---- BottomSheet меню плейлиста ----
 
   Future<void> _showPlaylistMenu(BuildContext context, Playlist p) async {
     final colors = ref.read(currentPaletteProvider);
 
-    await showModalBottomSheet<void>(
+    await showDesktopModalSheet<void>(
       context: context,
+      maxWidth: 520,
       backgroundColor: colors.elevated,
       showDragHandle: true,
       builder: (sheetCtx) {
@@ -203,7 +218,10 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
             children: [
               ListTile(
                 leading: Icon(Icons.edit_rounded, color: colors.textPrimary),
-                title: Text('Rename', style: TextStyle(color: colors.textPrimary)),
+                title: Text(
+                  'Rename',
+                  style: TextStyle(color: colors.textPrimary),
+                ),
                 onTap: () async {
                   HapticHelper.light(ref: ref);
                   Navigator.of(sheetCtx).pop();
@@ -212,8 +230,14 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
               ),
               if (p.coverCustomPath != null)
                 ListTile(
-                  leading: Icon(Icons.remove_circle_outline_rounded, color: colors.textSecondary),
-                  title: Text('Remove cover image', style: TextStyle(color: colors.textSecondary)),
+                  leading: Icon(
+                    Icons.remove_circle_outline_rounded,
+                    color: colors.textSecondary,
+                  ),
+                  title: Text(
+                    'Remove cover image',
+                    style: TextStyle(color: colors.textSecondary),
+                  ),
                   onTap: () async {
                     HapticHelper.light(ref: ref);
                     Navigator.of(sheetCtx).pop();
@@ -221,8 +245,14 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                   },
                 ),
               ListTile(
-                leading: Icon(Icons.add_photo_alternate_rounded, color: colors.textPrimary),
-                title: Text('Set cover image', style: TextStyle(color: colors.textPrimary)),
+                leading: Icon(
+                  Icons.add_photo_alternate_rounded,
+                  color: colors.textPrimary,
+                ),
+                title: Text(
+                  'Set cover image',
+                  style: TextStyle(color: colors.textPrimary),
+                ),
                 onTap: () async {
                   HapticHelper.light(ref: ref);
                   Navigator.of(sheetCtx).pop();
@@ -230,8 +260,14 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                 },
               ),
               ListTile(
-                leading: Icon(Icons.ios_share_rounded, color: colors.textPrimary),
-                title: Text('Export playlist', style: TextStyle(color: colors.textPrimary)),
+                leading: Icon(
+                  Icons.ios_share_rounded,
+                  color: colors.textPrimary,
+                ),
+                title: Text(
+                  'Export playlist',
+                  style: TextStyle(color: colors.textPrimary),
+                ),
                 onTap: () async {
                   HapticHelper.light(ref: ref);
                   Navigator.of(sheetCtx).pop();
@@ -239,13 +275,28 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                title: const Text('Delete playlist', style: TextStyle(color: Colors.redAccent)),
+                leading: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: Colors.redAccent,
+                ),
+                title: const Text(
+                  'Delete playlist',
+                  style: TextStyle(color: Colors.redAccent),
+                ),
                 onTap: () {
                   HapticHelper.confirmDelete(ref: ref);
                   Navigator.of(sheetCtx).pop();
                   ref.read(playlistRepositoryProvider).delete(p.id);
-                  if (context.mounted) Navigator.of(context).pop();
+                  // pop с проверкой canPop: на мобильных PlaylistPage — это
+                  // отдельный маршрут, и он закроется. В десктопном shell
+                  // страница встроена в content stack на корневом маршруте —
+                  // там pop оставил бы приложение с пустым Navigator'ом
+                  // (тёмный экран), поэтому ничего не делаем: останется
+                  // экран «Playlist deleted», закрыть который можно панелью
+                  // разделов слева.
+                  if (context.mounted && Navigator.of(context).canPop()) {
+                    Navigator.of(context).pop();
+                  }
                 },
               ),
             ],
@@ -266,7 +317,11 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     }
   }
 
-  void _showInfo(BuildContext context, {required String title, required String body}) {
+  void _showInfo(
+    BuildContext context, {
+    required String title,
+    required String body,
+  }) {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -290,7 +345,10 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: colors.elevated,
-        title: Text('Rename playlist', style: TextStyle(color: colors.textPrimary)),
+        title: Text(
+          'Rename playlist',
+          style: TextStyle(color: colors.textPrimary),
+        ),
         content: TextField(
           controller: controller,
           autofocus: true,
@@ -336,7 +394,10 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     repo.setCoverImage(playlist.id, path);
   }
 
-  Future<void> _removeCoverImage(BuildContext context, Playlist playlist) async {
+  Future<void> _removeCoverImage(
+    BuildContext context,
+    Playlist playlist,
+  ) async {
     final repo = ref.read(playlistRepositoryProvider);
     // Сначала удаляем файл с диска
     if (playlist.coverCustomUrl != null) {
@@ -373,7 +434,11 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
               scrollController: scrollController,
               onReplace: (Track replacement) {
                 HapticHelper.success(ref: ref);
-                repo.replaceTrack(playlist.id, unavailableTrack.globalId, replacement);
+                repo.replaceTrack(
+                  playlist.id,
+                  unavailableTrack.globalId,
+                  replacement,
+                );
                 Navigator.of(sheetCtx).pop();
               },
               onPreview: (Track track) {
@@ -396,7 +461,9 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
       backgroundColor: colors.elevated,
       showDragHandle: true,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(_Dimens.radiusM)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(_Dimens.radiusM),
+        ),
       ),
       builder: (ctx) {
         return SafeArea(
@@ -423,13 +490,19 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                   return ListTile(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 20),
                     leading: isSelected
-                        ? Icon(Icons.check_rounded, color: colors.accent, size: 22)
+                        ? Icon(
+                            Icons.check_rounded,
+                            color: colors.accent,
+                            size: 22,
+                          )
                         : const SizedBox(width: 22),
                     title: Text(
                       mode.label,
                       style: TextStyle(
                         color: isSelected ? colors.accent : colors.textPrimary,
-                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                        fontWeight: isSelected
+                            ? FontWeight.w700
+                            : FontWeight.w500,
                         fontSize: 16,
                       ),
                     ),
@@ -459,9 +532,9 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     final colors = ref.watch(animatedPaletteProvider);
 
     final playlist = list.cast<Playlist?>().firstWhere(
-          (p) => p?.id == widget.playlistId,
-          orElse: () => null,
-        );
+      (p) => p?.id == widget.playlistId,
+      orElse: () => null,
+    );
 
     if (playlist == null) {
       return _PageAnimator(
@@ -471,17 +544,26 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
             backgroundColor: colors.background,
             surfaceTintColor: Colors.transparent,
             elevation: 0,
-            leading: _CircleButton(
-              icon: Icons.chevron_left_rounded,
-              onTap: () {
-                HapticHelper.light(ref: ref);
-                Navigator.of(context).pop();
-              },
-              colors: colors,
-            ),
+            automaticallyImplyLeading: false,
+            // Назад — только когда страница реально запушена в Navigator.
+            // В десктопном shell PlaylistPage встроена в content stack
+            // (корневой маршрут), и pop сломал бы всё приложение.
+            leading: Navigator.of(context).canPop()
+                ? _CircleButton(
+                    icon: Icons.chevron_left_rounded,
+                    onTap: () {
+                      HapticHelper.light(ref: ref);
+                      Navigator.of(context).maybePop();
+                    },
+                    colors: colors,
+                  )
+                : null,
           ),
           body: Center(
-            child: Text('Playlist deleted', style: TextStyle(color: colors.textSecondary)),
+            child: Text(
+              'Playlist deleted',
+              style: TextStyle(color: colors.textSecondary),
+            ),
           ),
         ),
       );
@@ -492,20 +574,24 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
 
     // Сначала фильтруем и сортируем (чтобы порядок совпадал с экраном)
     final displayedTracks = _filterAndSort(p.tracks);
-    
+
     // Получаем ТОЛЬКО доступные треки ИЗ ОТОБРАЖАЕМОГО (отсортированного) списка
     final playableDisplayedTracks = displayedTracks
         .where((t) => !SourceRegistry.instance.isDisabled(t.sourceId))
         .toList();
 
     final totalDur = _totalDuration(p.tracks);
-    
-    final isPlaying = ref.watch(_isPlayingProvider.select((a) => a.valueOrNull ?? false));
-    final currentId = ref.watch(_currentTrackIdProvider.select((a) => a.valueOrNull));
+
+    final isPlaying = ref.watch(
+      _isPlayingProvider.select((a) => a.valueOrNull ?? false),
+    );
+    final currentId = ref.watch(
+      _currentTrackIdProvider.select((a) => a.valueOrNull),
+    );
 
     // Проверяем, играет ли этот плейлист сейчас
-    final isThisPlaylist = currentId != null &&
-        p.tracks.any((t) => t.globalId == currentId);
+    final isThisPlaylist =
+        currentId != null && p.tracks.any((t) => t.globalId == currentId);
     final showPause = isPlaying && isThisPlaylist;
 
     return _PageAnimator(
@@ -513,448 +599,504 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
         backgroundColor: colors.background,
         body: Stack(
           children: [
-            CustomScrollView(
-              controller: _scrollController,
-              physics: const BouncingScrollPhysics(),
-              slivers: [
-                // ── Top Bar ──
-                SliverAppBar(
-                  pinned: true,
-                  floating: false,
-                  snap: false,
-                  backgroundColor: colors.background,
-                  surfaceTintColor: Colors.transparent,
-                  elevation: 0,
-                  toolbarHeight: _Dimens.appBarHeight,
-                  automaticallyImplyLeading: false,
-                  titleSpacing: 0,
-                  title: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-                    child: Row(
-                      children: [
-                        _CircleButton(
-                          icon: Icons.chevron_left_rounded,
-                          onTap: () {
-                            HapticHelper.light(ref: ref);
-                            Navigator.of(context).pop();
-                          },
-                          colors: colors,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _SearchPill(
-                            colors: colors,
-                            controller: _searchCtl,
-                            focusNode: _searchFocus,
-                            hint: 'In playlist?',
-                            onTap: () {
-                              HapticHelper.light(ref: ref);
-                              _scrollToFilters(); // ВЫЗЫВАЕМ ПРОКРУТКУ
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        _CircleButton(
-                          icon: Icons.settings_rounded,
-                          onTap: () {
-                            HapticHelper.light(ref: ref);
-                            Navigator.of(context).push(
-                              MaterialPageRoute(builder: (_) => const SettingsPage()),
-                            );
-                          },
-                          colors: colors,
-                        ),
-                      ],
-                    ),
-                  ),
+            Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: isDesktop ? 900 : double.infinity,
                 ),
-
-                // ── Artwork ──
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Center(
-                      child: Container(
-                        width: _Dimens.artworkSize,
-                        height: _Dimens.artworkSize,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(_Dimens.radiusL),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color(0x40000000),
-                              blurRadius: 24,
-                              offset: Offset(0, 0),
-                              spreadRadius: 4,
-                            ),
-                          ],
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(_Dimens.radiusL),
-                          child: ArtworkMosaic(
-                            urls: p.coverThumbnails,
-                            trackIds: p.coverTrackIds,
-                            size: _Dimens.artworkSize,
-                            borderRadius: 0,
-                            coverCustomUrl: p.coverCustomPath,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // ── Playlist Name ──
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 24, left: 16, right: 16),
-                    child: Text(
-                      p.name,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 32,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-
-                // ── Track count · Duration ──
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          '${p.tracks.length} song${p.tracks.length == 1 ? '' : 's'}',
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          '·',
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _fmtDuration(totalDur),
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                // ── Play / Shuffle / Menu buttons ──
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
-                    child: SizedBox(
-                      height: _Dimens.buttonHeight, // 60px
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // Play / Pause Button
-                          Expanded(
-                            child: _AnimatedActionButton(
-                              onTap: playableDisplayedTracks.isEmpty
-                                  ? null
-                                  : () {
-                                      HapticHelper.medium(ref: ref);
-                                      if (showPause) {
-                                        player.pause();
-                                      } else {
-                                        player.setQueue(playableDisplayedTracks);
-                                      }
-                                    },
-                              backgroundColor: colors.elevatedHi,
-                              radiusBuilder: (isPressed) => (showPause || isPressed)
-                                  ? BorderRadius.circular(30)
-                                  : const BorderRadius.horizontal(
-                                      left: Radius.circular(30),
-                                      right: Radius.circular(5),
-                                    ),
-                              builder: (isPressed) => Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    showPause ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                                    color: colors.textPrimary,
-                                    size: 26,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    showPause ? 'Pause' : 'Play',
-                                    style: TextStyle(
-                                      color: colors.textPrimary,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 16,
-                                      letterSpacing: 0.2,
-                                    ),
-                                  ),
-                                ],
+                child: CustomScrollView(
+                  controller: _scrollController,
+                  physics: const BouncingScrollPhysics(),
+                  slivers: [
+                    // ── Top Bar ──
+                    SliverAppBar(
+                      pinned: true,
+                      floating: false,
+                      snap: false,
+                      backgroundColor: colors.background,
+                      surfaceTintColor: Colors.transparent,
+                      elevation: 0,
+                      toolbarHeight: _Dimens.appBarHeight,
+                      automaticallyImplyLeading: false,
+                      titleSpacing: 0,
+                      title: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                        child: Row(
+                          children: [
+                            // Назад — только когда страница реально запушена
+                            // в Navigator (мобильный сценарий). В десктопном
+                            // shell PlaylistPage живёт в content stack — pop
+                            // корневого маршрута оставил бы приложение с
+                            // пустым Navigator'ом, поэтому кнопку прячем:
+                            // назад работает через панель слева.
+                            if (Navigator.of(context).canPop()) ...[
+                              _CircleButton(
+                                icon: Icons.chevron_left_rounded,
+                                onTap: () {
+                                  HapticHelper.light(ref: ref);
+                                  Navigator.of(context).maybePop();
+                                },
+                                colors: colors,
+                              ),
+                              const SizedBox(width: 10),
+                            ],
+                            Expanded(
+                              child: _SearchPill(
+                                colors: colors,
+                                controller: _searchCtl,
+                                focusNode: _searchFocus,
+                                hint: 'In playlist?',
+                                onTap: () {
+                                  HapticHelper.light(ref: ref);
+                                  _scrollToFilters(); // ВЫЗЫВАЕМ ПРОКРУТКУ
+                                },
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          // Shuffle Button
-                          Expanded(
-                            child: _AnimatedActionButton(
-                              onTap: playableDisplayedTracks.isEmpty
-                                  ? null
-                                  : () {
-                                      HapticHelper.medium(ref: ref);
-                                      final shuffled = [...playableDisplayedTracks]..shuffle();
-                                      player.setQueue(shuffled);
-                                      
-                                      setState(() => _isShuffling = true);
-                                      Future.delayed(const Duration(milliseconds: 400), () {
-                                        if (mounted) setState(() => _isShuffling = false);
-                                      });
-                                    },
-                              backgroundColor: colors.elevated,
-                              radiusBuilder: (isPressed) => (isPressed || _isShuffling)
-                                  ? BorderRadius.circular(30)
-                                  : BorderRadius.circular(5),
-                              builder: (isPressed) => Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.shuffle_rounded,
-                                    color: colors.textPrimary,
-                                    size: 22,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'Shuffle',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 16,
-                                      color: colors.textPrimary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          // Menu Button
-                          SizedBox(
-                            width: _Dimens.menuButtonSize,
-                            child: _AnimatedActionButton(
-                              onTap: () async {
+                            const SizedBox(width: 10),
+                            _CircleButton(
+                              icon: Icons.settings_rounded,
+                              onTap: () {
                                 HapticHelper.light(ref: ref);
-                                
-                                setState(() => _isMenuOpen = true);
-                                await _showPlaylistMenu(context, p);
-                                if (mounted) setState(() => _isMenuOpen = false);
-                              },
-                              backgroundColor: colors.elevated,
-                              radiusBuilder: (isPressed) => (isPressed || _isMenuOpen)
-                                  ? BorderRadius.circular(30)
-                                  : const BorderRadius.horizontal(
-                                      left: Radius.circular(5),
-                                      right: Radius.circular(30),
-                                    ),
-                              builder: (isPressed) {
-                                // Если кнопка скруглена полностью - убираем смещение
-                                final isRounded = isPressed || _isMenuOpen;
-                                
-                                return AnimatedPadding(
-                                  duration: const Duration(milliseconds: 200),
-                                  curve: Curves.easeOutCubic,
-                                  padding: isRounded 
-                                      ? EdgeInsets.zero 
-                                      : const EdgeInsets.only(right: 6), // Двигаем иконку чуть левее для баланса плоской стороны
-                                  child: Center(
-                                    child: Icon(
-                                      Icons.more_vert_rounded,
-                                      color: colors.textPrimary,
-                                      size: 24,
-                                    ),
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => const SettingsPage(),
                                   ),
                                 );
                               },
+                              colors: colors,
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
 
-                // ── Filter / Sort bar ──
-                SliverToBoxAdapter(
-                  child: Padding(
-                    key: _filterKey,
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 95,
-                          height: 48,
-                          child: Material(
-                            color: colors.elevatedHi,
-                            borderRadius: const BorderRadius.only(
-                              topLeft: Radius.circular(24),
-                              bottomLeft: Radius.circular(24),
-                              topRight: Radius.circular(5),
-                              bottomRight: Radius.circular(5),
-                            ),
-                            child: InkWell(
-                              borderRadius: const BorderRadius.only(
-                                topLeft: Radius.circular(24),
-                                bottomLeft: Radius.circular(24),
-                                topRight: Radius.circular(5),
-                                bottomRight: Radius.circular(5),
+                    // ── Artwork ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Center(
+                          child: Container(
+                            width: _Dimens.artworkSize,
+                            height: _Dimens.artworkSize,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(
+                                _Dimens.radiusL,
                               ),
-                              onTap: () {
-                                HapticHelper.light(ref: ref);
-                                _showSortPicker();
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 12),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Text(
-                                      _sortMode.label,
-                                      style: TextStyle(
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x40000000),
+                                  blurRadius: 24,
+                                  offset: Offset(0, 0),
+                                  spreadRadius: 4,
+                                ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(
+                                _Dimens.radiusL,
+                              ),
+                              child: ArtworkMosaic(
+                                urls: p.coverThumbnails,
+                                trackIds: p.coverTrackIds,
+                                size: _Dimens.artworkSize,
+                                borderRadius: 0,
+                                coverCustomUrl: p.coverCustomPath,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // ── Playlist Name ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.only(
+                          top: 24,
+                          left: 16,
+                          right: 16,
+                        ),
+                        child: Text(
+                          p.name,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textPrimary,
+                            fontSize: 32,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // ── Track count · Duration ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              '${p.tracks.length} song${p.tracks.length == 1 ? '' : 's'}',
+                              style: TextStyle(
+                                color: colors.textSecondary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '·',
+                              style: TextStyle(
+                                color: colors.textSecondary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _fmtDuration(totalDur),
+                              style: TextStyle(
+                                color: colors.textSecondary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // ── Play / Shuffle / Menu buttons ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
+                        child: SizedBox(
+                          height: _Dimens.buttonHeight, // 60px
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Play / Pause Button
+                              Expanded(
+                                child: _AnimatedActionButton(
+                                  onTap: playableDisplayedTracks.isEmpty
+                                      ? null
+                                      : () {
+                                          HapticHelper.medium(ref: ref);
+                                          if (showPause) {
+                                            player.pause();
+                                          } else {
+                                            player.setQueue(
+                                              playableDisplayedTracks,
+                                            );
+                                          }
+                                        },
+                                  backgroundColor: colors.elevatedHi,
+                                  radiusBuilder: (isPressed) =>
+                                      (showPause || isPressed)
+                                      ? BorderRadius.circular(30)
+                                      : const BorderRadius.horizontal(
+                                          left: Radius.circular(30),
+                                          right: Radius.circular(5),
+                                        ),
+                                  builder: (isPressed) => Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        showPause
+                                            ? Icons.pause_rounded
+                                            : Icons.play_arrow_rounded,
                                         color: colors.textPrimary,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
+                                        size: 26,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        showPause ? 'Pause' : 'Play',
+                                        style: TextStyle(
+                                          color: colors.textPrimary,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 16,
+                                          letterSpacing: 0.2,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              // Shuffle Button
+                              Expanded(
+                                child: _AnimatedActionButton(
+                                  onTap: playableDisplayedTracks.isEmpty
+                                      ? null
+                                      : () {
+                                          HapticHelper.medium(ref: ref);
+                                          final shuffled = [
+                                            ...playableDisplayedTracks,
+                                          ]..shuffle();
+                                          player.setQueue(shuffled);
+
+                                          setState(() => _isShuffling = true);
+                                          Future.delayed(
+                                            const Duration(milliseconds: 400),
+                                            () {
+                                              if (mounted) {
+                                                setState(
+                                                  () => _isShuffling = false,
+                                                );
+                                              }
+                                            },
+                                          );
+                                        },
+                                  backgroundColor: colors.elevated,
+                                  radiusBuilder: (isPressed) =>
+                                      (isPressed || _isShuffling)
+                                      ? BorderRadius.circular(30)
+                                      : BorderRadius.circular(5),
+                                  builder: (isPressed) => Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.shuffle_rounded,
+                                        color: colors.textPrimary,
+                                        size: 22,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Shuffle',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 16,
+                                          color: colors.textPrimary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              // Menu Button
+                              SizedBox(
+                                width: _Dimens.menuButtonSize,
+                                child: _AnimatedActionButton(
+                                  onTap: () async {
+                                    HapticHelper.light(ref: ref);
+
+                                    setState(() => _isMenuOpen = true);
+                                    await _showPlaylistMenu(context, p);
+                                    if (mounted) {
+                                      setState(() => _isMenuOpen = false);
+                                    }
+                                  },
+                                  backgroundColor: colors.elevated,
+                                  radiusBuilder: (isPressed) =>
+                                      (isPressed || _isMenuOpen)
+                                      ? BorderRadius.circular(30)
+                                      : const BorderRadius.horizontal(
+                                          left: Radius.circular(5),
+                                          right: Radius.circular(30),
+                                        ),
+                                  builder: (isPressed) {
+                                    // Если кнопка скруглена полностью - убираем смещение
+                                    final isRounded = isPressed || _isMenuOpen;
+
+                                    return AnimatedPadding(
+                                      duration: const Duration(
+                                        milliseconds: 200,
+                                      ),
+                                      curve: Curves.easeOutCubic,
+                                      padding: isRounded
+                                          ? EdgeInsets.zero
+                                          : const EdgeInsets.only(
+                                              right: 6,
+                                            ), // Двигаем иконку чуть левее для баланса плоской стороны
+                                      child: Center(
+                                        child: Icon(
+                                          Icons.more_vert_rounded,
+                                          color: colors.textPrimary,
+                                          size: 24,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // ── Filter / Sort bar ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        key: _filterKey,
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 95,
+                              height: 48,
+                              child: Material(
+                                color: colors.elevatedHi,
+                                borderRadius: const BorderRadius.only(
+                                  topLeft: Radius.circular(24),
+                                  bottomLeft: Radius.circular(24),
+                                  topRight: Radius.circular(5),
+                                  bottomRight: Radius.circular(5),
+                                ),
+                                child: InkWell(
+                                  borderRadius: const BorderRadius.only(
+                                    topLeft: Radius.circular(24),
+                                    bottomLeft: Radius.circular(24),
+                                    topRight: Radius.circular(5),
+                                    bottomRight: Radius.circular(5),
+                                  ),
+                                  onTap: () {
+                                    HapticHelper.light(ref: ref);
+                                    _showSortPicker();
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          _sortMode.label,
+                                          style: TextStyle(
+                                            color: colors.textPrimary,
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            SizedBox(
+                              width: 48,
+                              height: 48,
+                              child: Material(
+                                color: colors.elevatedHi,
+                                borderRadius: _sortReversed
+                                    ? BorderRadius.circular(24)
+                                    : const BorderRadius.only(
+                                        topLeft: Radius.circular(5),
+                                        bottomLeft: Radius.circular(5),
+                                        topRight: Radius.circular(24),
+                                        bottomRight: Radius.circular(24),
+                                      ),
+                                child: InkWell(
+                                  borderRadius: _sortReversed
+                                      ? BorderRadius.circular(24)
+                                      : const BorderRadius.only(
+                                          topLeft: Radius.circular(5),
+                                          bottomLeft: Radius.circular(5),
+                                          topRight: Radius.circular(24),
+                                          bottomRight: Radius.circular(24),
+                                        ),
+                                  onTap: () {
+                                    HapticHelper.light(ref: ref);
+                                    setState(
+                                      () => _sortReversed = !_sortReversed,
+                                    );
+                                  },
+                                  child: AnimatedPadding(
+                                    duration: const Duration(milliseconds: 200),
+                                    padding: _sortReversed
+                                        ? const EdgeInsets.all(0)
+                                        : const EdgeInsets.only(right: 4),
+                                    child: Center(
+                                      child: AnimatedRotation(
+                                        turns: _sortReversed ? 0.5 : 0,
+                                        duration: const Duration(
+                                          milliseconds: 200,
+                                        ),
+                                        child: Icon(
+                                          Icons.keyboard_arrow_down_rounded,
+                                          color: colors.textPrimary,
+                                          size: 24,
+                                        ),
                                       ),
                                     ),
-                                  ],
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
+                          ],
                         ),
-                        const SizedBox(width: 4),
-                        SizedBox(
-                          width: 48,
-                          height: 48,
-                          child: Material(
-                            color: colors.elevatedHi,
-                            borderRadius: _sortReversed 
-                                ? BorderRadius.circular(24)
-                                : const BorderRadius.only(
-                                    topLeft: Radius.circular(5),
-                                    bottomLeft: Radius.circular(5),
-                                    topRight: Radius.circular(24),
-                                    bottomRight: Radius.circular(24),
-                                  ),
-                            child: InkWell(
-                              borderRadius: _sortReversed 
-                                  ? BorderRadius.circular(24)
-                                  : const BorderRadius.only(
-                                      topLeft: Radius.circular(5),
-                                      bottomLeft: Radius.circular(5),
-                                      topRight: Radius.circular(24),
-                                      bottomRight: Radius.circular(24),
-                                    ),
-                              onTap: () {
-                                HapticHelper.light(ref: ref);
-                                setState(() => _sortReversed = !_sortReversed);
-                              },
-                              child: AnimatedPadding(
-                                duration: const Duration(milliseconds: 200),
-                                padding: _sortReversed 
-                                    ? const EdgeInsets.all(0)
-                                    : const EdgeInsets.only(right: 4),
-                                child: Center(
-                                  child: AnimatedRotation(
-                                    turns: _sortReversed ? 0.5 : 0,
-                                    duration: const Duration(milliseconds: 200),
-                                    child: Icon(
-                                      Icons.keyboard_arrow_down_rounded,
-                                      color: colors.textPrimary,
-                                      size: 24,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        )
-                      ],
+                      ),
                     ),
-                  ),
-                ),
 
-                // ── Track list or empty state ──
-                if (displayedTracks.isEmpty && _query.isNotEmpty)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 48),
-                      child: Center(
-                        child: Text(
-                          'Nothing found',
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            fontSize: 16,
+                    // ── Track list or empty state ──
+                    if (displayedTracks.isEmpty && _query.isNotEmpty)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 48),
+                          child: Center(
+                            child: Text(
+                              'Nothing found',
+                              style: TextStyle(
+                                color: colors.textSecondary,
+                                fontSize: 16,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  )
-                else if (p.tracks.isEmpty)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 48),
-                      child: Center(
-                        child: Text(
-                          'No tracks yet.\nFind some via Search 🔍',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            height: 1.5,
-                            fontSize: 14,
+                      )
+                    else if (p.tracks.isEmpty)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 48),
+                          child: Center(
+                            child: Text(
+                              'No tracks yet.\nFind some via Search 🔍',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: colors.textSecondary,
+                                height: 1.5,
+                                fontSize: 14,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
-                    sliver: SliverList.builder(
-                      itemCount: displayedTracks.length,
-                      itemBuilder: (context, i) {
-                        final t = displayedTracks[i];
-                        return _TrackTile(
-                          key: ValueKey(t.globalId),
-                          track: t,
-                          playlist: p,
-                          playableDisplayedTracks: playableDisplayedTracks,
-                          isFirst: i == 0,
-                          isLast: i == displayedTracks.length - 1,
-                          onReplaceTap: () {
-                            HapticHelper.light(ref: ref);
-                            _showReplacementSheet(context, p, t);
+                      )
+                    else
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+                        sliver: SliverList.builder(
+                          itemCount: displayedTracks.length,
+                          itemBuilder: (context, i) {
+                            final t = displayedTracks[i];
+                            return _TrackTile(
+                              key: ValueKey(t.globalId),
+                              track: t,
+                              playlist: p,
+                              playableDisplayedTracks: playableDisplayedTracks,
+                              isFirst: i == 0,
+                              isLast: i == displayedTracks.length - 1,
+                              onReplaceTap: () {
+                                HapticHelper.light(ref: ref);
+                                _showReplacementSheet(context, p, t);
+                              },
+                            );
                           },
-                        );
-                      },
-                    ),
-                  ),
-              ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
-            const NowPlayingOverlay(),
+            if (widget.showNowPlayingOverlay && !isDesktop)
+              const NowPlayingOverlay(),
           ],
         ),
       ),
@@ -975,7 +1117,7 @@ class _AnimatedActionButton extends StatefulWidget {
   });
 
   // Теперь виджет перестраивается в зависимости от состояния нажатия
-  final Widget Function(bool isPressed) builder; 
+  final Widget Function(bool isPressed) builder;
   final VoidCallback? onTap;
   final BorderRadius Function(bool isPressed) radiusBuilder;
   final Color backgroundColor;
@@ -1075,7 +1217,8 @@ class _TrackTile extends ConsumerWidget {
               : () {
                   HapticHelper.light(ref: ref);
                   final idx = playableDisplayedTracks.indexWhere(
-                      (pt) => pt.globalId == track.globalId);
+                    (pt) => pt.globalId == track.globalId,
+                  );
                   player.setQueue(
                     playableDisplayedTracks,
                     startIndex: idx >= 0 ? idx : 0,
@@ -1160,9 +1303,7 @@ class _TrackTile extends ConsumerWidget {
                         style: TextStyle(
                           color: colors.textSecondary,
                           fontSize: 12,
-                          fontFeatures: const [
-                            FontFeature.tabularFigures()
-                          ],
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     )
@@ -1204,9 +1345,7 @@ class _CircleButton extends StatelessWidget {
         child: SizedBox(
           width: _Dimens.circleButtonSize,
           height: _Dimens.circleButtonSize,
-          child: Center(
-            child: Icon(icon, color: colors.textPrimary, size: 20),
-          ),
+          child: Center(child: Icon(icon, color: colors.textPrimary, size: 20)),
         ),
       ),
     );
@@ -1344,7 +1483,11 @@ class _TrackArtwork extends StatelessWidget {
                   color: Colors.orange,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.warning_rounded, size: 12, color: Colors.white),
+                child: const Icon(
+                  Icons.warning_rounded,
+                  size: 12,
+                  color: Colors.white,
+                ),
               ),
             ),
         ],
@@ -1365,7 +1508,8 @@ class _WaveBars extends StatefulWidget {
   State<_WaveBars> createState() => _WaveBarsState();
 }
 
-class _WaveBarsState extends State<_WaveBars> with SingleTickerProviderStateMixin {
+class _WaveBarsState extends State<_WaveBars>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
 
   static const _barCount = 5;
@@ -1400,11 +1544,13 @@ class _WaveBarsState extends State<_WaveBars> with SingleTickerProviderStateMixi
           crossAxisAlignment: CrossAxisAlignment.center,
           children: List.generate(_barCount, (i) {
             final phase = (i / _barCount) * 2 * math.pi;
-            final wave = math.sin(t * 2 * math.pi + phase) * 0.5 +
-                         math.sin(t * 4 * math.pi + phase * 1.5) * 0.3;
-            final height = _minHeight +
+            final wave =
+                math.sin(t * 2 * math.pi + phase) * 0.5 +
+                math.sin(t * 4 * math.pi + phase * 1.5) * 0.3;
+            final height =
+                _minHeight +
                 (_maxHeight - _minHeight) *
-                ((wave + 0.8) / 1.6).clamp(0.0, 1.0);
+                    ((wave + 0.8) / 1.6).clamp(0.0, 1.0);
 
             return Container(
               width: _barWidth,
@@ -1434,7 +1580,8 @@ class _PageAnimator extends StatefulWidget {
   State<_PageAnimator> createState() => _PageAnimatorState();
 }
 
-class _PageAnimatorState extends State<_PageAnimator> with SingleTickerProviderStateMixin {
+class _PageAnimatorState extends State<_PageAnimator>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _anim;
   late final Animation<double> _slide;
   late final Animation<double> _fade;
@@ -1446,12 +1593,14 @@ class _PageAnimatorState extends State<_PageAnimator> with SingleTickerProviderS
       vsync: this,
       duration: const Duration(milliseconds: 300),
     );
-    _slide = Tween<double>(begin: 10, end: 0).animate(
-      CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic),
-    );
-    _fade = Tween<double>(begin: 0.7, end: 1).animate(
-      CurvedAnimation(parent: _anim, curve: Curves.easeOut),
-    );
+    _slide = Tween<double>(
+      begin: 10,
+      end: 0,
+    ).animate(CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic));
+    _fade = Tween<double>(
+      begin: 0.7,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _anim, curve: Curves.easeOut));
     _anim.forward();
   }
 
@@ -1467,10 +1616,7 @@ class _PageAnimatorState extends State<_PageAnimator> with SingleTickerProviderS
       animation: _anim,
       builder: (context, _) => Transform.translate(
         offset: Offset(0, _slide.value),
-        child: Opacity(
-          opacity: _fade.value,
-          child: widget.child,
-        ),
+        child: Opacity(opacity: _fade.value, child: widget.child),
       ),
     );
   }
@@ -1496,7 +1642,8 @@ class _ReplacementSheetBody extends ConsumerStatefulWidget {
   final ValueChanged<Track> onPreview;
 
   @override
-  ConsumerState<_ReplacementSheetBody> createState() => _ReplacementSheetBodyState();
+  ConsumerState<_ReplacementSheetBody> createState() =>
+      _ReplacementSheetBodyState();
 }
 
 class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
@@ -1587,9 +1734,7 @@ class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
           ),
         ),
         if (_loading)
-          const Expanded(
-            child: Center(child: CircularProgressIndicator()),
-          )
+          const Expanded(child: Center(child: CircularProgressIndicator()))
         else if (_error != null)
           Expanded(
             child: Center(
@@ -1644,7 +1789,10 @@ class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
                     style: TextStyle(color: colors.textSecondary, fontSize: 11),
                   ),
                   trailing: IconButton(
-                    icon: const Icon(Icons.swap_horiz_rounded, color: Colors.green),
+                    icon: const Icon(
+                      Icons.swap_horiz_rounded,
+                      color: Colors.green,
+                    ),
                     tooltip: 'Use this track',
                     onPressed: () => widget.onReplace(t),
                   ),

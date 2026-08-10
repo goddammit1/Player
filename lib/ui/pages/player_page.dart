@@ -1,5 +1,7 @@
 // lib/ui/pages/player_page.dart
 
+import 'dart:math' as math;
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,10 +9,11 @@ import 'package:just_audio/just_audio.dart';
 import 'package:marquee/marquee.dart';
 import '../../core/haptic_helper.dart';
 
-import '../../core/player_service.dart';
+import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
 import '../../models/track.dart';
 import '../widgets/artwork.dart';
+import '../widgets/desktop_layout.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../widgets/queue_sheet.dart';
 import '../../core/artwork_helper.dart';
@@ -37,8 +40,9 @@ class PlayerContent extends ConsumerStatefulWidget {
 
 class _PlayerContentState extends ConsumerState<PlayerContent>
     with TickerProviderStateMixin {
-  late final QueueSheetController _queueCtrl =
-      QueueSheetController(vsync: this);
+  late final QueueSheetController _queueCtrl = QueueSheetController(
+    vsync: this,
+  );
 
   @override
   void dispose() {
@@ -55,11 +59,7 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
       gradient: LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [
-          colors.gradientTop,
-          colors.gradientTop,
-          colors.gradientBottom,
-        ],
+        colors: [colors.gradientTop, colors.gradientTop, colors.gradientBottom],
         stops: const [0.0, 0.35, 1.0],
       ),
     );
@@ -82,59 +82,149 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
 
           return Stack(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-                child: Column(
-                  children: [
-                    const Expanded(child: SizedBox.shrink()),
-                    LayoutBuilder(
-                      builder: (_, c) {
-                        final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                        return _InteractiveArtwork(
-                          item: item,
-                          size: size,
-                          aspectRatio: artAspectRatio(item),
-                          player: player,
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 30),
-                    _TitleScroller(text: item.title, colors: colors),
-                    const SizedBox(height: 0),
-                    Text(
-                      item.artist ?? '',
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.textSecondary,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 30),
-                    _Controls(player: player, colors: colors),
-                    const SizedBox(height: 15),
-                    _ProgressBar(
-                      player: player,
-                      colors: colors,
-                      fallbackDuration: item.duration,
-                    ),
-                    const SizedBox(height: 20),
-                    _BottomActions(
-                      player: player,
-                      item: item,
-                      queueCtrl: _queueCtrl,
-                      colors: colors,
-                    ),
-                  ],
-                ),
+              LayoutBuilder(
+                builder: (context, c) {
+                  final wide = isDesktop && c.maxWidth >= _wideBreakpoint;
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+                    child: wide
+                        ? _buildHorizontalLayout(c, item, player, colors)
+                        : _buildVerticalLayout(item, player, colors),
+                  );
+                },
               ),
               QueueSheet(controller: _queueCtrl, player: player),
             ],
           );
         },
       ),
+    );
+  }
+
+  /// Ширина окна (на десктопе), при которой включается горизонтальная
+  /// раскладка плеера. Мобильные платформы всегда используют вертикальную.
+  static const double _wideBreakpoint = 1000;
+
+  /// Вертикальная раскладка (как на мобильных) — используется по умолчанию
+  /// и на десктопе в узких окнах. На десктопе контент центрируется
+  /// по горизонтали и ограничивается по ширине (Android/iOS не затронуты).
+  Widget _buildVerticalLayout(
+    MediaItem item,
+    PlayerServiceInterface player,
+    AppColors colors,
+  ) {
+    return Align(
+      alignment: Alignment.center,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: isDesktop ? 600 : double.infinity,
+        ),
+        child: Column(
+          children: [
+            const Expanded(child: SizedBox.shrink()),
+            LayoutBuilder(
+              builder: (_, c) {
+                final size = c.maxWidth.clamp(0, 420.0).toDouble();
+                return _InteractiveArtwork(
+                  item: item,
+                  size: size,
+                  aspectRatio: artAspectRatio(item),
+                  player: player,
+                );
+              },
+            ),
+            const SizedBox(height: 30),
+            _TitleScroller(text: item.title, colors: colors),
+            const SizedBox(height: 0),
+            Text(
+              item.artist ?? '',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colors.textSecondary,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 30),
+            _Controls(player: player, colors: colors),
+            const SizedBox(height: 15),
+            _ProgressBar(
+              player: player,
+              colors: colors,
+              fallbackDuration: item.duration,
+            ),
+            const SizedBox(height: 20),
+            _BottomActions(
+              player: player,
+              item: item,
+              queueCtrl: _queueCtrl,
+              colors: colors,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Горизонтальная раскладка для широких десктопных окон:
+  /// обложка слева, управление/прогресс справа.
+  Widget _buildHorizontalLayout(
+    BoxConstraints c,
+    MediaItem item,
+    PlayerServiceInterface player,
+    AppColors colors,
+  ) {
+    final artworkSize = math.min(c.maxHeight * 0.85, 480.0).clamp(280.0, 520.0);
+
+    return Row(
+      children: [
+        _InteractiveArtwork(
+          item: item,
+          size: artworkSize,
+          aspectRatio: artAspectRatio(item),
+          player: player,
+        ),
+        const SizedBox(width: 56),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _TitleScroller(text: item.title, colors: colors),
+              const SizedBox(height: 4),
+              Text(
+                item.artist ?? '',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 32),
+              Center(
+                child: _Controls(player: player, colors: colors),
+              ),
+              const SizedBox(height: 20),
+              _ProgressBar(
+                player: player,
+                colors: colors,
+                fallbackDuration: item.duration,
+              ),
+              const SizedBox(height: 24),
+              _BottomActions(
+                player: player,
+                item: item,
+                queueCtrl: _queueCtrl,
+                colors: colors,
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -154,7 +244,7 @@ class _InteractiveArtwork extends ConsumerStatefulWidget {
   final MediaItem item;
   final double size;
   final double aspectRatio;
-  final PlayerService player;
+  final PlayerServiceInterface player;
 
   @override
   ConsumerState<_InteractiveArtwork> createState() =>
@@ -183,8 +273,7 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
     HapticHelper.medium(ref: ref);
     _hideOverlay();
 
-    final trackId =
-        widget.item.extras?['trackId'] as String? ?? widget.item.id;
+    final trackId = widget.item.extras?['trackId'] as String? ?? widget.item.id;
 
     final newPath = await ArtworkHelper.pickAndSaveArtwork(trackId);
 
@@ -199,16 +288,14 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
     HapticHelper.medium(ref: ref);
     _hideOverlay();
 
-    final trackId =
-        widget.item.extras?['trackId'] as String? ?? widget.item.id;
+    final trackId = widget.item.extras?['trackId'] as String? ?? widget.item.id;
 
     await widget.player.resetCustomArtwork(trackId);
   }
 
   @override
   Widget build(BuildContext context) {
-    final trackId =
-        widget.item.extras?['trackId'] as String? ?? widget.item.id;
+    final trackId = widget.item.extras?['trackId'] as String? ?? widget.item.id;
     final hasCustomArt = ArtworkHelper.getCustomArtworkSync(trackId) != null;
 
     return GestureDetector(
@@ -287,14 +374,18 @@ class _InteractiveArtworkState extends ConsumerState<_InteractiveArtwork> {
                                   children: [
                                     Icon(
                                       Icons.restore_outlined,
-                                      color: Colors.white.withValues(alpha: 0.8),
+                                      color: Colors.white.withValues(
+                                        alpha: 0.8,
+                                      ),
                                       size: 24,
                                     ),
                                     const SizedBox(width: 8),
                                     Text(
                                       'Restore original',
                                       style: TextStyle(
-                                        color: Colors.white.withValues(alpha: 0.8),
+                                        color: Colors.white.withValues(
+                                          alpha: 0.8,
+                                        ),
                                         fontSize: 15,
                                         fontWeight: FontWeight.w400,
                                         letterSpacing: -0.2,
@@ -346,13 +437,7 @@ class _TitleScroller extends StatelessWidget {
             maxLines: 1,
           )..layout();
           if (tp.width <= c.maxWidth) {
-            return Center(
-              child: Text(
-                text,
-                maxLines: 1,
-                style: style,
-              ),
-            );
+            return Center(child: Text(text, maxLines: 1, style: style));
           }
           return Marquee(
             text: text,
@@ -377,7 +462,7 @@ class _TitleScroller extends StatelessWidget {
 
 class _Controls extends ConsumerStatefulWidget {
   const _Controls({required this.player, required this.colors});
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final AppColors colors;
 
   @override
@@ -497,7 +582,8 @@ class _ControlsState extends ConsumerState<_Controls>
       stream: widget.player.playbackState,
       builder: (context, snap) {
         final st = snap.data;
-        final loading = st != null &&
+        final loading =
+            st != null &&
             (st.processingState == AudioProcessingState.loading ||
                 st.processingState == AudioProcessingState.buffering);
         final playing = st?.playing ?? false;
@@ -532,8 +618,9 @@ class _ControlsState extends ConsumerState<_Controls>
                     },
                     child: Material(
                       color: widget.colors.elevated,
-                      borderRadius:
-                          BorderRadius.circular(isPrevPressed ? 32 : 32),
+                      borderRadius: BorderRadius.circular(
+                        isPrevPressed ? 32 : 32,
+                      ),
                       child: SizedBox(
                         width: prevWidth,
                         height: 64,
@@ -600,8 +687,9 @@ class _ControlsState extends ConsumerState<_Controls>
                     },
                     child: Material(
                       color: widget.colors.elevated,
-                      borderRadius:
-                          BorderRadius.circular(isNextPressed ? 32 : 32),
+                      borderRadius: BorderRadius.circular(
+                        isNextPressed ? 32 : 32,
+                      ),
                       child: SizedBox(
                         width: nextWidth,
                         height: 64,
@@ -634,7 +722,7 @@ class _ProgressBar extends ConsumerStatefulWidget {
     required this.colors,
     this.fallbackDuration,
   });
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final AppColors colors;
   final Duration? fallbackDuration;
 
@@ -711,8 +799,10 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                         _lastHapticFraction = -1.0;
                       },
                       onHorizontalDragUpdate: (d) {
-                        final newFraction =
-                            (d.localPosition.dx / width).clamp(0.0, 1.0);
+                        final newFraction = (d.localPosition.dx / width).clamp(
+                          0.0,
+                          1.0,
+                        );
                         setState(() {
                           _dragFraction = newFraction;
                         });
@@ -723,8 +813,8 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                         if (_dragFraction != null && maxMs > 0) {
                           widget.player.seek(
                             Duration(
-                                milliseconds:
-                                    (_dragFraction! * maxMs).round()),
+                              milliseconds: (_dragFraction! * maxMs).round(),
+                            ),
                           );
                         }
                         setState(() {
@@ -738,8 +828,10 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                       },
                       onTapUp: (d) {
                         _thumbAnim.reverse();
-                        final frac =
-                            (d.localPosition.dx / width).clamp(0.0, 1.0);
+                        final frac = (d.localPosition.dx / width).clamp(
+                          0.0,
+                          1.0,
+                        );
                         if (maxMs > 0) {
                           widget.player.seek(
                             Duration(milliseconds: (frac * maxMs).round()),
@@ -776,23 +868,26 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                             ),
                             const SizedBox(height: 20),
                             Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 12),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
                               child: Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
-                                    _fmt(maxMs > 0
-                                        ? Duration(
-                                            milliseconds:
-                                                (f * maxMs).round())
-                                        : position),
+                                    _fmt(
+                                      maxMs > 0
+                                          ? Duration(
+                                              milliseconds: (f * maxMs).round(),
+                                            )
+                                          : position,
+                                    ),
                                     style: TextStyle(
                                       color: widget.colors.textPrimary,
                                       fontSize: 12,
                                       fontFeatures: const [
-                                        FontFeature.tabularFigures()
+                                        FontFeature.tabularFigures(),
                                       ],
                                     ),
                                   ),
@@ -802,7 +897,7 @@ class _ProgressBarState extends ConsumerState<_ProgressBar>
                                       color: widget.colors.textSecondary,
                                       fontSize: 12,
                                       fontFeatures: const [
-                                        FontFeature.tabularFigures()
+                                        FontFeature.tabularFigures(),
                                       ],
                                     ),
                                   ),
@@ -868,8 +963,10 @@ class _ProgressPainter extends CustomPainter {
     final double thumbCornerRadius = 2 + 2 * t;
 
     final double thumbX = _margin + filledW - thumbWidth / 2;
-    final double clampedThumbX =
-        thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
+    final double clampedThumbX = thumbX.clamp(
+      _margin,
+      _margin + totalWidth - thumbWidth,
+    );
 
     if (clampedThumbX + thumbWidth + gap < _margin + totalWidth) {
       final double trackStart = clampedThumbX + thumbWidth + gap;
@@ -877,7 +974,11 @@ class _ProgressPainter extends CustomPainter {
 
       final trackRect = RRect.fromRectAndCorners(
         Rect.fromLTWH(
-            trackStart, centerY - _trackHeight / 2, trackWidth, _trackHeight),
+          trackStart,
+          centerY - _trackHeight / 2,
+          trackWidth,
+          _trackHeight,
+        ),
         topLeft: Radius.circular(thumbCornerRadius),
         topRight: const Radius.circular(_trackHeight / 2),
         bottomLeft: Radius.circular(thumbCornerRadius),
@@ -893,7 +994,11 @@ class _ProgressPainter extends CustomPainter {
 
       final filledRect = RRect.fromRectAndCorners(
         Rect.fromLTWH(
-            _margin, centerY - _trackHeight / 2, filledWidth, _trackHeight),
+          _margin,
+          centerY - _trackHeight / 2,
+          filledWidth,
+          _trackHeight,
+        ),
         topLeft: const Radius.circular(_trackHeight / 2),
         topRight: Radius.circular(thumbCornerRadius),
         bottomLeft: const Radius.circular(_trackHeight / 2),
@@ -905,7 +1010,11 @@ class _ProgressPainter extends CustomPainter {
 
     final thumbRect = RRect.fromRectAndRadius(
       Rect.fromLTWH(
-          clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
+        clampedThumbX,
+        centerY - thumbHeight / 2,
+        thumbWidth,
+        thumbHeight,
+      ),
       const Radius.circular(_thumbRadius),
     );
     final thumbPaint = Paint()..color = colors.elevatedHi;
@@ -931,7 +1040,7 @@ class _BottomActions extends ConsumerStatefulWidget {
     required this.queueCtrl,
     required this.colors,
   });
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final MediaItem item;
   final QueueSheetController queueCtrl;
   final AppColors colors;
@@ -996,8 +1105,10 @@ class _BottomActionsState extends ConsumerState<_BottomActions> {
             },
             onVerticalDragEnd: (d) {
               if (_queueDragged) {
-                widget.queueCtrl
-                    .settle(d.primaryVelocity ?? 0, fromButton: true);
+                widget.queueCtrl.settle(
+                  d.primaryVelocity ?? 0,
+                  fromButton: true,
+                );
                 _queueDragged = false;
               }
             },
@@ -1046,11 +1157,7 @@ class _BottomActionsState extends ConsumerState<_BottomActions> {
       artworkUrl: m.artUri?.toString(),
     );
 
-    showTrackSettingsSheet(
-      context,
-      track: track,
-      currentMediaItem: m,
-    );
+    showTrackSettingsSheet(context, track: track, currentMediaItem: m);
   }
 }
 

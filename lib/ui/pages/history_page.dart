@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/history_repository.dart';
 import '../../core/providers.dart';
 import '../widgets/artwork.dart';
+import '../widgets/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';
@@ -13,7 +14,12 @@ import 'settings_page.dart';
 /// Хронологический список треков с поиском, группировкой по дням/часам,
 /// возможностью очистки всей истории и управления воспроизведением.
 class HistoryPage extends ConsumerStatefulWidget {
-  const HistoryPage({super.key});
+  const HistoryPage({super.key, this.showNowPlayingOverlay = true});
+
+  /// Отключает встроенный мини-плеер поверх страницы. Нужно, когда страница
+  /// встраивается в десктопный shell — там свою панель плеера рисует
+  /// [DesktopPlayerBar] (см. ui/desktop/desktop_player_bar.dart).
+  final bool showNowPlayingOverlay;
 
   @override
   ConsumerState<HistoryPage> createState() => _HistoryPageState();
@@ -49,8 +55,18 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
   // ---- Форматирование дат ----
 
   static const _monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December',
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
   ];
 
   String _dayLabel(DateTime dt) {
@@ -103,7 +119,10 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text(
           'Clear history',
-          style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w700),
+          style: TextStyle(
+            color: colors.textPrimary,
+            fontWeight: FontWeight.w700,
+          ),
         ),
         content: Text(
           'Remove all listening history? This cannot be undone.',
@@ -119,10 +138,7 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
           ),
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(
-              'Clear',
-              style: TextStyle(color: Colors.redAccent),
-            ),
+            child: Text('Clear', style: TextStyle(color: Colors.redAccent)),
           ),
         ],
       ),
@@ -155,9 +171,7 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
 
     Widget body;
     if (async.isLoading && allHistory.isEmpty) {
-      body = Center(
-        child: CircularProgressIndicator(color: colors.accent),
-      );
+      body = Center(child: CircularProgressIndicator(color: colors.accent));
     } else if (async.hasError) {
       body = Center(
         child: Padding(
@@ -207,12 +221,19 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
               child: Row(
                 children: [
-                  _CircleButton(
-                    icon: Icons.arrow_back_rounded,
-                    onTap: () => Navigator.of(context).pop(),
-                    colors: colors,
-                  ),
-                  const SizedBox(width: 10),
+                  // Назад показываем только когда страница открыта через
+                  // Navigator.push. Как раздел десктопного shell (IndexedStack)
+                  // HistoryPage живёт на корневом маршруте — pop сломал бы
+                  // Navigator (тёмный экран без UI), поэтому кнопку прячем:
+                  // назад работает через левую панель разделов.
+                  if (Navigator.of(context).canPop()) ...[
+                    _CircleButton(
+                      icon: Icons.arrow_back_rounded,
+                      onTap: () => Navigator.of(context).maybePop(),
+                      colors: colors,
+                    ),
+                    const SizedBox(width: 10),
+                  ],
                   Expanded(
                     child: _SearchPill(
                       colors: colors,
@@ -235,9 +256,18 @@ class _HistoryPageState extends ConsumerState<HistoryPage> {
             ),
           ),
           // ── Тело ──
-          body: body,
+          body: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: isDesktop ? 900 : double.infinity,
+              ),
+              child: body,
+            ),
+          ),
         ),
-        const NowPlayingOverlay(),
+        if (widget.showNowPlayingOverlay && !isDesktop)
+          const NowPlayingOverlay(),
       ],
     );
   }
@@ -452,46 +482,43 @@ class _HistoryBody extends StatelessWidget {
               bottom: 120 + MediaQuery.of(context).padding.bottom,
             ),
             sliver: SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (context, index) {
-                  final item = items[index];
-                  if (item.isDayHeader) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                      child: Text(
-                        item.header!,
-                        style: TextStyle(
-                          color: colors.textPrimary,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w500,
-                        ),
+              delegate: SliverChildBuilderDelegate((context, index) {
+                final item = items[index];
+                if (item.isDayHeader) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: Text(
+                      item.header!,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w500,
                       ),
-                    );
-                  }
-                  if (item.isHourHeader) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                      child: Text(
-                        item.hourHeader!,
-                        style: TextStyle(
-                          color: colors.textSecondary,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    );
-                  }
-                  final entry = item.entry!;
-                  return _HistoryTile(
-                    entry: entry,
-                    colors: colors,
-                    durationText: durationText,
-                    onTap: () => onPlay(entry),
-                    onDismissed: () => onDismissed(entry),
+                    ),
                   );
-                },
-                childCount: items.length,
-              ),
+                }
+                if (item.isHourHeader) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: Text(
+                      item.hourHeader!,
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  );
+                }
+                final entry = item.entry!;
+                return _HistoryTile(
+                  entry: entry,
+                  colors: colors,
+                  durationText: durationText,
+                  onTap: () => onPlay(entry),
+                  onDismissed: () => onDismissed(entry),
+                );
+              }, childCount: items.length),
             ),
           ),
       ],
@@ -504,15 +531,9 @@ class _HistoryBody extends StatelessWidget {
 // ═══════════════════════════════════════════════════════════════════════════
 
 class _RowItem {
-  const _RowItem.forHeader(this.header)
-      : hourHeader = null,
-        entry = null;
-  const _RowItem.forHourHeader(this.hourHeader)
-      : header = null,
-        entry = null;
-  const _RowItem.forEntry(this.entry)
-      : header = null,
-        hourHeader = null;
+  const _RowItem.forHeader(this.header) : hourHeader = null, entry = null;
+  const _RowItem.forHourHeader(this.hourHeader) : header = null, entry = null;
+  const _RowItem.forEntry(this.entry) : header = null, hourHeader = null;
 
   final String? header;
   final String? hourHeader;
@@ -566,7 +587,12 @@ class _HistoryTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              Artwork(url: track.artworkUrl, trackId: track.id, size: 52, borderRadius: 10),
+              Artwork(
+                url: track.artworkUrl,
+                trackId: track.id,
+                size: 52,
+                borderRadius: 10,
+              ),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(

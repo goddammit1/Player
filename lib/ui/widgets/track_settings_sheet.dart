@@ -8,12 +8,14 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/player_service.dart';
+import '../../core/player_service.dart' show SleepTimerMode;
+import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
 import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
+import 'desktop_layout.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import '../../core/youtube_cache.dart';
@@ -28,16 +30,15 @@ Future<void> showTrackSettingsSheet(
   MediaItem? currentMediaItem,
 }) {
   if (ModalRoute.of(context)?.isCurrent != true) return Future.value();
-  return showModalBottomSheet<void>(
+  return showDesktopModalSheet<void>(
     context: context,
+    maxWidth: 520,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
     showDragHandle: false,
     useRootNavigator: true,
-    builder: (sheetCtx) => _TrackSettingsSheet(
-      track: track,
-      currentMediaItem: currentMediaItem,
-    ),
+    builder: (sheetCtx) =>
+        _TrackSettingsSheet(track: track, currentMediaItem: currentMediaItem),
   );
 }
 
@@ -46,10 +47,7 @@ Future<void> showTrackSettingsSheet(
 // =============================================================================
 
 class _TrackSettingsSheet extends ConsumerStatefulWidget {
-  const _TrackSettingsSheet({
-    required this.track,
-    this.currentMediaItem,
-  });
+  const _TrackSettingsSheet({required this.track, this.currentMediaItem});
 
   final Track track;
   final MediaItem? currentMediaItem;
@@ -130,13 +128,14 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
             const SizedBox(height: 8),
 
             // ── Boost slider ──
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _BoostSlider(
-                player: player,
-                colors: colors,
+            // Громкость-буст реализован через AndroidLoudnessEnhancer —
+            // только на Android/iOS. На десктопе слайдер бесполезен, поэтому
+            // прячем его, чтобы не вводить в заблуждение.
+            if (Platform.isAndroid || Platform.isIOS)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: _BoostSlider(player: player, colors: colors),
               ),
-            ),
 
             const SizedBox(height: 20),
 
@@ -176,20 +175,24 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
     showAddToPlaylistSheet(ctx, track);
   }
 
-  void _addToQueueNext(BuildContext ctx, PlayerService player, Track track) {
+  void _addToQueueNext(
+    BuildContext ctx,
+    PlayerServiceInterface player,
+    Track track,
+  ) {
     player.insertToQueue(track);
     Navigator.of(ctx).pop();
     ScaffoldMessenger.of(ctx).showSnackBar(
       SnackBar(
         content: Text(
           '"${track.title}" added to queue',
-          style: TextStyle(color: ref.read(animatedPaletteProvider).textPrimary),
+          style: TextStyle(
+            color: ref.read(animatedPaletteProvider).textPrimary,
+          ),
         ),
         backgroundColor: ref.read(animatedPaletteProvider).elevated,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -252,10 +255,7 @@ class _TrackHeader extends StatelessWidget {
                   track.artist,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.textSecondary,
-                    fontSize: 13,
-                  ),
+                  style: TextStyle(color: colors.textSecondary, fontSize: 13),
                 ),
               ],
             ),
@@ -349,7 +349,7 @@ class _ActionButton extends StatelessWidget {
 class _BoostSlider extends ConsumerStatefulWidget {
   const _BoostSlider({required this.player, required this.colors});
 
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final AppColors colors;
 
   @override
@@ -372,11 +372,10 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
     super.dispose();
   }
 
-  double _fractionFromBoost(double db) =>
-      (db / PlayerService.maxBoostDb).clamp(0.0, 1.0);
+  double _fractionFromBoost(double db) => (db / kMaxBoostDb).clamp(0.0, 1.0);
 
   void _apply(double fraction) {
-    widget.player.setBoost(fraction * PlayerService.maxBoostDb);
+    widget.player.setBoost(fraction * kMaxBoostDb);
   }
 
   @override
@@ -387,7 +386,7 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
       builder: (context, snap) {
         final boostDb = snap.data ?? 0.0;
         final fraction = _dragFraction ?? _fractionFromBoost(boostDb);
-        final db = fraction * PlayerService.maxBoostDb;
+        final db = fraction * kMaxBoostDb;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -422,8 +421,7 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
                   behavior: HitTestBehavior.opaque,
                   onHorizontalDragStart: (_) => _thumbAnim.forward(),
                   onHorizontalDragUpdate: (d) {
-                    final frac =
-                        (d.localPosition.dx / width).clamp(0.0, 1.0);
+                    final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
                     setState(() => _dragFraction = frac);
                     _apply(frac);
                   },
@@ -434,8 +432,7 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
                   onTapDown: (_) => _thumbAnim.forward(),
                   onTapUp: (d) {
                     _thumbAnim.reverse();
-                    final frac =
-                        (d.localPosition.dx / width).clamp(0.0, 1.0);
+                    final frac = (d.localPosition.dx / width).clamp(0.0, 1.0);
                     _apply(frac);
                     setState(() => _dragFraction = null);
                   },
@@ -503,8 +500,10 @@ class _BoostPainter extends CustomPainter {
     final double thumbCornerRadius = 2 + 2 * t;
 
     final double thumbX = _margin + filledW - thumbWidth / 2;
-    final double clampedThumbX =
-        thumbX.clamp(_margin, _margin + totalWidth - thumbWidth);
+    final double clampedThumbX = thumbX.clamp(
+      _margin,
+      _margin + totalWidth - thumbWidth,
+    );
 
     final double iconBaseX = _margin + _iconPadding;
     final double iconShiftThreshold = _iconTotalWidth;
@@ -518,7 +517,11 @@ class _BoostPainter extends CustomPainter {
 
       final trackRect = RRect.fromRectAndCorners(
         Rect.fromLTWH(
-            trackStart, centerY - _trackHeight / 2, trackWidth, _trackHeight),
+          trackStart,
+          centerY - _trackHeight / 2,
+          trackWidth,
+          _trackHeight,
+        ),
         topLeft: Radius.circular(thumbCornerRadius),
         topRight: const Radius.circular(5),
         bottomLeft: Radius.circular(thumbCornerRadius),
@@ -534,7 +537,11 @@ class _BoostPainter extends CustomPainter {
 
       final filledRect = RRect.fromRectAndCorners(
         Rect.fromLTWH(
-            _margin, centerY - _trackHeight / 2, filledWidth, _trackHeight),
+          _margin,
+          centerY - _trackHeight / 2,
+          filledWidth,
+          _trackHeight,
+        ),
         topLeft: const Radius.circular(5),
         topRight: Radius.circular(thumbCornerRadius),
         bottomLeft: const Radius.circular(5),
@@ -546,7 +553,11 @@ class _BoostPainter extends CustomPainter {
 
     final thumbRect = RRect.fromRectAndRadius(
       Rect.fromLTWH(
-          clampedThumbX, centerY - thumbHeight / 2, thumbWidth, thumbHeight),
+        clampedThumbX,
+        centerY - thumbHeight / 2,
+        thumbWidth,
+        thumbHeight,
+      ),
       const Radius.circular(_thumbRadius),
     );
     final thumbPaint = Paint()..color = colors.elevatedHi;
@@ -608,7 +619,7 @@ class _SettingsGroup extends ConsumerStatefulWidget {
 
   final Track track;
   final AppColors colors;
-  final PlayerService player;
+  final PlayerServiceInterface player;
 
   @override
   ConsumerState<_SettingsGroup> createState() => _SettingsGroupState();
@@ -766,12 +777,18 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
 
             final tiles = <_SettingsTileData>[
               _SettingsTileData(
-                icon: _isCached ? Icons.download_done_rounded : Icons.download_rounded,
+                icon: _isCached
+                    ? Icons.download_done_rounded
+                    : Icons.download_rounded,
                 iconColor: _isCached ? colors.accent : colors.textPrimary,
                 title: _isCached ? 'Cached' : 'Download',
                 subtitle: _isCached ? 'Available offline' : null,
                 trailing: _isCached
-                    ? Icon(Icons.check_circle_rounded, color: colors.accent, size: 20)
+                    ? Icon(
+                        Icons.check_circle_rounded,
+                        color: colors.accent,
+                        size: 20,
+                      )
                     : null,
                 onTap: _isCached ? _deleteCache : _download,
                 loading: _checking || _downloading,

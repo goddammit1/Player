@@ -6,6 +6,7 @@ import 'package:rxdart/rxdart.dart';
 import '../../core/providers.dart';
 import '../pages/player_page.dart';
 import 'artwork.dart';
+import 'desktop_layout.dart';
 import '../../core/artwork_helper.dart';
 
 class NowPlayingOverlay extends ConsumerStatefulWidget {
@@ -88,6 +89,13 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
   Widget build(BuildContext context) {
     final player = ref.watch(playerServiceProvider);
     final colors = ref.watch(animatedPaletteProvider);
+
+    // Мобильный мини-плеер/оверлей не должен появляться на десктопе — там
+    // свою панель рисует DesktopPlayerBar. Блокируем здесь глобально, а не
+    // только флагами showNowPlayingOverlay на страницах: это закрывает все
+    // пути рендера оверлея (например, страницы, открытые через Navigator).
+    if (isDesktop) return const SizedBox.shrink();
+
     final media = MediaQuery.of(context);
     _maxHeight = media.size.height;
     final bottomInset = media.padding.bottom;
@@ -105,8 +113,7 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
 
             final miniOpacity = (1 - t / 0.55).clamp(0.0, 1.0);
             final fullOpacity = ((t - 0.15) / 0.5).clamp(0.0, 1.0);
-            final collapsedBottom =
-                NowPlayingOverlay.miniHeight + bottomInset;
+            final collapsedBottom = NowPlayingOverlay.miniHeight + bottomInset;
             final slideOffset = (1 - t) * (_maxHeight - collapsedBottom);
 
             return Positioned.fill(
@@ -144,11 +151,19 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
                           ignoring: t > 0.1,
                           child: Opacity(
                             opacity: miniOpacity,
-                            child: _MiniBar(
-                              player: player,
-                              item: item,
-                              onTap: _expand,
-                              colors: colors,
+                            child: Align(
+                              alignment: Alignment.topCenter,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: isDesktop ? 720 : double.infinity,
+                                ),
+                                child: _MiniBar(
+                                  player: player,
+                                  item: item,
+                                  onTap: _expand,
+                                  colors: colors,
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -267,7 +282,11 @@ class _MiniBar extends StatelessWidget {
 }
 
 class _ProgressFill extends StatelessWidget {
-  const _ProgressFill({required this.player, required this.item, required this.colors});
+  const _ProgressFill({
+    required this.player,
+    required this.item,
+    required this.colors,
+  });
   final dynamic player;
   final MediaItem item;
   final dynamic colors;
@@ -293,9 +312,7 @@ class _ProgressFill extends StatelessWidget {
               child: FractionallySizedBox(
                 widthFactor: f,
                 heightFactor: 1,
-                child: Container(
-                  color: colors.elevatedProgressBar,
-                ),
+                child: Container(color: colors.elevatedProgressBar),
               ),
             );
           },
@@ -316,7 +333,8 @@ class _PlayPauseButton extends StatelessWidget {
       stream: player.playbackState as Stream<PlaybackState>,
       builder: (context, snap) {
         final st = snap.data;
-        final loading = st != null &&
+        final loading =
+            st != null &&
             (st.processingState == AudioProcessingState.loading ||
                 st.processingState == AudioProcessingState.buffering);
         if (loading) {
@@ -325,7 +343,10 @@ class _PlayPauseButton extends StatelessWidget {
             child: SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2, color: colors.textPrimary),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: colors.textPrimary,
+              ),
             ),
           );
         }

@@ -6,6 +6,7 @@ import '../../core/playlist_backup.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
+import '../widgets/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 
 import 'history_page.dart';
@@ -85,46 +86,115 @@ class HomePage extends ConsumerWidget {
           children: [
             SafeArea(
               bottom: false,
-              child: CustomScrollView(
-                physics: const BouncingScrollPhysics(),
-                slivers: [
-                  const SliverToBoxAdapter(child: _TopBar()),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-                      child: Text(
-                        'Playlists',
-                        style: TextStyle(
-                          color: colors.textPrimary,
-                          fontSize: 32,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0,
+              child: LayoutBuilder(
+                builder: (context, c) {
+                  // Десктоп: адаптивная сетка (~260px на колонку).
+                  // Мобильные платформы не затронуты — там всегда 2 колонки.
+                  final columns = isDesktop
+                      ? (c.maxWidth / 260).floor().clamp(2, 10)
+                      : 2;
+                  return CustomScrollView(
+                    physics: const BouncingScrollPhysics(),
+                    slivers: [
+                      if (isDesktop)
+                        const SliverConstrainedCrossAxis(
+                          maxExtent: 1400,
+                          sliver: SliverToBoxAdapter(child: _TopBar()),
+                        )
+                      else
+                        const SliverToBoxAdapter(child: _TopBar()),
+                      if (isDesktop)
+                        SliverConstrainedCrossAxis(
+                          maxExtent: 1400,
+                          sliver: SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                20,
+                                16,
+                                20,
+                                16,
+                              ),
+                              child: Text(
+                                'Playlists',
+                                style: TextStyle(
+                                  color: colors.textPrimary,
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0,
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+                            child: Text(
+                              'Playlists',
+                              style: TextStyle(
+                                color: colors.textPrimary,
+                                fontSize: 32,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0,
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
-                    sliver: SliverGrid.builder(
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        mainAxisSpacing: 16,
-                        crossAxisSpacing: 16,
-                        childAspectRatio: 0.82,
-                      ),
-                      itemCount: playlists.length + 1,
-                      itemBuilder: (context, i) {
-                        if (i == playlists.length) return const _AddNewCard();
-                        final p = playlists[i];
-                        return _PlaylistCard(playlist: p, colors: colors);
-                      },
-                    ),
-                  ),
-                ],
+                      if (isDesktop)
+                        SliverConstrainedCrossAxis(
+                          maxExtent: 1400,
+                          sliver: SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                            sliver: SliverGrid.builder(
+                              gridDelegate:
+                                  SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: columns,
+                                    mainAxisSpacing: 16,
+                                    crossAxisSpacing: 16,
+                                    childAspectRatio: 0.82,
+                                  ),
+                              itemCount: playlists.length + 1,
+                              itemBuilder: (context, i) {
+                                if (i == playlists.length) {
+                                  return const _AddNewCard();
+                                }
+                                final p = playlists[i];
+                                return _PlaylistCard(
+                                  playlist: p,
+                                  colors: colors,
+                                );
+                              },
+                            ),
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                          sliver: SliverGrid.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 2,
+                                  mainAxisSpacing: 16,
+                                  crossAxisSpacing: 16,
+                                  childAspectRatio: 0.82,
+                                ),
+                            itemCount: playlists.length + 1,
+                            itemBuilder: (context, i) {
+                              if (i == playlists.length) {
+                                return const _AddNewCard();
+                              }
+                              final p = playlists[i];
+                              return _PlaylistCard(playlist: p, colors: colors);
+                            },
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
             ),
-            const NowPlayingOverlay(),
+            if (!isDesktop) const NowPlayingOverlay(),
           ],
         ),
       ),
@@ -143,7 +213,6 @@ class _HomePageAnimator extends StatefulWidget {
 
 class _HomePageAnimatorState extends State<_HomePageAnimator>
     with SingleTickerProviderStateMixin {
-
   late final AnimationController _anim;
   late final Animation<double> _slide;
   late final Animation<double> _fade;
@@ -155,12 +224,14 @@ class _HomePageAnimatorState extends State<_HomePageAnimator>
       vsync: this,
       duration: const Duration(milliseconds: 300),
     );
-    _slide = Tween<double>(begin: 10, end: 0).animate(
-      CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic),
-    );
-    _fade = Tween<double>(begin: 0.7, end: 1).animate(
-      CurvedAnimation(parent: _anim, curve: Curves.easeOut),
-    );
+    _slide = Tween<double>(
+      begin: 10,
+      end: 0,
+    ).animate(CurvedAnimation(parent: _anim, curve: Curves.easeOutCubic));
+    _fade = Tween<double>(
+      begin: 0.7,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _anim, curve: Curves.easeOut));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _anim.forward();
     });
@@ -178,10 +249,7 @@ class _HomePageAnimatorState extends State<_HomePageAnimator>
       animation: _anim,
       builder: (context, _) => Transform.translate(
         offset: Offset(0, _slide.value),
-        child: Opacity(
-          opacity: _fade.value,
-          child: widget.child,
-        ),
+        child: Opacity(opacity: _fade.value, child: widget.child),
       ),
     );
   }
@@ -203,9 +271,9 @@ class _TopBar extends ConsumerWidget {
             // Та же системная анимация перехода, что и у Settings,
             // но отражённая по горизонтали — страница прилетает слева
             // (кнопка истории в левом углу).
-            onTap: () => Navigator.of(context).push(
-              _MirroredPageRoute(builder: (_) => const HistoryPage()),
-            ),
+            onTap: () => Navigator.of(
+              context,
+            ).push(_MirroredPageRoute(builder: (_) => const HistoryPage())),
             colors: colors,
           ),
           const SizedBox(width: 10),
@@ -219,8 +287,8 @@ class _TopBar extends ConsumerWidget {
                         const SearchHistoryPage(),
                     transitionsBuilder:
                         (context, animation, secondaryAnimation, child) {
-                      return child;
-                    },
+                          return child;
+                        },
                     transitionDuration: Duration.zero,
                     reverseTransitionDuration: Duration.zero,
                   ),
@@ -231,9 +299,9 @@ class _TopBar extends ConsumerWidget {
           const SizedBox(width: 10),
           _CircleButton(
             icon: Icons.settings_rounded,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SettingsPage()),
-            ),
+            onTap: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const SettingsPage())),
             colors: colors,
           ),
         ],
@@ -331,18 +399,21 @@ class _PlaylistCard extends StatelessWidget {
               builder: (_, c) => Stack(
                 children: [
                   Positioned.fill(
-                                    child: ArtworkMosaic(
-                                      urls: playlist.coverThumbnails,
-                                      trackIds: playlist.coverTrackIds,
-                                      size: c.maxWidth,
-                                      borderRadius: 20,
-                                      coverCustomUrl: playlist.coverCustomPath,
-                                    ),
+                    child: ArtworkMosaic(
+                      urls: playlist.coverThumbnails,
+                      trackIds: playlist.coverTrackIds,
+                      size: c.maxWidth,
+                      borderRadius: 20,
+                      coverCustomUrl: playlist.coverCustomPath,
+                    ),
                   ),
                   Positioned(
                     right: 8,
                     bottom: 8,
-                    child: _CountBadge(count: playlist.tracks.length, colors: colors),
+                    child: _CountBadge(
+                      count: playlist.tracks.length,
+                      colors: colors,
+                    ),
                   ),
                 ],
               ),
@@ -450,8 +521,9 @@ class _AddNewCard extends ConsumerWidget {
   Future<void> _showAddOptions(BuildContext context, WidgetRef ref) async {
     final colors = ref.read(currentPaletteProvider);
 
-    await showModalBottomSheet<void>(
+    await showDesktopModalSheet<void>(
       context: context,
+      maxWidth: 520,
       backgroundColor: colors.elevated,
       showDragHandle: true,
       builder: (sheetCtx) {
@@ -461,10 +533,7 @@ class _AddNewCard extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: Icon(
-                  Icons.add_rounded,
-                  color: colors.textPrimary,
-                ),
+                leading: Icon(Icons.add_rounded, color: colors.textPrimary),
                 title: Text(
                   'Create empty playlist',
                   style: TextStyle(color: colors.textPrimary),
@@ -523,14 +592,17 @@ class _AddNewCard extends ConsumerWidget {
       );
       if (!context.mounted) return;
       _showInfo(
-        context, ref,
+        context,
+        ref,
         title: 'Import complete',
-        body: 'Added: ${result.added}\nReplaced: ${result.replaced}\nSkipped: ${result.skipped}',
+        body:
+            'Added: ${result.added}\nReplaced: ${result.replaced}\nSkipped: ${result.skipped}',
       );
     } catch (e) {
       if (!context.mounted) return;
       _showInfo(
-        context, ref,
+        context,
+        ref,
         title: 'Import failed',
         body: e is FormatException ? e.message : e.toString(),
       );
@@ -538,7 +610,10 @@ class _AddNewCard extends ConsumerWidget {
   }
 
   /// Спрашивает, что делать с плейлистами, у которых `id` уже есть.
-  Future<ImportStrategy?> _askImportStrategy(BuildContext context, WidgetRef ref) {
+  Future<ImportStrategy?> _askImportStrategy(
+    BuildContext context,
+    WidgetRef ref,
+  ) {
     final colors = ref.read(currentPaletteProvider);
 
     return showDialog<ImportStrategy>(
@@ -586,14 +661,8 @@ class _AddNewCard extends ConsumerWidget {
       builder: (ctx) {
         return AlertDialog(
           backgroundColor: colors.elevated,
-          title: Text(
-            title,
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          content: Text(
-            body,
-            style: TextStyle(color: colors.textSecondary),
-          ),
+          title: Text(title, style: TextStyle(color: colors.textPrimary)),
+          content: Text(body, style: TextStyle(color: colors.textSecondary)),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
@@ -638,7 +707,10 @@ class _AddNewCard extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: colors.textPrimary),
               ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 12,
+              ),
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),
@@ -648,8 +720,7 @@ class _AddNewCard extends ConsumerWidget {
               child: const Text('Cancel'),
             ),
             TextButton(
-              onPressed: () =>
-                  Navigator.of(ctx).pop(controller.text.trim()),
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
               child: const Text('Create'),
             ),
           ],
@@ -659,9 +730,9 @@ class _AddNewCard extends ConsumerWidget {
     if (name == null) return;
     final p = ref.read(playlistRepositoryProvider).create(name);
     if (!context.mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => PlaylistPage(playlistId: p.id)),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => PlaylistPage(playlistId: p.id)));
   }
 }
 

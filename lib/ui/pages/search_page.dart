@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
 import '../widgets/artwork.dart';
+import '../widgets/desktop_layout.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import '../widgets/add_to_playlist_sheet.dart';
@@ -19,7 +20,12 @@ import 'search_history_page.dart';
 import 'settings_page.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
-  const SearchPage({super.key});
+  const SearchPage({super.key, this.showNowPlayingOverlay = true});
+
+  /// Отключает встроенный мини-плеер поверх страницы. Нужно, когда страница
+  /// встраивается в десктопный shell — там свою панель плеера рисует
+  /// [DesktopPlayerBar] (см. ui/desktop/desktop_player_bar.dart).
+  final bool showNowPlayingOverlay;
 
   @override
   ConsumerState<SearchPage> createState() => _SearchPageState();
@@ -74,20 +80,20 @@ class _SearchPageState extends ConsumerState<SearchPage>
     }
   }
 
-    void _goToSearchHistory() {
-      final state = ref.read(searchProvider); // берём текущий state
-      Navigator.of(context).push(
-        PageRouteBuilder(
-          pageBuilder: (context, animation, secondaryAnimation) =>
-              SearchHistoryPage(initialQuery: state.query), // ← передаём query
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            return child;
-          },
-          transitionDuration: Duration.zero,
-          reverseTransitionDuration: Duration.zero,
-        ),
-      );
-    }
+  void _goToSearchHistory() {
+    final state = ref.read(searchProvider); // берём текущий state
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            SearchHistoryPage(initialQuery: state.query), // ← передаём query
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return child;
+        },
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -103,137 +109,151 @@ class _SearchPageState extends ConsumerState<SearchPage>
       backgroundColor: colors.background,
       body: Stack(
         children: [
-          SafeArea(
-            bottom: false,
-            child: CustomScrollView(
-              slivers: [
-                // === PINNED SEARCH BAR ===
-                SliverPersistentHeader(
-                  pinned: true,
-                  delegate: _SearchBarDelegate(
-                    barAnim: _barAnim,
-                    barExpand: _barExpand,
-                    colors: colors,
-                    query: state.query,
-                    onPop: _popWithAnimation,
-                    onTapSearch: _goToSearchHistory,
-                    onTapSettings: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const SettingsPage(),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-
-                // === FILTERS (no animation) ===
-                if (state.results.isNotEmpty || state.loading)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 16, top: 4),
-                      child: _FilterChips(
-                        sources: sources,
-                        currentSourceId: currentSourceId,
-                        onSelected: (id) {
-                          if (id == currentSourceId) {
-                            searchCtl.setSourceId(kAllSourcesId);
-                          } else {
-                            searchCtl.setSourceId(id);
-                          }
-                        },
+          Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: isDesktop ? 900 : double.infinity,
+              ),
+              child: SafeArea(
+                bottom: false,
+                child: CustomScrollView(
+                  slivers: [
+                    // === PINNED SEARCH BAR ===
+                    SliverPersistentHeader(
+                      pinned: true,
+                      delegate: _SearchBarDelegate(
+                        barAnim: _barAnim,
+                        barExpand: _barExpand,
                         colors: colors,
+                        query: state.query,
+                        onPop: _popWithAnimation,
+                        onTapSearch: _goToSearchHistory,
+                        onTapSettings: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SettingsPage(),
+                            ),
+                          );
+                        },
                       ),
                     ),
-                  ),
 
-                // === ERROR ===
-                if (state.error != null)
-                  SliverToBoxAdapter(
-                    child: Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(14),
+                    // === FILTERS (no animation) ===
+                    if (state.results.isNotEmpty || state.loading)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 16, top: 4),
+                          child: _FilterChips(
+                            sources: sources,
+                            currentSourceId: currentSourceId,
+                            onSelected: (id) {
+                              if (id == currentSourceId) {
+                                searchCtl.setSourceId(kAllSourcesId);
+                              } else {
+                                searchCtl.setSourceId(id);
+                              }
+                            },
+                            colors: colors,
+                          ),
+                        ),
                       ),
-                      child: Text(
-                        state.error!,
-                        style: const TextStyle(color: Colors.redAccent),
-                      ),
-                    ),
-                  ),
 
-                // === CONTENT: GRID OR LIST ===
-                if (state.results.isEmpty && !state.loading)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: _EmptyState(colors: colors),
-                  )
-                else if (viewMode == SearchViewMode.grid)
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 132),
-                    sliver: StreamBuilder<MediaItem?>(
-                      stream: player.mediaItem,
-                      builder: (context, mediaSnap) {
-                        final currentId = mediaSnap.data?.id;
-                        return SliverGrid(
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            crossAxisSpacing: 8,
-                            mainAxisSpacing: 8,
-                            childAspectRatio: 1.0,
+                    // === ERROR ===
+                    if (state.error != null)
+                      SliverToBoxAdapter(
+                        child: Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.red.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(14),
                           ),
-                          delegate: SliverChildBuilderDelegate(
-                            (context, i) {
-                              final t = state.results[i];
-                              final isPlaying = currentId != null && currentId == t.globalId;
-                              return _TrackTileGrid(
-                                track: t,
-                                isPlaying: isPlaying,
-                                onTap: () => _playTrack(t),
-                                colors: colors,
-                              );
-                            },
-                            childCount: state.results.length,
+                          child: Text(
+                            state.error!,
+                            style: const TextStyle(color: Colors.redAccent),
                           ),
-                        );
-                      },
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 132),
-                    sliver: StreamBuilder<MediaItem?>(
-                      stream: player.mediaItem,
-                      builder: (context, mediaSnap) {
-                        final currentId = mediaSnap.data?.id;
-                        return SliverList(
-                          delegate: SliverChildBuilderDelegate(
-                            (context, i) {
-                              final t = state.results[i];
-                              final isPlaying = currentId != null && currentId == t.globalId;
-                              return _TrackTileList(
-                                track: t,
-                                isPlaying: isPlaying,
-                                duration: t.duration != null
-                                    ? _formatDuration(t.duration!)
-                                    : null,
-                                onTap: () => _playTrack(t),
-                                colors: colors,
-                              );
-                            },
-                            childCount: state.results.length,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-              ],
+                        ),
+                      ),
+
+                    // === CONTENT: GRID OR LIST ===
+                    if (state.results.isEmpty && !state.loading)
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: _EmptyState(colors: colors),
+                      )
+                    else if (viewMode == SearchViewMode.grid)
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 132),
+                        sliver: StreamBuilder<MediaItem?>(
+                          stream: player.mediaItem,
+                          builder: (context, mediaSnap) {
+                            final currentId = mediaSnap.data?.id;
+                            return SliverGrid(
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    crossAxisSpacing: 8,
+                                    mainAxisSpacing: 8,
+                                    childAspectRatio: 1.0,
+                                  ),
+                              delegate: SliverChildBuilderDelegate((
+                                context,
+                                i,
+                              ) {
+                                final t = state.results[i];
+                                final isPlaying =
+                                    currentId != null &&
+                                    currentId == t.globalId;
+                                return _TrackTileGrid(
+                                  track: t,
+                                  isPlaying: isPlaying,
+                                  onTap: () => _playTrack(t),
+                                  colors: colors,
+                                );
+                              }, childCount: state.results.length),
+                            );
+                          },
+                        ),
+                      )
+                    else
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 132),
+                        sliver: StreamBuilder<MediaItem?>(
+                          stream: player.mediaItem,
+                          builder: (context, mediaSnap) {
+                            final currentId = mediaSnap.data?.id;
+                            return SliverList(
+                              delegate: SliverChildBuilderDelegate((
+                                context,
+                                i,
+                              ) {
+                                final t = state.results[i];
+                                final isPlaying =
+                                    currentId != null &&
+                                    currentId == t.globalId;
+                                return _TrackTileList(
+                                  track: t,
+                                  isPlaying: isPlaying,
+                                  duration: t.duration != null
+                                      ? _formatDuration(t.duration!)
+                                      : null,
+                                  onTap: () => _playTrack(t),
+                                  colors: colors,
+                                );
+                              }, childCount: state.results.length),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
-          const NowPlayingOverlay(),
+          if (widget.showNowPlayingOverlay && !isDesktop)
+            const NowPlayingOverlay(),
         ],
       ),
     );
@@ -288,7 +308,11 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
   double get maxExtent => 88;
 
   @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
     return Container(
       color: colors.background,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
@@ -384,7 +408,9 @@ class _SearchPill extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: query.isEmpty ? colors.textSecondary : colors.textPrimary,
+                      color: query.isEmpty
+                          ? colors.textSecondary
+                          : colors.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
@@ -409,18 +435,11 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.search_rounded,
-            color: colors.textTertiary,
-            size: 48,
-          ),
+          Icon(Icons.search_rounded, color: colors.textTertiary, size: 48),
           const SizedBox(height: 12),
           Text(
             'Start typing to search',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 14,
-            ),
+            style: TextStyle(color: colors.textSecondary, fontSize: 14),
           ),
         ],
       ),
@@ -507,17 +526,10 @@ class _FilterIconButton extends StatelessWidget {
           height: 48,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(
-              color: borderColor,
-              width: 1,
-            ),
+            border: Border.all(color: borderColor, width: 1),
           ),
           alignment: Alignment.center,
-          child: Icon(
-            icon,
-            size: 20,
-            color: iconColor,
-          ),
+          child: Icon(icon, size: 20, color: iconColor),
         ),
       ),
     );
@@ -550,15 +562,17 @@ class _TrackTileGridState extends State<_TrackTileGrid> {
   Widget build(BuildContext context) {
     final track = widget.track;
     final colors = widget.colors;
-    final duration = track.duration != null ? _formatDuration(track.duration!) : null;
+    final duration = track.duration != null
+        ? _formatDuration(track.duration!)
+        : null;
 
     // 1. Проверяем наличие локальной кастомной обложки по track.id
     final customPath = ArtworkHelper.getCustomArtworkSync(track.id);
     final effectiveUrl = customPath ?? track.artworkUrl;
 
     final dpr = MediaQuery.of(context).devicePixelRatio;
-    final cellPx =
-        (((MediaQuery.of(context).size.width - 40) / 2) * dpr).round();
+    final cellPx = (((MediaQuery.of(context).size.width - 40) / 2) * dpr)
+        .round();
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -790,7 +804,9 @@ class _TileImage extends StatelessWidget {
       final file = File(filePath);
       return Image.file(
         file,
-        key: ValueKey('${filePath}_${file.existsSync() ? file.lastModifiedSync().millisecondsSinceEpoch : 0}'),
+        key: ValueKey(
+          '${filePath}_${file.existsSync() ? file.lastModifiedSync().millisecondsSinceEpoch : 0}',
+        ),
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => Container(color: colors.elevated),
       );
@@ -843,10 +859,7 @@ class _TrackTileList extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          onLongPress: () => showTrackSettingsSheet(
-            context,
-            track: track,
-          ),
+          onLongPress: () => showTrackSettingsSheet(context, track: track),
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),

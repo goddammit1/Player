@@ -8,8 +8,9 @@ import 'package:just_audio/just_audio.dart';
 import '../../core/providers.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../../models/track.dart';
-import '../../core/player_service.dart';
+import '../../core/player_service_interface.dart';
 import 'artwork.dart';
+import 'desktop_layout.dart';
 import '../../core/artwork_helper.dart';
 
 extension MediaItemToTrack on MediaItem {
@@ -43,7 +44,6 @@ String _formatDuration(Duration? d) {
   return '$minutes:$ss';
 }
 
-
 class QueueSheetController extends ChangeNotifier {
   QueueSheetController({required this.vsync}) {
     _anim = AnimationController(
@@ -64,22 +64,22 @@ class QueueSheetController extends ChangeNotifier {
   bool get isFull => _anim.value >= 0.999;
 
   void openPart() => _anim.animateTo(
-        partPosition,
-        duration: const Duration(milliseconds: 280),
-        curve: Curves.easeOutCubic,
-      );
+    partPosition,
+    duration: const Duration(milliseconds: 280),
+    curve: Curves.easeOutCubic,
+  );
 
   void openFull() => _anim.animateTo(
-        1,
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOutCubic,
-      );
+    1,
+    duration: const Duration(milliseconds: 240),
+    curve: Curves.easeOutCubic,
+  );
 
   void close() => _anim.animateTo(
-        0,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-      );
+    0,
+    duration: const Duration(milliseconds: 220),
+    curve: Curves.easeOutCubic,
+  );
 
   void drag(double delta, double maxHeight) {
     if (maxHeight <= 0) return;
@@ -133,14 +133,10 @@ class QueueSheetController extends ChangeNotifier {
 }
 
 class QueueSheet extends ConsumerWidget {
-  const QueueSheet({
-    super.key,
-    required this.controller,
-    required this.player,
-  });
+  const QueueSheet({super.key, required this.controller, required this.player});
 
   final QueueSheetController controller;
-  final PlayerService player;
+  final PlayerServiceInterface player;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -229,7 +225,7 @@ class _QueueBody extends StatelessWidget {
 
   final QueueSheetController controller;
   final bool vibrationEnabled;
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final double maxHeight;
   final double topInset;
   final double bottomInset;
@@ -245,51 +241,60 @@ class _QueueBody extends StatelessWidget {
     final topPad = topInset * fullProgress;
 
     final visibleHeight = (maxHeight * t).clamp(0.0, maxHeight);
-    final contentHeight =
-        visibleHeight.clamp(maxHeight * QueueSheetController.partPosition,
-            maxHeight);
+    final contentHeight = visibleHeight.clamp(
+      maxHeight * QueueSheetController.partPosition,
+      maxHeight,
+    );
 
-    return Material(
-      color: colors.background,
-      clipBehavior: Clip.antiAlias,
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      child: ClipRect(
-        child: OverflowBox(
-          alignment: Alignment.topCenter,
-          minHeight: contentHeight,
-          maxHeight: contentHeight,
-          child: SizedBox(
-            height: contentHeight,
-            child: Column(
-              children: [
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onVerticalDragUpdate: (d) =>
-                      controller.drag(d.primaryDelta ?? 0, maxHeight),
-                  onVerticalDragEnd: (d) => controller.settle(
-                    d.primaryVelocity ?? 0,
-                    fromButton: false,
-                  ),
-                  child: Padding(
-                    padding: EdgeInsets.only(top: topPad),
-                    child: _Header(
-                      player: player,
-                      controller: controller,
-                      colors: colors,
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: isDesktop ? 560 : double.infinity,
+        ),
+        child: Material(
+          color: colors.background,
+          clipBehavior: Clip.antiAlias,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          child: ClipRect(
+            child: OverflowBox(
+              alignment: Alignment.topCenter,
+              minHeight: contentHeight,
+              maxHeight: contentHeight,
+              child: SizedBox(
+                height: contentHeight,
+                child: Column(
+                  children: [
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onVerticalDragUpdate: (d) =>
+                          controller.drag(d.primaryDelta ?? 0, maxHeight),
+                      onVerticalDragEnd: (d) => controller.settle(
+                        d.primaryVelocity ?? 0,
+                        fromButton: false,
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.only(top: topPad),
+                        child: _Header(
+                          player: player,
+                          controller: controller,
+                          colors: colors,
+                        ),
+                      ),
                     ),
-                  ),
+                    Expanded(
+                      child: _QueueList(
+                        vibrationEnabled: vibrationEnabled,
+                        controller: controller,
+                        player: player,
+                        bottomInset: bottomInset,
+                        maxHeight: maxHeight,
+                        colors: colors,
+                      ),
+                    ),
+                  ],
                 ),
-                Expanded(
-                  child: _QueueList(
-                    vibrationEnabled: vibrationEnabled,
-                    controller: controller,
-                    player: player,
-                    bottomInset: bottomInset,
-                    maxHeight: maxHeight,
-                    colors: colors,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -304,7 +309,7 @@ class _Header extends StatelessWidget {
     required this.controller,
     required this.colors,
   });
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final QueueSheetController controller;
   final dynamic colors;
 
@@ -383,7 +388,10 @@ class _Header extends StatelessWidget {
                             currentMediaItem: item,
                           );
                         },
-                        icon: Icon(Icons.more_vert_rounded, color: colors.textPrimary),
+                        icon: Icon(
+                          Icons.more_vert_rounded,
+                          color: colors.textPrimary,
+                        ),
                       ),
                     ],
                   ),
@@ -409,10 +417,10 @@ class _Header extends StatelessWidget {
 
         const SizedBox(height: 8),
 
-        StreamBuilder<List<MediaItem>>(
-          stream: player.queue,
+        StreamBuilder<int>(
+          stream: player.currentIndexStream,
           builder: (context, snap) {
-            final count = snap.data?.length ?? 0;
+            final count = player.trackQueue.length;
             return Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
               child: Row(
@@ -447,7 +455,7 @@ class _Header extends StatelessWidget {
 
 class _ShuffleButton extends StatelessWidget {
   const _ShuffleButton({required this.player, required this.colors});
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final dynamic colors;
 
   @override
@@ -474,11 +482,7 @@ class _ShuffleButton extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.shuffle_rounded,
-                color: colors.textPrimary,
-                size: 24,
-              ),
+              Icon(Icons.shuffle_rounded, color: colors.textPrimary, size: 24),
               const SizedBox(width: 12),
               Text(
                 'Shuffle',
@@ -498,7 +502,7 @@ class _ShuffleButton extends StatelessWidget {
 
 class _RepeatButton extends StatelessWidget {
   const _RepeatButton({required this.player, required this.colors});
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final dynamic colors;
 
   @override
@@ -572,7 +576,7 @@ class _QueueList extends StatefulWidget {
 
   final QueueSheetController controller;
   final bool vibrationEnabled;
-  final PlayerService player;
+  final PlayerServiceInterface player;
   final double bottomInset;
   final double maxHeight;
   final dynamic colors;
@@ -617,71 +621,76 @@ class _QueueListState extends State<_QueueList> {
         }
         return child!;
       },
-      child: StreamBuilder<List<MediaItem>>(
-        stream: widget.player.queue,
-        builder: (context, qSnap) {
-          final all = qSnap.data ?? const <MediaItem>[];
-          return StreamBuilder<int>(
-            stream: widget.player.currentIndexStream,
-            initialData: widget.player.currentIndex,
-            builder: (context, iSnap) {
-              final current = iSnap.data ?? -1;
+      child: StreamBuilder<int>(
+        stream: widget.player.currentIndexStream,
+        initialData: widget.player.currentIndex,
+        builder: (context, iSnap) {
+          final current = iSnap.data ?? -1;
+          final tracks = widget.player.trackQueue;
+          final all = tracks
+              .map(
+                (t) => MediaItem(
+                  id: t.globalId,
+                  title: t.title,
+                  artist: t.artist,
+                  duration: t.duration,
+                  artUri: t.artworkUrl != null
+                      ? Uri.tryParse(t.artworkUrl!)
+                      : null,
+                ),
+              )
+              .toList();
 
-              if (current >= 0 && current != _lastCurrentIndex) {
-                _lastCurrentIndex = current;
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _scrollToIndex(current, all.length);
-                });
-              }
+          if (current >= 0 && current != _lastCurrentIndex) {
+            _lastCurrentIndex = current;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _scrollToIndex(current, all.length);
+            });
+          }
 
-              if (all.isEmpty) {
-                return Center(
-                  child: Text(
-                    'Queue is empty',
-                    style: TextStyle(color: widget.colors.textSecondary),
-                  ),
+          if (all.isEmpty) {
+            return Center(
+              child: Text(
+                'Queue is empty',
+                style: TextStyle(color: widget.colors.textSecondary),
+              ),
+            );
+          }
+
+          return ReorderableListView.builder(
+            scrollController: _scrollController,
+            padding: EdgeInsets.only(top: 2, bottom: 24 + widget.bottomInset),
+            itemCount: all.length,
+            proxyDecorator: _proxyDecorator,
+            onReorder: (oldIndex, newIndex) {
+              if (newIndex > oldIndex) newIndex -= 1;
+              widget.player.reorderQueueItem(oldIndex, newIndex);
+            },
+            itemBuilder: (context, index) {
+              final m = all[index];
+              final isCurrent = index == current;
+
+              if (isCurrent) {
+                return _QueueTile(
+                  key: ValueKey('${m.id}_$index'),
+                  index: index,
+                  media: m,
+                  isHighlighted: true,
+                  onTap: () {},
+                  onDismissed: null,
+                  colors: widget.colors,
                 );
               }
 
-              return ReorderableListView.builder(
-                scrollController: _scrollController,
-                padding: EdgeInsets.only(
-                  top: 2,
-                  bottom: 24 + widget.bottomInset,
-                ),
-                itemCount: all.length,
-                proxyDecorator: _proxyDecorator,
-                onReorder: (oldIndex, newIndex) {
-                  if (newIndex > oldIndex) newIndex -= 1;
-                  widget.player.reorderQueueItem(oldIndex, newIndex);
-                },
-                itemBuilder: (context, index) {
-                  final m = all[index];
-                  final isCurrent = index == current;
-
-                  if (isCurrent) {
-                    return _QueueTile(
-                      key: ValueKey('${m.id}_$index'),
-                      index: index,
-                      media: m,
-                      isHighlighted: true,
-                      onTap: () {},
-                      onDismissed: null,
-                      colors: widget.colors,
-                    );
-                  }
-
-                  return _DismissibleQueueTile(
-                    enabled: widget.vibrationEnabled,
-                    key: ValueKey('${m.id}_$index'),
-                    index: index,
-                    media: m,
-                    isHighlighted: false,
-                    onTap: () => widget.player.skipToQueueItem(index),
-                    onDismissed: () => widget.player.removeQueueItem(m),
-                    colors: widget.colors,
-                  );
-                },
+              return _DismissibleQueueTile(
+                enabled: widget.vibrationEnabled,
+                key: ValueKey('${m.id}_$index'),
+                index: index,
+                media: m,
+                isHighlighted: false,
+                onTap: () => widget.player.skipToQueueItem(index),
+                onDismissed: () => widget.player.removeFromQueue(index),
+                colors: widget.colors,
               );
             },
           );
@@ -800,7 +809,9 @@ class _QueueTile extends StatelessWidget {
                     index: index,
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
                       child: Icon(
                         Icons.drag_handle,
                         color: colors.textSecondary,
@@ -852,7 +863,8 @@ class _DismissibleQueueTile extends ConsumerStatefulWidget {
   final bool enabled;
 
   @override
-  ConsumerState<_DismissibleQueueTile> createState() => _DismissibleQueueTileState();
+  ConsumerState<_DismissibleQueueTile> createState() =>
+      _DismissibleQueueTileState();
 }
 
 class _DismissibleQueueTileState extends ConsumerState<_DismissibleQueueTile> {
@@ -916,4 +928,3 @@ class _DismissibleQueueTileState extends ConsumerState<_DismissibleQueueTile> {
     );
   }
 }
-

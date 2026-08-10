@@ -5,15 +5,16 @@ import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../../models/track.dart';
 import 'artwork.dart';
+import 'desktop_layout.dart';
 import '../../core/haptic_helper.dart';
-
 
 Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
   // Защита от двойного открытия sheet'а при быстром тапе.
   final route = ModalRoute.of(context);
   if (route == null || !route.isCurrent) return Future.value();
-  return showModalBottomSheet<void>(
+  return showDesktopModalSheet<void>(
     context: context,
+    maxWidth: 560,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
     showDragHandle: false,
@@ -27,7 +28,8 @@ class _AddToPlaylistSheet extends ConsumerStatefulWidget {
   final Track track;
 
   @override
-  ConsumerState<_AddToPlaylistSheet> createState() => _AddToPlaylistSheetState();
+  ConsumerState<_AddToPlaylistSheet> createState() =>
+      _AddToPlaylistSheetState();
 }
 
 class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
@@ -37,7 +39,8 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
 
   final ScrollController _scrollController = ScrollController();
   final FocusNode _searchFocusNode = FocusNode();
-  final DraggableScrollableController _sheetController = DraggableScrollableController();
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
 
   @override
   void initState() {
@@ -45,7 +48,7 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
     _searchFocusNode.addListener(() {
       if (mounted) {
         setState(() => _searchFocused = _searchFocusNode.hasFocus);
-        
+
         // ← Раскрываем плашку при фокусе
         if (_searchFocusNode.hasFocus) {
           _sheetController.animateTo(
@@ -114,7 +117,9 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
                   height: 40,
                   decoration: BoxDecoration(
                     color: colors.elevated,
-                    borderRadius: BorderRadius.circular(_searchFocused ? 5 : 20),
+                    borderRadius: BorderRadius.circular(
+                      _searchFocused ? 5 : 20,
+                    ),
                   ),
                   child: TapRegion(
                     onTapOutside: (_) {
@@ -128,12 +133,19 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
                       style: TextStyle(color: colors.textPrimary, fontSize: 15),
                       decoration: InputDecoration(
                         hintText: 'Find playlist',
-                        hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
+                        hintStyle: TextStyle(
+                          color: colors.textTertiary,
+                          fontSize: 15,
+                        ),
                         border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
                         isCollapsed: true,
                       ),
-                      onChanged: (v) => setState(() => _searchQuery = v.toLowerCase()),
+                      onChanged: (v) =>
+                          setState(() => _searchQuery = v.toLowerCase()),
                       onSubmitted: (_) => _searchFocusNode.unfocus(),
                     ),
                   ),
@@ -157,7 +169,11 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
               Flexible(
                 child: asyncList.when(
                   data: (list) {
-                    final filtered = list.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
+                    final filtered = list
+                        .where(
+                          (p) => p.name.toLowerCase().contains(_searchQuery),
+                        )
+                        .toList();
                     return _PlaylistGrid(
                       playlists: filtered,
                       selectedIds: _selectedIds,
@@ -204,10 +220,7 @@ class _AddToPlaylistSheetState extends ConsumerState<_AddToPlaylistSheet> {
                   ),
                 ),
               // Transparent bottom safe area
-              Container(
-                height: bottomInset,
-                color: Colors.transparent,
-              ),
+              Container(height: bottomInset, color: Colors.transparent),
             ],
           ),
         );
@@ -268,7 +281,9 @@ class _PlaylistGrid extends StatelessWidget {
     const crossAxisCount = 3;
     const spacing = 12.0;
     const padding = 16.0;
-    final itemSize = (screenWidth - padding * 2 - spacing * (crossAxisCount - 1)) / crossAxisCount;
+    final itemSize =
+        (screenWidth - padding * 2 - spacing * (crossAxisCount - 1)) /
+        crossAxisCount;
 
     if (playlists.isEmpty) {
       return Padding(
@@ -277,7 +292,9 @@ class _PlaylistGrid extends StatelessWidget {
           'No playlists yet',
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.5),
             fontSize: 14,
           ),
         ),
@@ -296,9 +313,7 @@ class _PlaylistGrid extends StatelessWidget {
       itemCount: playlists.length + 1,
       itemBuilder: (context, index) {
         if (index == 0) {
-          return _NewPlaylistTile(
-            onCreated: onNewPlaylistCreated,
-          );
+          return _NewPlaylistTile(onCreated: onNewPlaylistCreated);
         }
         final playlist = playlists[index - 1];
         final isSelected = selectedIds.contains(playlist.id);
@@ -318,9 +333,7 @@ class _PlaylistGrid extends StatelessWidget {
 // ═══════════════════════════════════════════════════════════════════
 
 class _NewPlaylistTile extends ConsumerStatefulWidget {
-  const _NewPlaylistTile({
-    required this.onCreated,
-  });
+  const _NewPlaylistTile({required this.onCreated});
 
   final ValueChanged<String> onCreated;
 
@@ -415,7 +428,10 @@ class _NewPlaylistTileState extends ConsumerState<_NewPlaylistTile> {
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: colors.textPrimary),
               ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 12,
+              ),
             ),
             onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
           ),
@@ -477,7 +493,8 @@ class _PlaylistTile extends ConsumerWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  playlist.coverThumbnails.isNotEmpty || playlist.coverCustomPath != null
+                  playlist.coverThumbnails.isNotEmpty ||
+                          playlist.coverCustomPath != null
                       ? ArtworkMosaic(
                           urls: playlist.coverThumbnails,
                           trackIds: playlist.coverTrackIds,
@@ -558,10 +575,7 @@ class _BottomDoneBar extends StatelessWidget {
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeOutCubic,
       builder: (context, value, child) {
-        return Transform.translate(
-          offset: Offset(0, value * 80),
-          child: child,
-        );
+        return Transform.translate(offset: Offset(0, value * 80), child: child);
       },
       child: SizedBox(
         width: double.infinity,

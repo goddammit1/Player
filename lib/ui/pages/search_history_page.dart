@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../widgets/desktop_layout.dart';
 import 'search_page.dart';
 
 class SearchHistoryPage extends ConsumerStatefulWidget {
@@ -64,7 +65,7 @@ class _SearchHistoryPageState extends ConsumerState<SearchHistoryPage>
         reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
       ),
     );
-    
+
     if (widget.initialQuery != null && widget.initialQuery!.isNotEmpty) {
       _controller.text = widget.initialQuery!;
     }
@@ -125,64 +126,72 @@ class _SearchHistoryPageState extends ConsumerState<SearchHistoryPage>
 
     return Scaffold(
       backgroundColor: colors.background,
-      body: SafeArea(
-        bottom: false,
-        child: CustomScrollView(
-          slivers: [
-            // === PINNED SEARCH BAR ===
-            SliverPersistentHeader(
-              pinned: true,
-              delegate: _SearchBarDelegate(
-                barAnim: _barAnim,
-                barExpand: _barExpand,
-                controller: _controller,
-                focusNode: _focus,
-                colors: colors,
-                onPop: _popWithAnimation,
-                onChanged: () => setState(() {}),
-                onSubmit: (q) {
-                  if (q.trim().isNotEmpty) {
-                    _goToSearch(q.trim());
-                  }
-                },
-                onClear: () {
-                  _controller.clear();
-                  setState(() {});
-                },
-              ),
-            ),
-
-            // === HISTORY LIST ===
-            if (history.isNotEmpty)
-              SliverToBoxAdapter(
-                child: AnimatedBuilder(
-                  animation: _listAnim,
-                  builder: (context, child) {
-                    return Transform.translate(
-                      offset: Offset(0, _listSlide.value),
-                      child: Opacity(
-                        opacity: _listFade.value,
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: _SearchHistoryList(
-                    history: history,
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: isDesktop ? 900 : double.infinity,
+          ),
+          child: SafeArea(
+            bottom: false,
+            child: CustomScrollView(
+              slivers: [
+                // === PINNED SEARCH BAR ===
+                SliverPersistentHeader(
+                  pinned: true,
+                  delegate: _SearchBarDelegate(
+                    barAnim: _barAnim,
+                    barExpand: _barExpand,
+                    controller: _controller,
+                    focusNode: _focus,
                     colors: colors,
-                    onTapQuery: (q) => _goToSearch(q),
-                    onRemove: (q) =>
-                        ref.read(searchHistoryProvider.notifier).remove(q),
-                    onClear: () =>
-                        ref.read(searchHistoryProvider.notifier).clear(),
+                    onPop: _popWithAnimation,
+                    onChanged: () => setState(() {}),
+                    onSubmit: (q) {
+                      if (q.trim().isNotEmpty) {
+                        _goToSearch(q.trim());
+                      }
+                    },
+                    onClear: () {
+                      _controller.clear();
+                      setState(() {});
+                    },
                   ),
                 ),
-              )
-            else
-              SliverFillRemaining(
-                hasScrollBody: false,
-                child: _EmptyState(colors: colors),
-              ),
-          ],
+
+                // === HISTORY LIST ===
+                if (history.isNotEmpty)
+                  SliverToBoxAdapter(
+                    child: AnimatedBuilder(
+                      animation: _listAnim,
+                      builder: (context, child) {
+                        return Transform.translate(
+                          offset: Offset(0, _listSlide.value),
+                          child: Opacity(
+                            opacity: _listFade.value,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: _SearchHistoryList(
+                        history: history,
+                        colors: colors,
+                        onTapQuery: (q) => _goToSearch(q),
+                        onRemove: (q) =>
+                            ref.read(searchHistoryProvider.notifier).remove(q),
+                        onClear: () =>
+                            ref.read(searchHistoryProvider.notifier).clear(),
+                      ),
+                    ),
+                  )
+                else
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: _EmptyState(colors: colors),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -224,7 +233,10 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
 
   @override
   Widget build(
-      BuildContext context, double shrinkOffset, bool overlapsContent) {
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
     return Container(
       color: colors.background,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
@@ -248,8 +260,11 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
         child: Row(
           children: [
             IconButton(
-              icon: Icon(Icons.arrow_back_rounded,
-                  size: 24, color: colors.textPrimary),
+              icon: Icon(
+                Icons.arrow_back_rounded,
+                size: 24,
+                color: colors.textPrimary,
+              ),
               onPressed: onPop,
             ),
             Expanded(
@@ -257,17 +272,13 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
                 controller: controller,
                 focusNode: focusNode,
                 textInputAction: TextInputAction.search,
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontSize: 16,
-                ),
+                style: TextStyle(color: colors.textPrimary, fontSize: 16),
                 decoration: InputDecoration(
                   hintText: 'Search...',
                   hintStyle: TextStyle(color: colors.textSecondary),
                   border: InputBorder.none,
                   isCollapsed: true,
-                  contentPadding:
-                      const EdgeInsets.symmetric(vertical: 14),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 onChanged: (_) => onChanged(),
                 onSubmitted: onSubmit,
@@ -275,8 +286,11 @@ class _SearchBarDelegate extends SliverPersistentHeaderDelegate {
             ),
             if (controller.text.isNotEmpty)
               IconButton(
-                icon: Icon(Icons.close_rounded,
-                    size: 22, color: colors.textPrimary),
+                icon: Icon(
+                  Icons.close_rounded,
+                  size: 22,
+                  color: colors.textPrimary,
+                ),
                 onPressed: onClear,
               )
             else
@@ -386,21 +400,14 @@ class _HistoryTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
           child: Row(
             children: [
-              Icon(
-                Icons.history_rounded,
-                size: 20,
-                color: colors.textTertiary,
-              ),
+              Icon(Icons.history_rounded, size: 20, color: colors.textTertiary),
               const SizedBox(width: 14),
               Expanded(
                 child: Text(
                   query,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 16,
-                  ),
+                  style: TextStyle(color: colors.textPrimary, fontSize: 16),
                 ),
               ),
               IconButton(
@@ -429,18 +436,11 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.search_rounded,
-            color: colors.textTertiary,
-            size: 48,
-          ),
+          Icon(Icons.search_rounded, color: colors.textTertiary, size: 48),
           const SizedBox(height: 12),
           Text(
             'Start typing to search',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 14,
-            ),
+            style: TextStyle(color: colors.textSecondary, fontSize: 14),
           ),
         ],
       ),

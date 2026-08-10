@@ -6,11 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/haptic_helper.dart';
 import '../../core/providers.dart';
+import 'desktop_layout.dart';
 
 Future<void> showSleepTimerSheet(BuildContext context) {
   if (ModalRoute.of(context)?.isCurrent != true) return Future.value();
-  return showModalBottomSheet<void>(
+  return showDesktopModalSheet<void>(
     context: context,
+    maxWidth: 520,
     backgroundColor: Colors.transparent,
     isScrollControlled: true,
     showDragHandle: false,
@@ -38,7 +40,9 @@ class _ViscousScrollPhysics extends ScrollPhysics {
 
   @override
   Simulation? createBallisticSimulation(
-      ScrollMetrics position, double velocity) {
+    ScrollMetrics position,
+    double velocity,
+  ) {
     final double clampedVelocity = velocity.clamp(-650.0, 650.0);
     return super.createBallisticSimulation(position, clampedVelocity);
   }
@@ -83,7 +87,9 @@ class _SleepTimerSheetState extends ConsumerState<_SleepTimerSheet> {
   }
 
   bool _onScrollNotification(
-      ScrollNotification scrollInfo, double tickSpacing) {
+    ScrollNotification scrollInfo,
+    double tickSpacing,
+  ) {
     if (scrollInfo is ScrollUpdateNotification) {
       int newIndex = (_scrollController.offset / tickSpacing).round();
       newIndex = newIndex.clamp(0, 116); // 116 + 4 = 120 минут макс.
@@ -208,8 +214,8 @@ class _SleepTimerSheetState extends ConsumerState<_SleepTimerSheet> {
                           builder: (context, _) {
                             final double scrollOffset =
                                 _scrollController.hasClients
-                                    ? _scrollController.offset
-                                    : 0.0;
+                                ? _scrollController.offset
+                                : 0.0;
 
                             final double itemOffset = index * tickSpacing;
                             final double distFromCenter =
@@ -218,8 +224,10 @@ class _SleepTimerSheetState extends ConsumerState<_SleepTimerSheet> {
                             final double stepDist =
                                 distFromCenter / tickSpacing;
 
-                            final double centerFactor =
-                                (1.0 - stepDist).clamp(0.0, 1.0);
+                            final double centerFactor = (1.0 - stepDist).clamp(
+                              0.0,
+                              1.0,
+                            );
 
                             // 1. Прозрачность (Opacity)
                             double opacity;
@@ -228,14 +236,13 @@ class _SleepTimerSheetState extends ConsumerState<_SleepTimerSheet> {
                             } else if (stepDist <= 2.0) {
                               opacity = 1.0 - (stepDist / 2.0) * 0.30;
                             } else {
-                              final double progress =
-                                  ((stepDist - 2.0) / 6.0).clamp(0.0, 1.0);
+                              final double progress = ((stepDist - 2.0) / 6.0)
+                                  .clamp(0.0, 1.0);
                               opacity = 0.70 - (progress * 0.55);
                             }
 
                             // 2. Ширина
-                            final double tickWidth =
-                                3.0 + (3.0 * centerFactor);
+                            final double tickWidth = 3.0 + (3.0 * centerFactor);
 
                             // 3. Высота
                             double tickHeight;
@@ -261,8 +268,9 @@ class _SleepTimerSheetState extends ConsumerState<_SleepTimerSheet> {
                                   height: tickHeight,
                                   decoration: BoxDecoration(
                                     color: Color.lerp(
-                                      colors.textPrimary
-                                          .withValues(alpha: opacity),
+                                      colors.textPrimary.withValues(
+                                        alpha: opacity,
+                                      ),
                                       colors.textPrimary,
                                       centerFactor,
                                     ),
@@ -293,10 +301,7 @@ class _SleepTimerSheetState extends ConsumerState<_SleepTimerSheet> {
                 children: [
                   Text(
                     'End of song',
-                    style: TextStyle(
-                      color: colors.textSecondary,
-                      fontSize: 16,
-                    ),
+                    style: TextStyle(color: colors.textSecondary, fontSize: 16),
                   ),
                   const SizedBox(width: 4),
                   Icon(
