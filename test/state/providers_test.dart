@@ -5,18 +5,13 @@ import 'package:player/core/providers.dart';
 import 'package:player/core/history_repository.dart';
 import '../setup/test_harness.dart';
 
-/// Создаёт Notifier и ждёт завершения его асинхронной инициализации.
-///
-/// Большинство Notifier'ов запускают `_load()` в конструкторе (fire-and-forget).
-/// Два последовательных `Duration.zero` гарантируют, что микротаска
-/// init'а отработала до возврата из этой функции.
-/// Поскольку `_load()` читает только из локального SQLite (без сети),
-/// этого достаточно для детерминизма.
-Future<T> _createAndAwaitLoad<T extends StateNotifier>(T notifier) async {
-  // Даём микротаске конструктора стартовать.
-  await Future<void>.delayed(Duration.zero);
-  // Ещё один tick — гарантируем что _load() завершился.
-  await Future<void>.delayed(Duration.zero);
+/// Ждёт завершения асинхронной инициализации нотифаера через его
+/// `@visibleForTesting ready` Future. Заменяет тайминговый хак с
+/// `Future.delayed(Duration.zero)`.
+Future<T> _readyNotifier<T extends StateNotifier>(T notifier) async {
+  // Все нотифаеры имеют @visibleForTesting getter ready.
+  // ignore: invalid_use_of_visible_for_testing_member
+  await (notifier as dynamic).ready;
   return notifier;
 }
 
@@ -30,7 +25,7 @@ void main() {
     late SearchHistoryNotifier notifier;
 
     setUp(() async {
-      notifier = await _createAndAwaitLoad(SearchHistoryNotifier());
+      notifier = await _readyNotifier(SearchHistoryNotifier());
     });
 
     tearDown(() async {
@@ -88,7 +83,7 @@ void main() {
     late HistoryLimitNotifier notifier;
 
     setUp(() async {
-      notifier = await _createAndAwaitLoad(HistoryLimitNotifier());
+      notifier = await _readyNotifier(HistoryLimitNotifier());
     });
 
     test('initial limit is default', () {
@@ -112,7 +107,7 @@ void main() {
     late VibrationNotifier notifier;
 
     setUp(() async {
-      notifier = await _createAndAwaitLoad(VibrationNotifier());
+      notifier = await _readyNotifier(VibrationNotifier());
     });
 
     test('toggle flips value', () async {
@@ -141,7 +136,7 @@ void main() {
     late SearchViewModeNotifier notifier;
 
     setUp(() async {
-      notifier = await _createAndAwaitLoad(SearchViewModeNotifier());
+      notifier = await _readyNotifier(SearchViewModeNotifier());
     });
 
     test('default is grid', () {
@@ -166,18 +161,18 @@ void main() {
     late AppThemeModeNotifier notifier;
 
     setUp(() async {
-      notifier = await _createAndAwaitLoad(AppThemeModeNotifier());
+      notifier = await _readyNotifier(AppThemeModeNotifier());
     });
 
-    test('default is dynamic', () {
+    test('default is fixed (design contract: gray palette)', () {
+      expect(notifier.state, AppThemeMode.fixed);
+    });
+
+    test('toggle switches fixed/dynamic', () async {
+      await notifier.toggle();
       expect(notifier.state, AppThemeMode.dynamic);
-    });
-
-    test('toggle switches dynamic/fixed', () async {
       await notifier.toggle();
       expect(notifier.state, AppThemeMode.fixed);
-      await notifier.toggle();
-      expect(notifier.state, AppThemeMode.dynamic);
     });
 
     test('setMode updates', () async {

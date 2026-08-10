@@ -3,6 +3,7 @@ import 'package:player/core/app_database.dart';
 import 'package:player/core/history_repository.dart';
 import 'package:player/models/track.dart';
 import 'package:player/models/playlist.dart';
+import 'package:sqflite/sqflite.dart';
 import '../setup/test_harness.dart';
 
 Track _testTrack(String id) => Track(
@@ -296,6 +297,55 @@ void main() {
         '"playlist_covers":[],"listen_history":[],'
         '"search_history":[],"settings":[]}');
       expect(await AppDatabase.instance.loadPlaylists(), isEmpty);
+    });
+  });
+
+  group('AppDatabase - Migration v3→v4', () {
+    test('v3→v4 clears artwork cache entries', () async {
+      // Закрываем текущую БД v4
+      await AppDatabase.instance.close();
+
+      // Создаём БД v3 напрямую через sqflite,
+      // симулируя состояние до миграции v3→v4
+      final dbPath = AppDatabase.testDbPath!;
+      final v3db = await openDatabase(
+        dbPath,
+        version: 3,
+        onCreate: (db, version) async {
+          // Воссоздаём минимальный набор таблиц (достаточный для теста)
+          await db.execute('''CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL)''');
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {},
+      );
+
+      // Вставляем тестовые artwork-кэш записи (имитация v3)
+      await v3db.insert('settings', {'key': 'artwork_v3_artist1_title1', 'value': 'https://img.example.com/1.jpg'});
+      await v3db.insert('settings', {'key': 'artwork_v3_artist2_title2', 'value': ''});  // пустой — тоже должен удалиться
+      await v3db.insert('settings', {'key': 'artwork_v3_artist3_title3', 'value': 'https://img.example.com/3.jpg'});
+      await v3db.insert('settings', {'key': 'theme', 'value': 'dark'});  // не-artwork ключ — должен остаться
+      await v3db.insert('settings', {'key': 'migration_v1_done', 'value': '1'});
+
+      await v3db.close();
+
+      // Теперь открываем БД как v4 — это запустит _onUpgrade v3→v4
+      AppDatabase.testDbPath = dbPath;
+      // Принудительно закрываем (хотя уже закрыто) и переоткрываем
+      await AppDatabase.instance.close();
+      final db = await AppDatabase.instance.database;
+
+      // Проверяем: artwork-записи удалены
+      final rows = await db.query('settings');
+      final keys = rows.map((r) => r['key'] as String).toList();
+
+      expect(keys.contains('artwork_v3_artist1_title1'), false,
+          reason: 'artwork_v3_* записи должны быть удалены миграцией v3→v4');
+      expect(keys.contains('artwork_v3_artist2_title2'), false);
+      expect(keys.contains('artwork_v3_artist3_title3'), false);
+
+      // Не-artwork ключи сохранились
+      expect(keys.contains('theme'), true);
+      expect(keys.contains('migration_v1_done'), true);
     });
   });
 }

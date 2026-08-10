@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -134,10 +135,32 @@ class YoutubeCache {
   bool isPinned(String id) => _pinnedIds.contains(id);
 
   // ═══════════════════════════════════════════════════════════════════
+  //  TEST HOOKS
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Тестовый хук: подменяет каталог аудио-кэша напрямую, минуя
+  /// path_provider. После теста вернуть `null`.
+  @visibleForTesting
+  void setAudioDirForTesting(Directory? dir) => _audioDir = dir;
+
+  /// Тестовый хук: немедленный запуск проверки эвикции — без
+  /// 30-секундного дебаунса [_evictDebounce].
+  @visibleForTesting
+  Future<void> runEvictionForTesting() => _evictIfNeeded();
+
+  /// Тестовый хук: отменяет отложенный таймер эвикции, чтобы в конце
+  /// теста не оставалось pending-таймеров.
+  @visibleForTesting
+  void cancelPendingEvictionForTesting() => _evictTimer?.cancel();
+
+  // ═══════════════════════════════════════════════════════════════════
   //  INIT
   // ═══════════════════════════════════════════════════════════════════
 
   Future<Directory> _ensureAudioDir() async {
+    // Если каталог уже задан (в т.ч. тестовым хуком) — не дёргаем
+    // path_provider повторно.
+    if (_audioDir != null) return _audioDir!;
     _initFuture ??= _init();
     await _initFuture;
     return _audioDir!;
@@ -145,6 +168,7 @@ class YoutubeCache {
 
   /// Инициализирует пути кэша (используется страницей статистики).
   Future<Directory?> ensureArtworkDir() async {
+    if (_artworkDir != null) return _artworkDir;
     _initFuture ??= _init();
     await _initFuture;
     return _artworkDir;

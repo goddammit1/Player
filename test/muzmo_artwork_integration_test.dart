@@ -11,7 +11,7 @@ import 'package:player/models/track.dart';
 /// Интеграционный тест: Muzmo search → enrich/artwork Genius.
 ///
 /// Проверяет, что для треков "Psychosis — Исчезаю" / "Psychosis — Эвтаназия"
-/// обложка находится через Genius API.
+/// обложка находится через Genius API (или iTunes-фолбэк ArtworkProvider).
 ///
 /// Запуск:
 ///   flutter test --dart-define=GENIUS_TOKEN=your_token test/muzmo_artwork_integration_test.dart
@@ -62,7 +62,11 @@ void main() {
           reason: 'Обложка для "${target.artist} — ${target.title}" не найдена',
         );
         expect(artworkUrl, isNotEmpty);
-        expect(artworkUrl, contains('genius.com'));
+        expect(
+          artworkUrl,
+          anyOf(contains('genius.com'), contains('itunes.apple.com')),
+          reason: 'Обложка должна быть на genius.com или itunes.apple.com',
+        );
       }
     });
 
@@ -87,7 +91,11 @@ void main() {
       if (ArtworkProvider.instance.hasGeniusToken) {
         expect(artworkUrl, isNotNull);
         expect(artworkUrl, isNotEmpty);
-        expect(artworkUrl, contains('genius.com'));
+        expect(
+          artworkUrl,
+          anyOf(contains('genius.com'), contains('itunes.apple.com')),
+          reason: 'Обложка должна быть на genius.com или itunes.apple.com',
+        );
       }
     });
 
@@ -112,7 +120,11 @@ void main() {
       if (ArtworkProvider.instance.hasGeniusToken) {
         expect(artworkUrl, isNotNull);
         expect(artworkUrl, isNotEmpty);
-        expect(artworkUrl, contains('genius.com'));
+        expect(
+          artworkUrl,
+          anyOf(contains('genius.com'), contains('itunes.apple.com')),
+          reason: 'Обложка должна быть на genius.com или itunes.apple.com',
+        );
       }
     });
 

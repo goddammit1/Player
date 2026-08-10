@@ -3,9 +3,11 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:player/sources/youtube_source.dart';
-import 'package:player/sources/source_registry.dart';
 import 'package:player/models/track.dart';
 
+/// Live-тесты YoutubeSource (требуют сети).
+/// Unit-тесты (id/displayName, dispose, регистрация) вынесены в
+/// youtube_source_unit_test.dart.
 void main() {
   late YoutubeSource source;
 
@@ -18,11 +20,6 @@ void main() {
   });
 
   group('YoutubeSource', () {
-    test('has correct id and displayName', () {
-      expect(source.id, 'youtube');
-      expect(source.displayName, 'YouTube');
-    });
-
     test('search returns results for popular query', () async {
       final results = await source.search('rick astley never gonna', limit: 5);
       // YouTube search может работать или нет (PoToken issue),
@@ -71,24 +68,5 @@ void main() {
       }
     });
 
-    test('is registered but disabled for search', () {
-      // YouTube должен быть зарегистрирован в реестре,
-      // но исключён из поиска
-      SourceRegistry.instance.registerDefaults();
-
-      // Зарегистрирован
-      expect(SourceRegistry.instance.require('youtube').id, 'youtube');
-
-      // Но отключён для поиска
-      expect(SourceRegistry.instance.isDisabled('youtube'), isTrue);
-
-      SourceRegistry.instance.disposeAll();
-    });
-
-    test('dispose cleans up without error', () async {
-      await source.dispose();
-      // Не должен падать при повторном dispose
-      await source.dispose();
-    });
   });
 }
