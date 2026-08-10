@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/playlist.dart';
@@ -125,7 +126,10 @@ class SearchController extends StateNotifier<SearchState> {
     final results = await source.search(query);
     if (isStale()) return;
     state = state.copyWith(results: results, loading: false);
-    _enrichArtworks(source, results, query, generation);
+    // Передаём треки из state.results (а не сырые результаты), чтобы
+    // при повторном поиске enrich видел уже известные artworkUrl и
+    // пропускал треки с обложками, не гоняя лишние сетевые запросы.
+    _enrichArtworksFromState(source, query, generation);
   }
 
   /// Таймаут на один источник в режиме «all».
@@ -222,8 +226,10 @@ class SearchController extends StateNotifier<SearchState> {
         state = state.copyWith(results: mergedWithArt);
       }
 
-      // Запускаем обогащение обложками для треков этого источника.
-      _enrichArtworks(sources[index], list, query, generation);
+      // Запускаем обогащение обложками ПОСЛЕ установки state.results,
+      // чтобы enrich видел текущие artworkUrl (в т.ч. из кэша knownArt)
+      // и повторно не гонял сеть для треков с уже известными обложками.
+      _enrichArtworksFromState(sources[index], query, generation);
     }
 
     // Все источники либо ответили, либо упали по таймауту.
@@ -255,26 +261,32 @@ class SearchController extends StateNotifier<SearchState> {
   /// Запускает фоновое обогащение обложками для треков источников,
   /// которые это поддерживают (Muzmo, SoundCloud). Для остальных —
   /// no-op.
-  void _enrichArtworks(
+  ///
+  /// ВАЖНО: треки берутся из **state.results** (а не из сырого ответа
+  /// источника), чтобы при повторном поиске enrich видел уже известные
+  /// artworkUrl и пропускал треки с обложками, не гоняя лишние сетевые
+  /// запросы. Это же защищает от гонки, когда _searchAll перезаписывает
+  /// state.results свежим merged-списком — обогащение применяется к
+  /// актуальному состоянию UI.
+  void _enrichArtworksFromState(
     dynamic source,
-    List<Track> results,
     String query,
     int generation,
   ) {
-    // Обогащаем только треки этого источника (важно для режима «all»,
-    // где в списке намешаны треки разных источников).
-    final sourceTracks =
-        results.where((t) => t.sourceId == source.id).toList();
-    if (sourceTracks.isEmpty) return;
+    final sourceId = source.id;
+    final sourceTracksInState = state.results
+        .where((t) => t.sourceId == sourceId)
+        .toList();
+    if (sourceTracksInState.isEmpty) return;
 
     if (source is MuzmoSource) {
       source.enrichArtworksInBackground(
-        sourceTracks,
+        sourceTracksInState,
         _patchResults(query, generation),
       );
     } else if (source is SoundCloudSource) {
       source.enrichArtworksInBackground(
-        sourceTracks,
+        sourceTracksInState,
         _patchResults(query, generation),
       );
     }
@@ -371,8 +383,14 @@ final historyLimitProvider = StateNotifierProvider<HistoryLimitNotifier, int>(
 
 class HistoryLimitNotifier extends StateNotifier<int> {
   HistoryLimitNotifier() : super(HistoryRepository.defaultLimit) {
-    _load();
+    _ready = _load();
   }
+
+  /// Завершается после окончания инициализации (нужно в тестах для
+  /// детерминизма вместо `Future.delayed(Duration.zero)`).
+  @visibleForTesting
+  Future<void> get ready => _ready;
+  late final Future<void> _ready;
 
   Future<void> _load() async {
     await HistoryRepository.instance.ensureLoaded();
@@ -397,8 +415,12 @@ class VibrationNotifier extends StateNotifier<bool> {
   static const _key = 'vibration_enabled';
 
   VibrationNotifier() : super(true) {
-    _load();
+    _ready = _load();
   }
+
+  @visibleForTesting
+  Future<void> get ready => _ready;
+  late final Future<void> _ready;
 
   Future<void> _load() async {
     final raw = await AppDatabase.instance.getSetting(_key);
@@ -428,8 +450,12 @@ class SearchViewModeNotifier extends StateNotifier<SearchViewMode> {
   static const _key = 'search_view_mode';
 
   SearchViewModeNotifier() : super(SearchViewMode.grid) {
-    _load();
+    _ready = _load();
   }
+
+  @visibleForTesting
+  Future<void> get ready => _ready;
+  late final Future<void> _ready;
 
   Future<void> _load() async {
     final saved = await AppDatabase.instance.getSetting(_key);
@@ -461,8 +487,12 @@ class SearchHistoryNotifier extends StateNotifier<List<String>> {
   static const _maxItems = 12;
 
   SearchHistoryNotifier() : super(const []) {
-    _load();
+    _ready = _load();
   }
+
+  @visibleForTesting
+  Future<void> get ready => _ready;
+  late final Future<void> _ready;
 
   Future<void> _load() async {
     state = await AppDatabase.instance.getSearchHistory(_maxItems);

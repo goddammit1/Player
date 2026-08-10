@@ -563,7 +563,7 @@ class MuzmoSource implements TrackSource {
   /// Приоритетный индекс: треки переставляются так, чтобы первые N
   /// (видимая область экрана) обрабатывались раньше остальных.
   /// Это даёт быстрый показ обложек для того, что пользователь уже видит.
-  static const int _visibleCount = 5;
+  static const int _visibleCount = 8;
 
   List<int> _priorityIndices(int total) {
     final indices = <int>[];
@@ -582,7 +582,7 @@ class MuzmoSource implements TrackSource {
     List<Track> tracks, [
     void Function(List<Track> updated)? onUpdate,
   ]) async {
-    const concurrency = 4;
+    const concurrency = 6;
     final order = _priorityIndices(tracks.length);
     var pos = 0;
 
