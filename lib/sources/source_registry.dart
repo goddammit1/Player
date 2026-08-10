@@ -60,5 +60,6 @@ class SourceRegistry {
       await s.dispose();
     }
     _sources.clear();
+    _disabledForSearch.clear();
   }
 }
