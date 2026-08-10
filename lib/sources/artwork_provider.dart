@@ -64,15 +64,75 @@ class ArtworkProvider {
     ),
   );
 
+  /// TTL найденных URL обложек. Пока запись свежая — [findArtwork] отдаёт её
+  /// из кэша (память/SQLite) без единого запроса в сеть. После истечения URL
+  /// считается устаревшим, и следующий вызов [findArtwork] лениво перезапросит
+  /// Genius/iTunes — так подхватывается смена обложки на стороне Genius,
+  /// не дёргая API на каждый трек при каждом проигрывании.
+  static const Duration foundUrlTtl = Duration(days: 7);
+
   final Map<String, String> _memCache = {};
+  /// Момент записи URL в [_memCache] — по нему проверяется [foundUrlTtl]
+  /// в рамках одной сессии.
+  final Map<String, DateTime> _memStamp = {};
   final Map<String, Future<String?>> _inFlight = {};
+
+  // -------------------------------------------------------------------
+  //  Тестовые хуки: подменяют сетевые источники (Genius/iTunes) без HTTP.
+  // -------------------------------------------------------------------
+
+  @visibleForTesting
+  Future<String?> Function(String artist, String title, int preferredSize)?
+      geniusFetcherOverride;
+
+  @visibleForTesting
+  Future<String?> Function(String artist, String title, int preferredSize)?
+      itunesFetcherOverride;
 
   /// Сбрасывает in-memory кэш URL обложек, заставляя [findArtwork]
   /// перечитать SQLite и/или перезапросить сеть при следующем вызове.
   void clearMemCache() {
     _memCache.clear();
+    _memStamp.clear();
     _inFlight.clear();
   }
+
+  /// Тестовый хук: пишет URL прямо в in-memory кэш (как если бы он был
+  /// найден через Genius/iTunes и закэширован). Не трогает сеть и БД.
+  @visibleForTesting
+  void cacheArtworkForTesting(String artist, String title, String url) {
+    final key = _key(artist, title);
+    _memCache[key] = url;
+    _memStamp[key] = DateTime.now();
+  }
+
+  /// Тестовый хук: «состаривает» in-memory запись за пределы [foundUrlTtl],
+  /// чтобы [findArtwork] при следующем вызове перезапросил сеть/SQLite.
+  @visibleForTesting
+  void expireArtworkForTesting(String artist, String title) {
+    final key = _key(artist, title);
+    _memStamp[key] =
+        DateTime.now().subtract(foundUrlTtl + const Duration(minutes: 1));
+  }
+
+  /// Тестовый хук: пишет URL в SQLite-кэш с заданным моментом нахождения.
+  @visibleForTesting
+  Future<void> cacheArtworkToDbForTesting(
+    String artist,
+    String title,
+    String url,
+    DateTime foundAt,
+  ) async {
+    await _cacheToDb(
+      '$_prefsPrefix${_key(artist, title)}',
+      _encodeCacheValue(url, foundAt),
+    );
+  }
+
+  /// Тестовый хук: полный ключ SQLite-записи кэша для [artist]/[title].
+  @visibleForTesting
+  String cacheKeyForTesting(String artist, String title) =>
+      '$_prefsPrefix${_key(artist, title)}';
 
   Future<void> _cacheToDb(String key, String value) async {
     try {
@@ -203,32 +263,133 @@ class ArtworkProvider {
     return s.toLowerCase().replaceAll(_reNonWord, '').replaceAll(_reSpaces, ' ').trim();
   }
 
+  // ---------------------------------------------------------------------
+  //  TTL-хелперы кэша найденных URL
+  // ---------------------------------------------------------------------
+
+  /// Кодирует значение SQLite-кэша: JSON {"u": url, "t": ms-epoch}.
+  /// По [foundAt] после перезапуска проверяется TTL записи.
+  static String _encodeCacheValue(String url, DateTime foundAt) =>
+      jsonEncode({'u': url, 't': foundAt.millisecondsSinceEpoch});
+
+  /// Декодирует значение SQLite-кэша.
+  ///
+  /// Поддерживает новый формат (JSON с URL и timestamp) и старый — «голый»
+  /// URL, сохранённый до введения TTL. Для старых записей timestamp
+  /// неизвестен (`foundAt == null`): они считаются свежими и мигрируются
+  /// в новый формат при первом чтении, чтобы не устраивать шторм
+  /// перезапросов после обновления приложения.
+  static ({String? url, DateTime? foundAt}) _decodeCacheValue(String raw) {
+    if (raw.startsWith('{')) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, dynamic>) {
+          final url = decoded['u'] as String?;
+          final t = decoded['t'];
+          final ts = switch (t) {
+            int i => i,
+            num n => n.toInt(),
+            _ => null,
+          };
+          if (url != null && url.isNotEmpty) {
+            return (
+              url: url,
+              foundAt: ts != null
+                  ? DateTime.fromMillisecondsSinceEpoch(ts)
+                  : null,
+            );
+          }
+        }
+      } catch (_) {}
+      return (url: null, foundAt: null);
+    }
+    return (url: raw, foundAt: null);
+  }
+
+  /// Кэширует найденный URL: в память (с TTL-меткой) и в SQLite (с
+  /// timestamp для проверки [foundUrlTtl] после перезапуска).
+  void _cacheFound(String key, String url) {
+    final now = DateTime.now();
+    _memCache[key] = url;
+    _memStamp[key] = now;
+    unawaited(_cacheToDb('$_prefsPrefix$key', _encodeCacheValue(url, now)));
+  }
+
+  /// Возвращает URL обложки для трека.
+  ///
+  /// Порядок источников:
+  /// 1. in-memory кэш — пока запись не старше [foundUrlTtl], сеть не трогаем;
+  /// 2. SQLite-кэш — то же правило TTL, переживает перезапуски;
+  /// 3. Genius → iTunes. Если найден новый URL — кэшируется со свежим
+  ///    timestamp. Если ничего нового нет (или сеть недоступна), а в SQLite
+  ///    лежал устаревший URL — возвращается он как запасной вариант, при
+  ///    этом TTL НЕ обновляется, и следующий вызов снова перезапросит сеть.
   Future<String?> findArtwork(String artist, String title, {int preferredSize = 300}) async {
     final key = _key(artist, title);
+    final now = DateTime.now();
 
+    // ---- 1. In-memory кэш (на сессию) с TTL ----
     final mem = _memCache[key];
-    if (mem != null) return mem.isEmpty ? null : mem;
+    if (mem != null) {
+      if (mem.isEmpty) {
+        // Отрицательный результат (обложка не найдена) кэшируется только на
+        // 2 минуты — таймер в _findArtworkNetwork сам удалит запись.
+        return null;
+      }
+      final memAt = _memStamp[key];
+      if (memAt != null && now.difference(memAt) < foundUrlTtl) {
+        return mem;
+      }
+      // URL устарел — выбрасываем и перезапрашиваем ниже.
+      _memCache.remove(key);
+      _memStamp.remove(key);
+    }
 
+    // ---- 2. SQLite-кэш (переживает перезапуски) с TTL ----
+    String? staleFallback;
     try {
       final saved = await AppDatabase.instance.getSetting('$_prefsPrefix$key');
       if (saved != null) {
-        _memCache[key] = saved;
         if (saved.isEmpty) {
           // Удаляем «пустой» кэш из БД — он мог остаться от старых версий.
           // После удаления пробуем перезапросить сеть.
           unawaited(_cleanupEmptyCache(key));
-          return null;
+        } else {
+          final (:url, :foundAt) = _decodeCacheValue(saved);
+          if (url != null && url.isNotEmpty) {
+            final fresh =
+                foundAt == null || now.difference(foundAt) < foundUrlTtl;
+            if (fresh) {
+              _memCache[key] = url;
+              _memStamp[key] = now;
+              // Старые записи (голый URL без timestamp) мигрируем в новый
+              // формат, чтобы TTL отсчитывался от первого чтения.
+              if (foundAt == null) {
+                unawaited(
+                  _cacheToDb('$_prefsPrefix$key', _encodeCacheValue(url, now)),
+                );
+              }
+              return url;
+            }
+            staleFallback = url;
+          }
         }
-        return saved;
       }
     } catch (_) {}
 
+    // ---- 3. Сеть (только если свежего значения нет) ----
     final existing = _inFlight[key];
     if (existing != null) return existing;
 
     _logTokenStatusOnce();
 
-    final future = _findArtworkNetwork(artist, title, key, preferredSize);
+    final future = _findArtworkNetwork(
+      artist,
+      title,
+      key,
+      preferredSize,
+      staleFallback: staleFallback,
+    );
     _inFlight[key] = future;
     try {
       return await future;
@@ -241,8 +402,9 @@ class ArtworkProvider {
     String artist,
     String title,
     String key,
-    int preferredSize,
-  ) async {
+    int preferredSize, {
+    String? staleFallback,
+  }) async {
     // Genius и iTunes запускаем параллельно, но НЕ ждём оба через Future.wait:
     // если Genius уже вернул URL — сразу возвращаем, не дожидаясь iTunes.
     // Это экономит 300–800 мс на трек (iTunes обычно отвечает позже).
@@ -256,8 +418,7 @@ class ArtworkProvider {
     if (geniusResult != null &&
         geniusResult.isNotEmpty &&
         geniusResult != _networkErrorMarker) {
-      _memCache[key] = geniusResult;
-      unawaited(_cacheToDb('$_prefsPrefix$key', geniusResult));
+      _cacheFound(key, geniusResult);
       if (kDebugMode) {
         debugPrint(
           '[ArtworkProvider] "$artist - $title" -> GENIUS (early) ($geniusResult)',
@@ -289,11 +450,16 @@ class ArtworkProvider {
     }
 
     if (found) {
-      _memCache[key] = url;
-      unawaited(
-        _cacheToDb('$_prefsPrefix$key', url),
-      );
+      _cacheFound(key, url);
       return url;
+    }
+
+    // Нового URL нет (не найден или сеть недоступна), но в SQLite лежит
+    // устаревший — отдаём его как запасной вариант, чтобы обложка не
+    // исчезла из-за сбоя API. TTL при этом НЕ обновляется: следующий
+    // вызов снова перезапросит Genius/iTunes.
+    if (staleFallback != null && staleFallback.isNotEmpty) {
+      return staleFallback;
     }
 
     // Пустой результат кэшируем только в память (на сессию).
@@ -302,11 +468,13 @@ class ArtworkProvider {
     //  а также для случаев временной недоступности API).
     if (!networkError) {
       _memCache[key] = '';
+      _memStamp[key] = DateTime.now();
       // Инвалидируем кэш через 2 минуты — позволяет перезапросить обложку
       // в рамках одной сессии (например, после восстановления сети).
       Timer(const Duration(minutes: 2), () {
         if (_memCache[key] == '') {
           _memCache.remove(key);
+          _memStamp.remove(key);
         }
       });
     }
@@ -332,6 +500,9 @@ class ArtworkProvider {
   // ---------------------------------------------------------------------
 
   Future<String?> _fetchGenius(String artist, String title, int preferredSize) async {
+    final override = geniusFetcherOverride;
+    if (override != null) return override(artist, title, preferredSize);
+
     if (_geniusToken.isEmpty) return null;
 
     final artists = _splitArtists(artist);
@@ -587,6 +758,9 @@ class ArtworkProvider {
   // ---------------------------------------------------------------------
 
   Future<String?> _fetchItunes(String artist, String title, int preferredSize) async {
+    final override = itunesFetcherOverride;
+    if (override != null) return override(artist, title, preferredSize);
+
     final artists = _splitArtists(artist);
     final (:cleanTitle, :versionHints) = _extractVersionHints(title);
     final cleanArtist = _cleanSearchTerm(artists.firstOrNull ?? artist);

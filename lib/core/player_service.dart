@@ -516,7 +516,9 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
         // Предзагружаем текущую обложку для быстрого отображения
         _precacheImage(url);
       }
-      // Асинхронно проверяем, не обновилась ли обложка (Genius/iTunes)
+      // Лениво проверяем, не устарела ли обложка (Genius/iTunes):
+      // свежий URL возвращается из кэша мгновенно, устаревший (TTL истёк)
+      // перезапрашивается — так подхватываются смены обложки в Genius.
       _fetchAndApplyArtwork(track, index);
     }
     final next = index + 1;
@@ -530,25 +532,38 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     }
   }
 
+  /// Лениво обновляет обложку трека в очереди через [ArtworkProvider].
+  ///
+  /// Сам провайдер решает, когда реально ходить в сеть: свежий URL (в
+  /// пределах [ArtworkProvider.foundUrlTtl]) отдаётся из кэша без запросов,
+  /// устаревший — перезапрашивается у Genius/iTunes. Это позволяет
+  /// подхватывать смену обложки на стороне Genius при очередном
+  /// проигрывании трека, не дёргая API на каждый трек.
   void _fetchAndApplyArtwork(Track track, int queueIndex) {
     ArtworkProvider.instance.findArtwork(track.artist, track.title, preferredSize: 600).then((url) {
       if (url == null || url.isEmpty) return;
       if (queueIndex < 0 || queueIndex >= _queue.length) return;
 
-      // Проверяем, изменился ли URL — если нет, ничего не делаем
-      if (track.artworkUrl == url) return;
+      // Сравниваем с актуальной записью очереди: пока URL летел из сети,
+      // обложка могла обновиться другим вызовом.
+      final current = _queue[queueIndex];
+      if (current.artworkUrl == url) return;
 
       // Обновляем трек в очереди
-      final updated = track.copyWith(artworkUrl: url);
+      final updated = current.copyWith(artworkUrl: url);
       _queue[queueIndex] = updated;
-      // Обновляем mediaItem для UI (шторка, виджет)
-      mediaItem.add(_toMediaItem(updated));
-      // Обновляем queue stream
+
+      // Обновляем mediaItem только для активного трека — иначе шторка
+      // уведомлений может на секунду показать обложку следующего трека.
+      if (queueIndex == _currentIndex) {
+        mediaItem.add(_toMediaItem(updated));
+      }
+      // Обновляем queue stream — список обложек в UI должен быть актуален.
       queue.add(_queue.map(_toMediaItem).toList());
       // Пробрасываем обложку в плейлисты — чтобы она отображалась и сохранялась в БД
-      PlaylistRepository.instance.updateTrackArtwork(track.globalId, url);
+      PlaylistRepository.instance.updateTrackArtwork(current.globalId, url);
       // И в историю прослушивания
-      unawaited(HistoryRepository.instance.updateTrackArtwork(track.globalId, url));
+      unawaited(HistoryRepository.instance.updateTrackArtwork(current.globalId, url));
     }).catchError((_) {});
   }
 
