@@ -73,7 +73,8 @@ class PlaylistRepository {
       // Логируем ошибку, но не сбрасываем текущий список на пустой —
       // иначе при любой ошибке БД все данные теряются необратимо.
       debugPrint(
-          '[PlaylistRepository] Failed to load playlists, keeping previous state if any: $e\n$st');
+        '[PlaylistRepository] Failed to load playlists, keeping previous state if any: $e\n$st',
+      );
       // Если список был пуст (первый запуск) — остаёмся с пустым списком.
       // Если были данные (reload после ошибки) — сохраняем их в памяти.
     }
@@ -193,16 +194,16 @@ class PlaylistRepository {
   /// Копия трека без обложки. Нужна в [resetAllTrackArtworks]: обычный
   /// `copyWith(artworkUrl: null)` не сбрасывает URL — copyWith игнорирует null.
   static Track _withoutArtwork(Track t) => Track(
-        id: t.id,
-        sourceId: t.sourceId,
-        title: t.title,
-        artist: t.artist,
-        duration: t.duration,
-        artworkUrl: null,
-        qualityScore: t.qualityScore,
-        qualityLabel: t.qualityLabel,
-        extra: t.extra,
-      );
+    id: t.id,
+    sourceId: t.sourceId,
+    title: t.title,
+    artist: t.artist,
+    duration: t.duration,
+    artworkUrl: null,
+    qualityScore: t.qualityScore,
+    qualityLabel: t.qualityLabel,
+    extra: t.extra,
+  );
 
   void _notifyAndSchedulePersist() {
     _controller.add(List.unmodifiable(_list));
@@ -219,7 +220,8 @@ class PlaylistRepository {
       // загрузятся с диска (устаревшие). Пользователь может потерять
       // последние изменения, но не все данные.
       debugPrint(
-          '[PlaylistRepository] Failed to persist playlists to DB: $e\n$st');
+        '[PlaylistRepository] Failed to persist playlists to DB: $e\n$st',
+      );
     }
   }
 
@@ -478,14 +480,17 @@ class PlaylistRepository {
     _applyArtworkUpdates([(globalId: globalId, url: artworkUrl)]);
   }
 
-  /// Сбрасывает [artworkUrl] на null у всех треков во всех плейлистах.
-  /// Нужно после очистки кэша обложек — треки перезапросят обложки
-  /// через ArtworkProvider при следующем проигрывании.
+  /// Сбрасывает [artworkUrl] на null у всех треков во всех плейлистах
+  /// и сразу запускает фоновую дозагрузку обложек через
+  /// [_enrichMissingArtworks], чтобы плейлисты снова заполнились без
+  /// ручного воспроизведения каждого трека.
   ///
   /// Не трогает локальные пути кастомных обложек (`/...`, `file://...`) —
   /// они живут на диске и не зависят от кэша обложек. Также отменяет
-  /// накопленный батч и инвалидирует in-flight запросы, чтобы прилетевшие
-  /// после сброса URL не вернули обложки обратно.
+  /// накопленный батч и инвалидирует in-flight запросы, чтобы URL,
+  /// прилетевшие ДО сброса, не вернули обложки обратно; запросы, запущенные
+  /// самим сбросом (уже после инкремента [_artworkGeneration]), применяются
+  /// как обычно.
   void resetAllTrackArtworks() {
     _artworkGeneration++;
     _artworkFlushTimer?.cancel();
@@ -509,6 +514,11 @@ class PlaylistRepository {
       return p;
     }).toList();
     if (anyChanged) _notifyAndSchedulePersist();
+
+    // Перезапускаем фоновую дозагрузку: кандидаты — треки, у которых теперь
+    // нет URL. Старые in-flight запросы уже инвалидированы инкрементом
+    // _artworkGeneration выше, поэтому их результаты не применятся.
+    _enrichMissingArtworks();
   }
 
   /// Перечитывает данные из БД (нужно после импорта полного бэкапа).
