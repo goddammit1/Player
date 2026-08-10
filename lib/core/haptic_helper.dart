@@ -1,8 +1,9 @@
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:vibration/vibration.dart';
 
-import 'providers.dart'; // путь к вашему vibrationEnabledProvider
+import 'providers.dart';
 
 // ============================================================
 //  Универсальный HapticHelper
@@ -15,6 +16,13 @@ class HapticHelper {
 
   static Future<void> initialize() async {
     if (_checked) return;
+    // На десктопе вибрации нет — сразу помечаем как "нет вибромотора".
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      _hasVibrator = false;
+      _hasAmplitude = false;
+      _checked = true;
+      return;
+    }
     try {
       _hasVibrator = await Vibration.hasVibrator();
       if (_hasVibrator) {

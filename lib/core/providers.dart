@@ -10,7 +10,7 @@ import '../sources/soundcloud_source.dart';
 import '../sources/source_registry.dart';
 import 'app_database.dart';
 import 'history_repository.dart';
-import 'player_service.dart';
+import 'player_service_interface.dart';
 import 'playlist_repository.dart';
 export 'appearance_provider.dart';
 export 'dynamic_colors.dart';
@@ -18,7 +18,7 @@ export 'global_theme_provider.dart';
 
 /// PlayerService инициализируется в main.dart и пробрасывается сюда через
 /// override. См. main.dart -> ProviderScope(overrides: [...]).
-final playerServiceProvider = Provider<PlayerService>((ref) {
+final playerServiceProvider = Provider<PlayerServiceInterface>((ref) {
   throw UnimplementedError('Override in ProviderScope');
 });
 

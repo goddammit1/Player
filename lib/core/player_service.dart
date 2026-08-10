@@ -17,6 +17,7 @@ import 'history_repository.dart';
 import 'playlist_repository.dart';
 import 'youtube_cache.dart';
 import 'artwork_helper.dart';
+import 'player_service_interface.dart';
 
 // print -> adb logcat (tag: flutter)
 // ignore: avoid_print
@@ -24,12 +25,26 @@ void _log(String msg) => print('[PlayerService] $msg');
 
 enum SleepTimerMode { off, time, endOfTrack }
 
-class PlayerService extends BaseAudioHandler with SeekHandler {
+class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerServiceInterface {
   static const String _boostDbKey = 'boost_db_v1';
-  static const double maxBoostDb = 12.0;
+  static const double maxBoostDb = kMaxBoostDb;
+
+  @override
+  MediaItem? get mediaItemValue => mediaItem.value;
+
+  @override
+  Future<void> removeFromQueue(int queueIndex) => removeQueueItemAt(queueIndex);
+
+  @override
+  Future<void> playIndex(int index) => _playIndex(index);
+
+  @override
+  List<Track> get trackQueue => _queue;
 
   final BehaviorSubject<double> _boostDb = BehaviorSubject<double>.seeded(0.0);
+  @override
   Stream<double> get boostDbStream => _boostDb.stream;
+  @override
   double get boostDb => _boostDb.value;
 
   late final AndroidLoudnessEnhancer _loudnessEnhancer;
@@ -40,16 +55,21 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   final BehaviorSubject<LoopMode> _loopMode =
       BehaviorSubject<LoopMode>.seeded(LoopMode.off);
+  @override
   Stream<LoopMode> get loopModeStream => _loopMode.stream;
+  @override
   LoopMode get loopMode => _loopMode.value;
 
   final BehaviorSubject<int> _currentIndexSubject =
       BehaviorSubject<int>.seeded(-1);
+  @override
   Stream<int> get currentIndexStream => _currentIndexSubject.stream;
+  @override
   int get currentIndex => _currentIndex;
 
   int _loadGeneration = 0;
   bool _isLoading = false;
+  @override
   bool get isLoading => _isLoading;
 
   Track? _pendingHistoryTrack;
@@ -58,12 +78,16 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   // ===== SLEEP TIMER =====
   final BehaviorSubject<SleepTimerMode> _sleepTimerMode =
       BehaviorSubject.seeded(SleepTimerMode.off);
+  @override
   Stream<SleepTimerMode> get sleepTimerModeStream => _sleepTimerMode.stream;
+  @override
   SleepTimerMode get sleepTimerMode => _sleepTimerMode.value;
 
   final BehaviorSubject<DateTime?> _sleepTimerEndTime =
       BehaviorSubject.seeded(null);
+  @override
   Stream<DateTime?> get sleepTimerEndTimeStream => _sleepTimerEndTime.stream;
+  @override
   DateTime? get sleepTimerEndTime => _sleepTimerEndTime.value;
 
   Timer? _sleepTimer;
@@ -137,6 +161,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== SLEEP TIMER METHODS =====
 
+  @override
   void startSleepTimer(Duration duration) {
     _sleepTimer?.cancel();
     _sleepTimerMode.add(SleepTimerMode.time);
@@ -154,6 +179,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     });
   }
 
+  @override
   Future<void> setStopAtEndOfSong() async {
     _sleepTimer?.cancel();
     _sleepTimerMode.add(SleepTimerMode.endOfTrack);
@@ -164,6 +190,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     } catch (_) {}
   }
 
+  @override
   void cancelSleepTimer() {
     _sleepTimer?.cancel();
     _sleepTimerMode.add(SleepTimerMode.off);
@@ -236,6 +263,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  @override
   Future<void> setBoost(double db) async {
     final clamped = db.clamp(0.0, maxBoostDb);
     _boostDb.add(clamped);
@@ -303,6 +331,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     await _saveSession();
   }
 
+  @override
   Future<void> setQueue(List<Track> tracks, {int startIndex = 0}) async {
     _queue
       ..clear()
@@ -316,12 +345,14 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  @override
   Future<void> addToQueue(Track track) async {
     _queue.add(track);
     queue.add([...queue.value, _toMediaItem(track)]);
     await _saveSession();
   }
 
+  @override
   Future<void> insertToQueue(Track track) async {
     final insertIndex = _currentIndex >= 0 ? _currentIndex + 1 : 0;
     _queue.insert(insertIndex, track);
@@ -482,11 +513,11 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       final track = _queue[index];
       final url = track.artworkUrl;
       if (url != null && url.isNotEmpty) {
+        // Предзагружаем текущую обложку для быстрого отображения
         _precacheImage(url);
-      } else {
-        // Обложки нет — пытаемся найти через Genius/iTunes
-        _fetchAndApplyArtwork(track, index);
       }
+      // Асинхронно проверяем, не обновилась ли обложка (Genius/iTunes)
+      _fetchAndApplyArtwork(track, index);
     }
     final next = index + 1;
     if (next < _queue.length) {
@@ -494,9 +525,8 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       final url = nextTrack.artworkUrl;
       if (url != null && url.isNotEmpty) {
         _precacheImage(url);
-      } else {
-        _fetchAndApplyArtwork(nextTrack, next);
       }
+      _fetchAndApplyArtwork(nextTrack, next);
     }
   }
 
@@ -504,6 +534,10 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     ArtworkProvider.instance.findArtwork(track.artist, track.title, preferredSize: 600).then((url) {
       if (url == null || url.isEmpty) return;
       if (queueIndex < 0 || queueIndex >= _queue.length) return;
+
+      // Проверяем, изменился ли URL — если нет, ничего не делаем
+      if (track.artworkUrl == url) return;
+
       // Обновляем трек в очереди
       final updated = track.copyWith(artworkUrl: url);
       _queue[queueIndex] = updated;
@@ -588,6 +622,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   }
 
   /// Публичный доступ для сохранения сессии из UI (например, при сворачивании).
+  @override
   Future<void> saveSession() => _saveSession();
 
   Future<void> _restoreSession() async {
@@ -679,6 +714,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== Reorder / shuffle / repeat =====
 
+  @override
   Future<void> reorderQueueItem(int oldIndex, int newIndex) async {
     if (oldIndex < 0 || oldIndex >= _queue.length) return;
     if (newIndex < 0 || newIndex >= _queue.length) return;
@@ -700,6 +736,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     await _saveSession();
   }
 
+  @override
   Future<void> shuffleQueue() async {
     if (_queue.length < 2) return;
 
@@ -725,6 +762,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     await _saveSession();
   }
 
+  @override
   Future<void> setLoopMode(LoopMode mode) async {
     _loopMode.add(mode);
     // always keep just_audio in LoopMode.off — we handle
@@ -732,6 +770,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
     await _player.setLoopMode(LoopMode.off);
   }
 
+  @override
   Future<void> cycleLoopMode() {
     final next = switch (_loopMode.value) {
       LoopMode.off => LoopMode.all,
@@ -743,9 +782,13 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
 
   // ===== Streams =====
 
+  @override
   Stream<Duration> get positionStream => _player.positionStream;
+  @override
   Stream<Duration?> get durationStream => _player.durationStream;
+  @override
   Stream<bool> get playingStream => _player.playingStream;
+  @override
   AudioPlayer get rawPlayer => _player;
 
   // ===== Helpers =====
@@ -772,6 +815,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   }
 
   /// Сбрасывает кастомную обложку трека на оригинальную (или пустую)
+  @override
   Future<void> resetCustomArtwork(String trackId) async {
     // 1. Удаляем кастомную обложку с диска и из кэша
     await ArtworkHelper.removeCustomArtwork(trackId);
@@ -834,6 +878,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   }
 
   /// Обновляет обложку трека (и в текущем проигрывателе, и во всей очереди)
+  @override
   Future<void> updateCustomArtwork(String trackId, String newPath) async {
     final newArtUri = Uri.file(newPath);
 
