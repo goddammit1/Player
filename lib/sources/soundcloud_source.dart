@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../core/youtube_cache.dart';
@@ -316,12 +318,28 @@ class SoundCloudSource implements TrackSource {
     unawaited(_enrichArtworks(mutable, onUpdate));
   }
 
+  /// Приоритетный индекс: треки переставляются так, чтобы первые N
+  /// (видимая область экрана) обрабатывались раньше остальных.
+  static const int _visibleCount = 5;
+
+  List<int> _priorityIndices(int total) {
+    final indices = <int>[];
+    for (var i = 0; i < total && i < _visibleCount; i++) {
+      indices.add(i);
+    }
+    for (var i = _visibleCount; i < total; i++) {
+      indices.add(i);
+    }
+    return indices;
+  }
+
   Future<void> _enrichArtworks(
     List<Track> tracks,
     void Function(List<Track> updated) onUpdate,
   ) async {
-    const concurrency = 2;
-    var index = 0;
+    const concurrency = 4;
+    final order = _priorityIndices(tracks.length);
+    var pos = 0;
 
     Timer? notifyTimer;
     void scheduleNotify() {
@@ -333,17 +351,21 @@ class SoundCloudSource implements TrackSource {
 
     Future<void> worker() async {
       while (true) {
-        final i = index++;
-        if (i >= tracks.length) return;
-        final t = tracks[i];
+        final i = pos++;
+        if (i >= order.length) return;
+        final idx = order[i];
+        final t = tracks[idx];
         if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) continue;
         try {
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 8));
+              .timeout(const Duration(seconds: 4));
           if (url != null && url.isNotEmpty) {
-            tracks[i] = t.copyWith(artworkUrl: url);
+            tracks[idx] = t.copyWith(artworkUrl: url);
             scheduleNotify();
+            // Прекэшируем миниатюру, чтобы к моменту перерисовки UI
+            // она уже была в дисковом кэше CachedNetworkImage.
+            unawaited(_precacheThumb(url));
           }
         } on TimeoutException {
           // Таймаут при поиске обложки — пропускаем трек
@@ -356,6 +378,36 @@ class SoundCloudSource implements TrackSource {
     await Future.wait(List.generate(concurrency, (_) => worker()));
     notifyTimer?.cancel();
     onUpdate(List<Track>.of(tracks));
+  }
+
+  /// Фоновый прекэш уменьшенной обложки в CachedNetworkImage,
+  /// чтобы UI показал картинку мгновенно, без второго сетевого круга.
+  static final Set<String> _precachedUrls = {};
+  static Future<void> _precacheThumb(String url) async {
+    if (_precachedUrls.contains(url)) return;
+    _precachedUrls.add(url);
+    try {
+      final provider = CachedNetworkImageProvider(url);
+      final config = ImageConfiguration(size: const Size(200, 200));
+      final stream = provider.resolve(config);
+      final completer = Completer<void>();
+      late ImageStreamListener listener;
+      listener = ImageStreamListener(
+        (info, _) {
+          info.image.dispose();
+          if (!completer.isCompleted) completer.complete();
+        },
+        onError: (e, stack) {
+          if (!completer.isCompleted) completer.complete();
+        },
+      );
+      stream.addListener(listener);
+      try {
+        await completer.future;
+      } finally {
+        stream.removeListener(listener);
+      }
+    } catch (_) {}
   }
 
   // ═══════════════════════════════════════════════════════════════════

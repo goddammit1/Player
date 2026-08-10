@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:just_audio/just_audio.dart';
 
@@ -558,12 +560,31 @@ class MuzmoSource implements TrackSource {
     unawaited(_enrichArtworks(mutable, onUpdate));
   }
 
+  /// Приоритетный индекс: треки переставляются так, чтобы первые N
+  /// (видимая область экрана) обрабатывались раньше остальных.
+  /// Это даёт быстрый показ обложек для того, что пользователь уже видит.
+  static const int _visibleCount = 5;
+
+  List<int> _priorityIndices(int total) {
+    final indices = <int>[];
+    // Сначала видимые (0 → _visibleCount-1)
+    for (var i = 0; i < total && i < _visibleCount; i++) {
+      indices.add(i);
+    }
+    // Затем остальные
+    for (var i = _visibleCount; i < total; i++) {
+      indices.add(i);
+    }
+    return indices;
+  }
+
   Future<void> _enrichArtworks(
     List<Track> tracks, [
     void Function(List<Track> updated)? onUpdate,
   ]) async {
-    const concurrency = 2;
-    var index = 0;
+    const concurrency = 4;
+    final order = _priorityIndices(tracks.length);
+    var pos = 0;
 
     Timer? notifyTimer;
     void scheduleNotify() {
@@ -576,16 +597,20 @@ class MuzmoSource implements TrackSource {
 
     Future<void> worker() async {
       while (true) {
-        final i = index++;
-        if (i >= tracks.length) return;
-        final t = tracks[i];
+        final i = pos++;
+        if (i >= order.length) return;
+        final idx = order[i];
+        final t = tracks[idx];
         try {
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 8));
+              .timeout(const Duration(seconds: 4));
           if (url != null && url.isNotEmpty) {
-            tracks[i] = t.copyWith(artworkUrl: url);
+            tracks[idx] = t.copyWith(artworkUrl: url);
             scheduleNotify();
+            // Прекэшируем картинку (200px — размер для списков),
+            // чтобы к моменту перерисовки UI она уже была в дисковом кэше.
+            unawaited(_precacheThumb(url));
           }
         } on TimeoutException {
           // best-effort
@@ -599,5 +624,35 @@ class MuzmoSource implements TrackSource {
 
     notifyTimer?.cancel();
     if (onUpdate != null) onUpdate(List<Track>.of(tracks));
+  }
+
+  /// Фоновый прекэш уменьшенной обложки в CachedNetworkImage,
+  /// чтобы UI показал картинку мгновенно, без второго сетевого круга.
+  static final Set<String> _precachedUrls = {};
+  static Future<void> _precacheThumb(String url) async {
+    if (_precachedUrls.contains(url)) return;
+    _precachedUrls.add(url);
+    try {
+      final provider = CachedNetworkImageProvider(url);
+      final config = ImageConfiguration(size: const Size(200, 200));
+      final stream = provider.resolve(config);
+      final completer = Completer<void>();
+      late ImageStreamListener listener;
+      listener = ImageStreamListener(
+        (info, _) {
+          info.image.dispose();
+          if (!completer.isCompleted) completer.complete();
+        },
+        onError: (e, stack) {
+          if (!completer.isCompleted) completer.complete();
+        },
+      );
+      stream.addListener(listener);
+      try {
+        await completer.future;
+      } finally {
+        stream.removeListener(listener);
+      }
+    } catch (_) {}
   }
 }

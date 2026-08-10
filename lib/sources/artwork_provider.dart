@@ -58,8 +58,8 @@ class ArtworkProvider {
 
   final Dio _dio = Dio(
     BaseOptions(
-      connectTimeout: const Duration(seconds: 5),
-      receiveTimeout: const Duration(seconds: 5),
+      connectTimeout: const Duration(seconds: 3),
+      receiveTimeout: const Duration(seconds: 3),
       validateStatus: (_) => true,
     ),
   );
@@ -203,7 +203,7 @@ class ArtworkProvider {
     return s.toLowerCase().replaceAll(_reNonWord, '').replaceAll(_reSpaces, ' ').trim();
   }
 
-  Future<String?> findArtwork(String artist, String title) async {
+  Future<String?> findArtwork(String artist, String title, {int preferredSize = 300}) async {
     final key = _key(artist, title);
 
     final mem = _memCache[key];
@@ -228,7 +228,7 @@ class ArtworkProvider {
 
     _logTokenStatusOnce();
 
-    final future = _findArtworkNetwork(artist, title, key);
+    final future = _findArtworkNetwork(artist, title, key, preferredSize);
     _inFlight[key] = future;
     try {
       return await future;
@@ -241,30 +241,41 @@ class ArtworkProvider {
     String artist,
     String title,
     String key,
+    int preferredSize,
   ) async {
-    final geniusFuture = _safeFetch(() => _fetchGenius(artist, title));
-    final itunesFuture = _safeFetch(() => _fetchItunes(artist, title));
+    // Genius и iTunes запускаем параллельно, но НЕ ждём оба через Future.wait:
+    // если Genius уже вернул URL — сразу возвращаем, не дожидаясь iTunes.
+    // Это экономит 300–800 мс на трек (iTunes обычно отвечает позже).
+    final geniusFuture = _safeFetch(() => _fetchGenius(artist, title, preferredSize));
+    final itunesFuture = _safeFetch(() => _fetchItunes(artist, title, preferredSize));
 
-    final results = await Future.wait([
-      geniusFuture,
-      itunesFuture,
-    ]);
+    // Ждём Genius первым.
+    final geniusResult = await geniusFuture;
 
-    final geniusResult = results[0];
-    final itunesResult = results[1];
+    // Genius дал URL — возвращаем сразу, iTunes не ждём.
+    if (geniusResult != null &&
+        geniusResult.isNotEmpty &&
+        geniusResult != _networkErrorMarker) {
+      _memCache[key] = geniusResult;
+      unawaited(_cacheToDb('$_prefsPrefix$key', geniusResult));
+      if (kDebugMode) {
+        debugPrint(
+          '[ArtworkProvider] "$artist - $title" -> GENIUS (early) ($geniusResult)',
+        );
+      }
+      return geniusResult;
+    }
 
+    // Genius не дал URL — ждём iTunes.
+    final itunesResult = await itunesFuture;
     final geniusError = geniusResult == _networkErrorMarker;
     final itunesError = itunesResult == _networkErrorMarker;
 
-    final url = (geniusResult != null &&
-            geniusResult.isNotEmpty &&
-            geniusResult != _networkErrorMarker)
-        ? geniusResult
-        : (itunesResult != null &&
-                itunesResult.isNotEmpty &&
-                itunesResult != _networkErrorMarker)
-            ? itunesResult
-            : null;
+    final url = (itunesResult != null &&
+            itunesResult.isNotEmpty &&
+            itunesResult != _networkErrorMarker)
+        ? itunesResult
+        : null;
 
     final found = url != null && url.isNotEmpty;
     final networkError = geniusError || itunesError;
@@ -272,7 +283,7 @@ class ArtworkProvider {
     if (kDebugMode) {
       debugPrint(
         '[ArtworkProvider] "$artist - $title" -> '
-        '${found ? (geniusResult != null && geniusResult != _networkErrorMarker && geniusResult.isNotEmpty ? 'GENIUS' : 'ITUNES') : (networkError ? 'ERROR' : 'NONE')}'
+        '${found ? 'ITUNES' : (networkError ? 'ERROR' : 'NONE')}'
         '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
       );
     }
@@ -320,7 +331,7 @@ class ArtworkProvider {
   //  Genius
   // ---------------------------------------------------------------------
 
-  Future<String?> _fetchGenius(String artist, String title) async {
+  Future<String?> _fetchGenius(String artist, String title, int preferredSize) async {
     if (_geniusToken.isEmpty) return null;
 
     final artists = _splitArtists(artist);
@@ -406,7 +417,7 @@ class ArtworkProvider {
       return '';
     }
 
-    return _processGeniusHits(hits, wantArtists, wantTitleNorm, isFallback: false);
+    return _processGeniusHits(hits, wantArtists, wantTitleNorm, isFallback: false, preferredSize: preferredSize);
   }
 
   /// Проверяет, содержит ли строка кириллические символы.
@@ -420,6 +431,7 @@ class ArtworkProvider {
     List<String> wantArtists,
     String wantTitleNorm, {
     required bool isFallback,
+    int preferredSize = 300,
   }) async {
     final candidates = <Map<String, dynamic>>[];
     for (final hit in hits) {
@@ -539,7 +551,7 @@ class ArtworkProvider {
     final art = _extractArtworkUrl(chosen);
     if (art == null || art.isEmpty) return '';
 
-    return _geniusSquareUrl(art, size: 600);
+    return _geniusSquareUrl(art, size: preferredSize);
   }
 
   String? _extractArtworkUrl(Map<String, dynamic> result) {
@@ -574,7 +586,7 @@ class ArtworkProvider {
   //  iTunes
   // ---------------------------------------------------------------------
 
-  Future<String?> _fetchItunes(String artist, String title) async {
+  Future<String?> _fetchItunes(String artist, String title, int preferredSize) async {
     final artists = _splitArtists(artist);
     final (:cleanTitle, :versionHints) = _extractVersionHints(title);
     final cleanArtist = _cleanSearchTerm(artists.firstOrNull ?? artist);
@@ -627,6 +639,6 @@ class ArtworkProvider {
     final raw = best['artworkUrl100'] as String?;
     if (raw == null || raw.isEmpty) return '';
 
-    return raw.replaceAll('100x100bb', '600x600bb');
+    return raw.replaceAll('100x100bb', '${preferredSize}x${preferredSize}bb');
   }
 }

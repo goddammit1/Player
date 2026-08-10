@@ -501,7 +501,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
   }
 
   void _fetchAndApplyArtwork(Track track, int queueIndex) {
-    ArtworkProvider.instance.findArtwork(track.artist, track.title).then((url) {
+    ArtworkProvider.instance.findArtwork(track.artist, track.title, preferredSize: 600).then((url) {
       if (url == null || url.isEmpty) return;
       if (queueIndex < 0 || queueIndex >= _queue.length) return;
       // Обновляем трек в очереди
