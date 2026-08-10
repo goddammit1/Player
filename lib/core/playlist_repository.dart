@@ -315,6 +315,34 @@ class PlaylistRepository {
     _controller.add(List.unmodifiable(_list));
   }
 
+  /// Обновляет [artworkUrl] у трека с указанным [globalId] во всех плейлистах,
+  /// где он встречается. Вызывается после ленивой подгрузки обложки через
+  /// [ArtworkProvider], чтобы обложка попала в БД и отображалась в плейлистах.
+  void updateTrackArtwork(String globalId, String artworkUrl) {
+    var changed = false;
+    final newList = <Playlist>[];
+    for (final p in _list) {
+      var playlistChanged = false;
+      final newTracks = p.tracks.map((t) {
+        if (t.globalId == globalId && t.artworkUrl != artworkUrl) {
+          playlistChanged = true;
+          return t.copyWith(artworkUrl: artworkUrl);
+        }
+        return t;
+      }).toList();
+      if (playlistChanged) {
+        changed = true;
+        newList.add(p.copyWith(tracks: newTracks));
+      } else {
+        newList.add(p);
+      }
+    }
+    if (changed) {
+      _list = newList;
+      _notifyAndSchedulePersist();
+    }
+  }
+
   /// Перечитывает данные из БД (нужно после импорта полного бэкапа).
   Future<void> reload() async {
     _initFuture = null;

@@ -16,6 +16,7 @@ import '../sources/source_registry.dart';
 import '../sources/artwork_provider.dart';
 import 'app_database.dart';
 import 'history_repository.dart';
+import 'playlist_repository.dart';
 import 'youtube_cache.dart';
 import 'artwork_helper.dart';
 
@@ -117,7 +118,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
         if (!_player.playing) return;
         if (pos < _historyThreshold) return;
         _pendingHistoryTrack = null;
-        unawaited(HistoryRepository.instance.add(pending));
+        // Берём актуальную версию трека из очереди — к этому моменту
+        // _fetchAndApplyArtwork мог уже обновить artworkUrl.
+        final currentTrack = _currentIndex >= 0 && _currentIndex < _queue.length
+            ? _queue[_currentIndex]
+            : pending;
+        unawaited(HistoryRepository.instance.add(currentTrack));
       },
       onError: (Object e, StackTrace st) {
         _log('positionStream error: $e');
@@ -520,6 +526,10 @@ class PlayerService extends BaseAudioHandler with SeekHandler {
       mediaItem.add(_toMediaItem(updated));
       // Обновляем queue stream
       queue.add(_queue.map(_toMediaItem).toList());
+      // Пробрасываем обложку в плейлисты — чтобы она отображалась и сохранялась в БД
+      PlaylistRepository.instance.updateTrackArtwork(track.globalId, url);
+      // И в историю прослушивания
+      unawaited(HistoryRepository.instance.updateTrackArtwork(track.globalId, url));
     }).catchError((_) {});
   }
 

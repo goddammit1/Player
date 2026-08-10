@@ -170,4 +170,30 @@ class HistoryRepository {
   Future<void> flush() async {
     // no-op: все мутации атомарны.
   }
+
+  /// Обновляет [artworkUrl] у всех записей истории для трека с указанным
+  /// [globalId]. Вызывается после ленивой подгрузки обложки через
+  /// [ArtworkProvider].
+  Future<void> updateTrackArtwork(String globalId, String artworkUrl) async {
+    await ensureLoaded();
+    var changed = false;
+    final newList = <HistoryEntry>[];
+    for (final e in _list) {
+      if (e.track.globalId == globalId && e.track.artworkUrl != artworkUrl) {
+        changed = true;
+        final updatedTrack = e.track.copyWith(artworkUrl: artworkUrl);
+        newList.add(HistoryEntry(track: updatedTrack, playedAt: e.playedAt));
+      } else {
+        newList.add(e);
+      }
+    }
+    if (changed) {
+      _list = newList;
+      try {
+        await AppDatabase.instance
+            .updateListenHistoryArtwork(globalId, artworkUrl);
+      } catch (_) {}
+      _controller.add(List.unmodifiable(_list));
+    }
+  }
 }

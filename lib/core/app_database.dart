@@ -698,6 +698,19 @@ class AppDatabase {
     await db.delete('listen_history');
   }
 
+  /// Обновляет [artworkUrl] во всех записях истории для трека с указанным
+  /// [globalId]. Используется после ленивой подгрузки обложки.
+  Future<void> updateListenHistoryArtwork(
+      String globalId, String artworkUrl) async {
+    final db = await database;
+    await db.update(
+      'listen_history',
+      {'artwork_url': artworkUrl},
+      where: 'track_global_id = ?',
+      whereArgs: [globalId],
+    );
+  }
+
   /// Подрезает историю до лимита (удаляет старые записи).
   Future<void> trimListenHistory(int limit) async {
     final db = await database;
