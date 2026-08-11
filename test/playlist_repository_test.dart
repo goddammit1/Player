@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:player/core/history_repository.dart';
 import 'package:player/core/playlist_backup.dart';
 import 'package:player/core/playlist_repository.dart';
 import 'package:player/models/playlist.dart';
@@ -651,5 +652,142 @@ void main() {
         );
       },
     );
+
+    test(
+      'refreshArtworkCandidates автоматически обновляет просроченный TTL-URL '
+      'провайдерской обложки при reload (без ручной очистки кэша)',
+      () async {
+        await PlaylistRepository.instance.ensureLoaded();
+        final p = PlaylistRepository.instance.create('Test');
+        // Трек с ПРОВАЙДЕРСКОЙ обложкой (Genius), у которой «протух» TTL.
+        PlaylistRepository.instance.addTrack(
+          p.id,
+          const Track(
+            id: 'g1',
+            sourceId: 'muzmo',
+            title: 'Song',
+            artist: 'Artist',
+            artworkUrl: 'https://images.genius.com/old_600x600.png',
+          ),
+        );
+        await PlaylistRepository.instance.flush();
+
+        // В кэше ArtworkProvider лежит ТОТ ЖЕ URL, но с просроченным TTL.
+        final old = DateTime.now().subtract(
+          ArtworkProvider.foundUrlTtl + const Duration(days: 1),
+        );
+        await ArtworkProvider.instance.cacheArtworkToDbForTesting(
+          'Artist',
+          'Song',
+          'https://images.genius.com/old_600x600.png',
+          old,
+        );
+
+        // Genius теперь вернёт НОВУЮ обложку.
+        ArtworkProvider.instance.geniusFetcherOverride = (_, _, _) async =>
+            'https://images.genius.com/new_600x600.png';
+        ArtworkProvider.instance.itunesFetcherOverride = (_, _, _) async =>
+            null;
+
+        // reload() запускает _refreshArtworkCandidates без force →
+        // просроченный провайдерский URL перезапрашивается автоматически.
+        await PlaylistRepository.instance.reload();
+        await PlaylistRepository.instance.flushEnrichmentForTesting();
+
+        expect(
+          PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
+          'https://images.genius.com/new_600x600.png',
+          reason:
+              'после истечения TTL обложка Genius перезапрошена и обновлена '
+              'в плейлисте автоматически',
+        );
+      },
+    );
+
+    test(
+      'refreshArtworkCandidates НЕ дёргает сеть для свежих провайдерских URL',
+      () async {
+        await PlaylistRepository.instance.ensureLoaded();
+        final p = PlaylistRepository.instance.create('Test');
+        PlaylistRepository.instance.addTrack(
+          p.id,
+          const Track(
+            id: 'g2',
+            sourceId: 'muzmo',
+            title: 'FreshSong',
+            artist: 'FreshArtist',
+            artworkUrl: 'https://images.genius.com/fresh_600x600.png',
+          ),
+        );
+        await PlaylistRepository.instance.flush();
+
+        // Свежая запись в кэше — TTL не истёк.
+        await ArtworkProvider.instance.cacheArtworkToDbForTesting(
+          'FreshArtist',
+          'FreshSong',
+          'https://images.genius.com/fresh_600x600.png',
+          DateTime.now(),
+        );
+        await PlaylistRepository.instance.flush();
+
+        // Сеть не должна вызываться.
+        ArtworkProvider.instance.geniusFetcherOverride = (_, _, _) async {
+          throw StateError('network must not be called for fresh URL');
+        };
+        ArtworkProvider.instance.itunesFetcherOverride = (_, _, _) async {
+          throw StateError('network must not be called for fresh URL');
+        };
+
+        await PlaylistRepository.instance.reload();
+        await PlaylistRepository.instance.flushEnrichmentForTesting();
+
+        expect(
+          PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
+          'https://images.genius.com/fresh_600x600.png',
+          reason: 'свежий провайдерский URL не перезапрашивается',
+        );
+      },
+    );
+
+    test('найденный плейлистом URL пропагируется в историю', () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final p = PlaylistRepository.instance.create('Test');
+      const shared = Track(
+        id: 'c1',
+        sourceId: 'muzmo',
+        title: 'CrossSong',
+        artist: 'CrossArtist',
+      );
+      PlaylistRepository.instance.addTrack(p.id, shared);
+      // Та же запись (по globalId) есть и в истории.
+      await HistoryRepository.instance.add(shared);
+      await PlaylistRepository.instance.flush();
+
+      ArtworkProvider.instance.cacheArtworkForTesting(
+        'CrossArtist',
+        'CrossSong',
+        'https://images.genius.com/cross.jpg',
+      );
+
+      await PlaylistRepository.instance.reload();
+      await PlaylistRepository.instance.flushEnrichmentForTesting();
+
+      expect(
+        PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
+        'https://images.genius.com/cross.jpg',
+        reason: 'плейлист получил обложку через обогащение',
+      );
+      expect(
+        HistoryRepository.instance
+            .current
+            .firstWhere((e) => e.track.globalId == 'muzmo:c1')
+            .track
+            .artworkUrl,
+        'https://images.genius.com/cross.jpg',
+        reason:
+            'обложка, найденная плейлистом, применилась и к истории — '
+            'в приложении везде одна и та же актуальная обложка',
+      );
+    });
   });
 }
