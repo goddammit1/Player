@@ -123,14 +123,32 @@ void main() {
       expect(r.versionHints, isEmpty);
     });
 
-    test('Original Mix — шум', () {
+    test('Original Mix — теперь ХИНТ (всё в скобках = хинт)', () {
       final r = ArtworkProvider.extractVersionHintsForTest('Track (Original Mix)');
-      expect(r.versionHints, isEmpty);
+      expect(r.cleanTitle, 'Track');
+      expect(r.versionHints, ['Original Mix']);
     });
 
-    test('Album Version — шум', () {
+    test('Album Version — теперь ХИНТ (всё в скобках = хинт)', () {
       final r = ArtworkProvider.extractVersionHintsForTest('Song (Album Version)');
+      expect(r.cleanTitle, 'Song');
+      expect(r.versionHints, ['Album Version']);
+    });
+
+    test('Radio Edit — хинт (версия)', () {
+      final r = ArtworkProvider.extractVersionHintsForTest('Song (Radio Edit)');
+      expect(r.cleanTitle, 'Song');
+      expect(r.versionHints, ['Radio Edit']);
+    });
+
+    test('Explicit/Clean — шум (рейтинг цензуры)', () {
+      final r = ArtworkProvider.extractVersionHintsForTest('Song (Explicit)');
+      expect(r.cleanTitle, 'Song');
       expect(r.versionHints, isEmpty);
+
+      final r2 = ArtworkProvider.extractVersionHintsForTest('Song [Clean]');
+      expect(r2.cleanTitle, 'Song');
+      expect(r2.versionHints, isEmpty);
     });
 
     test('Суффикс через тире — " - Remix"', () {
@@ -188,6 +206,101 @@ void main() {
       );
       expect(r.cleanTitle, 'Song');
       expect(r.versionHints, ['Remix']);
+    });
+  });
+
+  group('_normalize (unicode: кириллица сохраняется)', () {
+    test('кириллическое название не вырезается', () {
+      expect(ArtworkProvider.normalizeForTest('Исчезаю'), 'исчезаю');
+      expect(
+        ArtworkProvider.normalizeForTest('Psychosis — Исчезаю'),
+        'psychosis исчезаю',
+      );
+    });
+
+    test('ASCII-поведение не меняется', () {
+      expect(
+        ArtworkProvider.normalizeForTest('Believer (Remix)'),
+        'believer remix',
+      );
+      expect(ArtworkProvider.normalizeForTest('Song*'), 'song');
+    });
+  });
+
+  group('titleMatches (версионные хинты)', () {
+    test('точное равенство — матч', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer (Remix)',
+          'believer remix',
+          hasVersionHints: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('искали версию, а у Genius только оригинал — НЕ матч', () {
+      // Раньше "believer remix".contains("believer") возвращал true и обложка
+      // оригинала/альбома подставлялась в трек-версию.
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer',
+          'believer remix',
+          hasVersionHints: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('без хинтов обратный contains по-прежнему разрешён', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer',
+          'believer remix',
+          hasVersionHints: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('другая версия — не матч', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer (Live)',
+          'believer remix',
+          hasVersionHints: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('страница содержит искомую версию целиком — матч', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer (Remix) [feat. X]',
+          'believer remix',
+          hasVersionHints: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('пустой want — матч по умолчанию', () {
+      expect(
+        ArtworkProvider.titleMatches('Anything', '', hasVersionHints: true),
+        isTrue,
+      );
+    });
+
+    test('кириллица: точное совпадение', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Исчезаю',
+          'исчезаю',
+          hasVersionHints: false,
+        ),
+        isTrue,
+      );
     });
   });
 }

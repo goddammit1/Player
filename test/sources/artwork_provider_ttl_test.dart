@@ -208,5 +208,59 @@ void main() {
       expect(third, first);
       expect(calls, 1, reason: 'пока запись свежая, сеть дёргается один раз');
     });
+
+    test('isArtworkStaleAsync: свежая запись → false, устаревшая → true', () async {
+      // Свежая in-memory запись.
+      ArtworkProvider.instance
+          .cacheArtworkForTesting('Artist', 'Fresh', 'http://mem.example.com/1.jpg');
+      expect(
+        await ArtworkProvider.instance.isArtworkStaleAsync('Artist', 'Fresh'),
+        isFalse,
+        reason: 'свежая запись в памяти — перезапрос не нужен',
+      );
+
+      // Свежая SQLite-запись (без сети).
+      await ArtworkProvider.instance.cacheArtworkToDbForTesting(
+        'Artist',
+        'FreshDb',
+        'http://db.example.com/1.jpg',
+        DateTime.now(),
+      );
+      expect(
+        await ArtworkProvider.instance.isArtworkStaleAsync('Artist', 'FreshDb'),
+        isFalse,
+        reason: 'свежая запись в БД — перезапрос не нужен',
+      );
+
+      // Устаревшая SQLite-запись.
+      final old = DateTime.now().subtract(
+        ArtworkProvider.foundUrlTtl + const Duration(days: 1),
+      );
+      await ArtworkProvider.instance.cacheArtworkToDbForTesting(
+        'Artist',
+        'StaleDb',
+        'http://db.example.com/old.jpg',
+        old,
+      );
+      // Сеть НЕ должна вызываться внутри isArtworkStaleAsync.
+      ArtworkProvider.instance.geniusFetcherOverride = (_, _, _) async {
+        throw StateError('network must not be called');
+      };
+      ArtworkProvider.instance.itunesFetcherOverride = (_, _, _) async {
+        throw StateError('network must not be called');
+      };
+      expect(
+        await ArtworkProvider.instance.isArtworkStaleAsync('Artist', 'StaleDb'),
+        isTrue,
+        reason: 'устаревшая запись — нужен перезапрос',
+      );
+
+      // Отсутствует запись вообще → stale.
+      expect(
+        await ArtworkProvider.instance.isArtworkStaleAsync('Artist', 'NoEntry'),
+        isTrue,
+        reason: 'нет записи — нужно искать',
+      );
+    });
   });
 }

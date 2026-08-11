@@ -25,7 +25,7 @@ class ArtworkProvider {
   static final _reBracket = RegExp(r'\s*\[[^\]]*\]');
   static final _reFeat = RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$', caseSensitive: false);
   static final _reSuffix = RegExp(
-    r'\s+-\s+(?:Radio|Club|Extended|Original|Alternative|Acoustic|Instrumental|Live|Remix|Remastered|Demo|Single|EP|Album|Version|Edit|Mix|Cut).*$',
+    r'\s+-\s+.*$',
     caseSensitive: false,
   );
 
@@ -34,27 +34,44 @@ class ArtworkProvider {
   // -----------------------------------------------------------------
   static final _reParenContent = RegExp(r'\(([^)]*)\)');
   static final _reBracketContent = RegExp(r'\[([^\]]*)\]');
-  /// Слова, которые НЕ являются версией трека, а «шум»:
-  /// feat/ft/director/collab — матчинг по артистам уже есть отдельно,
-  /// «official video / audio / lyric / music video» — не меняет обложку,
-  /// «prod. / produced by / prod by» — не версия,
-  /// «original mix / ost / soundtrack / intro / interlude / outro /
-  ///  skit / album version / short edit / clean / explicit», etc.
-  /// Регистро-независимый.
+  /// Слова/фразы, которые НЕ являются версией трека, а «шум» — их НЕ включаем
+  /// в versionHints (не передаём в поисковый запрос Genius/iTunes).
+  ///
+  /// ПРАВИЛО от пользователя: «всё, что в скобках после трека, — это хинт».
+  /// Поэтому шумовым считается ТОЛЬКО то, что заведомо НЕ влияет на обложку:
+  /// - feat/ft/Ft. — это про артистов: матчинг по артистам уже отдельно;
+  /// - prod. by / produced by — продюсер, не версия;
+  /// - official video/audio/lyric/music video/clip, lyric video, video, audio,
+  ///   визуализатор, клип, видеоклип — тип контента, не версия обложки;
+  /// - explicit/clean — рейтинг цензуры, не версия.
+  ///
+  /// Всё остальное (Remix, Radio Edit, Club Mix, Extended Mix, Original Mix,
+  /// Album Version, Cover, Live, Acoustic, Instrumental, OST, Intro/Outro,
+  /// Slowed + Reverb, ...) является ХИНТОМ и попадает в поисковый запрос.
+  /// Если Genius/iTunes с хинтами ничего не находят — есть retry «без
+  /// хинтов» (см. [_fetchGenius] / [_fetchItunes]).
+  ///
+  /// Регистро-независимый. Проверяется по WHOLE фразе (после trim).
   static final _reNoiseTag = RegExp(
     r'^(?:feat|ft)\b.*|'
     r'^(?:prod(?:uced)?\.?\s+by|prod\.?)\b.*|'
     r'^(?:official\s+(?:video|audio|lyric|music\s+video|clip)|'
-    r'official|клип|официальный\s+клип|премьера\s+клипа)\b.*|'
-    r'^(?:original\s+mix|ost|саундтрек|soundtrack|intro|interlude|'
-    r'outro|skit|album\s+version|short\s+edit|clean|explicit|'
-    r'cover|кавер|tribute|live\s+session|unplugged|акустика|клип|'
-    r'видеоклип|lyric\s+video|visualizer|video|audio)$',
+    r'lyric\s+video|visualizer|video|audio|клип|официальный\s+клип|'
+    r'премьера\s+клипа|видеоклип|лирик\s+видео|explicit|clean)$',
     caseSensitive: false,
   );
 
   static final _reSpaces = RegExp(r'\s+');
-  static final _reNonWord = RegExp(r'[^\w\s]');
+  /// Убирает всё, кроме букв/цифр любого алфавита (включая кириллицу),
+  /// подчёркивания и пробелов.
+  ///
+  /// ВАЖНО: `\w` в Dart без флага `unicode: true` матчит только ASCII
+  /// `[A-Za-z0-9_]`, из-за чего `_normalize` вырезал кириллицу целиком:
+  /// `wantTitleNorm` для русских треков становился пустым, title-матчинг
+  /// отключался и Genius отдавал обложку любой страницы артиста (часто —
+  /// обложку альбома, в котором есть трек). Свойства `\p{L}`/`\p{N}`
+  /// работают только при `unicode: true`.
+  static final _reNonWord = RegExp(r'[^\p{L}\p{N}_\s]', unicode: true);
 
   final Dio _dio = Dio(
     BaseOptions(
@@ -95,6 +112,19 @@ class ArtworkProvider {
     _memCache.clear();
     _memStamp.clear();
     _inFlight.clear();
+  }
+
+  /// Полностью очищает кэш найденных URL обложек: in-memory и SQLite.
+  ///
+  /// После вызова [findArtwork] перезапросит Genius/iTunes заново, а не вернёт
+  /// свежую запись из кэша. Используется при ручной очистке кэша обложек в UI
+  /// (см. CachePage) — чтобы «очистить» означало действительно перезапросить
+  /// сеть и подхватить самую свежую обложку на стороне провайдера.
+  Future<void> clearCache() async {
+    clearMemCache();
+    try {
+      await AppDatabase.instance.clearArtworkCacheDb();
+    } catch (_) {}
   }
 
   /// Тестовый хук: пишет URL прямо в in-memory кэш (как если бы он был
@@ -187,6 +217,56 @@ class ArtworkProvider {
     return lower.contains('genius.com') || lower.contains('mzstatic.com');
   }
 
+  /// Возвращает свежий (TTL не истёк) URL обложки для [artist]/[title] из кэша
+  /// (in-memory или SQLite) БЕЗ обращения к сети.
+  ///
+  /// null — свежего значения нет (запись отсутствует, протухла по
+  /// [foundUrlTtl] или в кэше лежит «не найдено»). Тогда следующий вызов
+  /// [findArtwork] перезапросит Genius/iTunes.
+  ///
+  /// Используется для ленивого авто-обновления обложек (плейлисты и история):
+  /// - свежий кэш, совпадающий с хранимым URL — менять нечего;
+  /// - свежий кэш, отличающийся от хранимого — рассинхрон, URL обновляется
+  ///   без сети;
+  /// - свежего кэша нет — обложка устарела, перезапрашиваем сеть.
+  Future<String?> getFreshCachedArtworkUrl(String artist, String title) async {
+    final key = _key(artist, title);
+    final now = DateTime.now();
+
+    // In-memory кэш (в рамках сессии) — свежий URL есть.
+    final mem = _memCache[key];
+    if (mem != null && mem.isNotEmpty) {
+      final memAt = _memStamp[key];
+      if (memAt != null && now.difference(memAt) < foundUrlTtl) {
+        return mem;
+      }
+    }
+
+    // SQLite-кэш (переживает перезапуски).
+    try {
+      final saved = await AppDatabase.instance.getSetting('$_prefsPrefix$key');
+      if (saved != null && saved.isNotEmpty) {
+        final (:url, :foundAt) = _decodeCacheValue(saved);
+        if (url != null && url.isNotEmpty) {
+          final fresh =
+              foundAt == null || now.difference(foundAt) < foundUrlTtl;
+          if (fresh) return url;
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  /// True, если провайдерская обложка (Genius/iTunes) для [artist]/[title]
+  /// «устарела» по TTL — т.е. при следующем обращении [findArtwork] её стоит
+  /// перезапросить в сети.
+  ///
+  /// Эквивалент `getFreshCachedArtworkUrl(...) == null`. Проверяется и
+  /// SQLite-кэш (переживает перезапуски), и in-memory кэш.
+  Future<bool> isArtworkStaleAsync(String artist, String title) async =>
+      (await getFreshCachedArtworkUrl(artist, title)) == null;
+
   Map<String, dynamic>? _asMap(Object? data) {
     if (data is Map<String, dynamic>) return data;
     if (data is String && data.isNotEmpty) {
@@ -227,12 +307,24 @@ class ArtworkProvider {
   /// - cleanTitle — заголовок БЕЗ содержимого скобок и feat/ft-хвостов;
   /// - versionHints — список слов из скобок/суффикса, которые НЕ являются шумом.
   ///
+  /// ПРАВИЛО: «всё, что в скобках», считается хинтом. Из содержимого скобок
+  /// исключается только явный шум (feat/ft, prod. by, official video/audio,
+  /// lyric video, visualizer, клип/видеоклип, explicit/clean). Всё остальное
+  /// (Remix, Radio Edit, Club Mix, Extended Mix, Original Mix, Album Version,
+  /// Cover, Live, Acoustic, Instrumental, OST, Intro/Outro, Slowed + Reverb,
+  /// ...) — хинт и добавляется в поисковый запрос Genius/iTunes.
+  ///
+  /// Фразы внутри одних скобок, разделённые `|` или `/` (например,
+  /// '(Club Mix | Extended Mix)') считаются ОТДЕЛЬНЫМИ хинтами.
+  ///
   /// Примеры:
-  /// - 'Исчезаю (Remix)'          → ('исчезаю', ['remix'])
-  /// - 'Song (feat. X) (Radio Edit)' → ('song', ['radio edit'])
-  /// - 'Song (Official Video)'    → ('song', [])
-  /// - 'Track - Remix'            → ('track', ['remix'])
-  /// - 'Обычная песня'            → ('обычная песня', [])
+  /// - 'Исчезаю (Remix)'                  → ('Исчезаю', ['Remix'])
+  /// - 'Song (feat. X) (Radio Edit)'      → ('Song', ['Radio Edit'])
+  /// - 'Track (feat. John) (prod. by Mike)' → ('Track', [])  // всё шум
+  /// - 'Song (Club Mix | Extended Mix)'   → ('Song', ['Club Mix', 'Extended Mix'])
+  /// - 'Song (Slowed + Reverb)'           → ('Song', ['Slowed + Reverb'])
+  /// - 'Track - Remix'                    → ('Track', ['Remix'])
+  /// - 'Обычная песня'                    → ('Обычная песня', [])
   static ({String cleanTitle, List<String> versionHints}) _extractVersionHints(
     String title,
   ) {
@@ -254,14 +346,20 @@ class ArtworkProvider {
       }
     }
 
-    // Захват суффикса после " - ", если он что-то добавляет
+    // Захват суффикса после " - ", если он что-то добавляет.
+    // ВАЖНО: берём ВЕСЬ суффикс (не только узкий список слов), и тоже
+    // прогоняем через шум-фильтр — «Track - Remix» → 'Remix',
+    // «Track - Radio Edit» → [] (radio edit = шум).
     {
       final m = _reSuffix.firstMatch(title);
       if (m != null) {
         final suffix = m.group(0)?.trim() ?? '';
         if (suffix.isNotEmpty) {
           final withoutDash = suffix.replaceFirst(RegExp(r'^\s*-\s*'), '');
-          hints.add(withoutDash.trim());
+          final trimmed = withoutDash.trim();
+          if (trimmed.isNotEmpty && !_reNoiseTag.hasMatch(trimmed)) {
+            hints.add(trimmed);
+          }
         }
       }
     }
@@ -276,9 +374,47 @@ class ArtworkProvider {
     return (cleanTitle: cleanTitle, versionHints: unique);
   }
 
-  /// Нормализует строку для сравнения: убирает non-word символы (в т.ч. *).
-  String _normalize(String s) {
+  /// Нормализует строку для сравнения: убирает non-word символы (в т.ч. *),
+  /// сохраняя буквы и цифры ЛЮБЫХ алфавитов (см. [_reNonWord]).
+  static String _normalize(String s) {
     return s.toLowerCase().replaceAll(_reNonWord, '').replaceAll(_reSpaces, ' ').trim();
+  }
+
+  /// Тестовый хук: приватный [_normalize].
+  @visibleForTesting
+  static String normalizeForTest(String s) => _normalize(s);
+
+  /// Матчит заголовок страницы Genius [apiTitle] с искомым нормализованным
+  /// [wantTitleNorm] (заголовок трека + версионные хинты).
+  ///
+  /// [hasVersionHints] — мы искали конкретную версию (Remix/Radio Edit/
+  /// Club Mix/...). Тогда страница, чьё название лишь короче искомого
+  /// (например, оригинал "Believer" для "Believer (Remix)"), НЕ считается
+  /// совпадением: у неё обложка альбома/оригинала, которая не соответствует
+  /// версии трека. Совпадением считаются только точное равенство и случаи,
+  /// когда заголовок страницы полностью содержит искомое название
+  /// (например, "Believer (Remix) [feat. X]").
+  ///
+  /// Без версионных хинтов сохраняется прежнее поведение: обратный contains
+  /// разрешён, чтобы ловить переименования/сокращения на стороне Genius.
+  @visibleForTesting
+  static bool titleMatches(
+    String apiTitle,
+    String wantTitleNorm, {
+    required bool hasVersionHints,
+  }) {
+    if (wantTitleNorm.isEmpty) return true;
+    final apiNorm = _normalize(apiTitle);
+    if (apiNorm == wantTitleNorm) return true;
+    if (wantTitleNorm.length > 3 && apiNorm.contains(wantTitleNorm)) {
+      return true;
+    }
+    if (!hasVersionHints &&
+        apiNorm.length > 3 &&
+        wantTitleNorm.contains(apiNorm)) {
+      return true;
+    }
+    return false;
   }
 
   // ---------------------------------------------------------------------
@@ -532,10 +668,18 @@ class ArtworkProvider {
     );
     final wantArtists = artists.map((a) => a.toLowerCase().trim()).toList();
 
+    // Матчим страницы Genius строго, если искали конкретную версию трека
+    // (Remix/Radio Edit/...): страница оригинала (например "Believer" для
+    // "Believer (Remix)") не должна подставлять свою — часто альбомную —
+    // обложку версии, у которой нет своей страницы на Genius.
+    final hasVersionHints = versionHints.isNotEmpty;
+
     Future<(int status, Map<String, dynamic>? data)> searchGenius(String q) async {
       final resp = await _dio.get<dynamic>(
         'https://api.genius.com/search',
-        queryParameters: {'q': q, 'per_page': 5},
+        // 10 вместо 5: нужная страница (особенно версия трека) чаще попадает
+        // в выдачу, а цена — пара лишних строк в кандидатах.
+        queryParameters: {'q': q, 'per_page': 10},
         options: Options(
           headers: {'Authorization': 'Bearer $_geniusToken'},
         ),
@@ -585,6 +729,11 @@ class ArtworkProvider {
     }
 
     // ---------- запрос №3: только по артисту (кириллический fallback) ----
+    // Для результатов ЭТОГО запроса смягчаем матчинг (isFallback: true):
+    // если правильной страницы трека нет, берём первый трек артиста. Иначе
+    // после ужесточения title-матчинга кириллический fallback перестал бы
+    // находить обложки (title-матчинг с непустым wantTitleNorm не проходит).
+    var isFallbackQuery = false;
     if (hits.isEmpty && _hasCyrillic(q) && artists.isNotEmpty) {
       final fallbackQ = artists.join(' ').trim();
       if (fallbackQ.isNotEmpty && fallbackQ != q) {
@@ -594,6 +743,7 @@ class ArtworkProvider {
         (status, data) = await searchGenius(fallbackQ);
         if (status == 200) {
           hits = (data?['response']?['hits'] as List?) ?? const [];
+          isFallbackQuery = hits.isNotEmpty;
           if (kDebugMode && hits.isNotEmpty) {
             debugPrint('[ArtworkProvider] Genius fallback: ${hits.length} hits');
           }
@@ -606,7 +756,14 @@ class ArtworkProvider {
       return '';
     }
 
-    return _processGeniusHits(hits, wantArtists, wantTitleNorm, isFallback: false, preferredSize: preferredSize);
+    return _processGeniusHits(
+      hits,
+      wantArtists,
+      wantTitleNorm,
+      isFallback: isFallbackQuery,
+      hasVersionHints: hasVersionHints,
+      preferredSize: preferredSize,
+    );
   }
 
   /// Проверяет, содержит ли строка кириллические символы.
@@ -619,6 +776,7 @@ class ArtworkProvider {
     List hits,
     List<String> wantArtists,
     String wantTitleNorm, {
+    required bool hasVersionHints,
     required bool isFallback,
     int preferredSize = 300,
   }) async {
@@ -666,15 +824,6 @@ class ArtworkProvider {
       return false;
     }
 
-    bool titleMatch(String apiTitle) {
-      if (wantTitleNorm.isEmpty) return true;
-      final apiNorm = _normalize(apiTitle);
-      if (apiNorm == wantTitleNorm) return true;
-      if (wantTitleNorm.length > 3 && apiNorm.contains(wantTitleNorm)) return true;
-      if (apiNorm.length > 3 && wantTitleNorm.contains(apiNorm)) return true;
-      return false;
-    }
-
     Map<String, dynamic>? exactMatch;
     Map<String, dynamic>? partialMatch;
     Map<String, dynamic>? artistFallback;
@@ -692,7 +841,7 @@ class ArtworkProvider {
       bool hasTitle = false;
       for (final raw in titleFields) {
         if (raw is! String) continue;
-        if (titleMatch(raw)) {
+        if (titleMatches(raw, wantTitleNorm, hasVersionHints: hasVersionHints)) {
           hasTitle = true;
           break;
         }
