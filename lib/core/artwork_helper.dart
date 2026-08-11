@@ -93,6 +93,23 @@ class ArtworkHelper {
     return null;
   }
 
+  /// Возвращает эффективный artwork для отображения: если для [trackId]
+  /// установлена кастомная обложка на диске — возвращает её путь, иначе
+  /// [fallbackUrl] (URL от источника/провайдера).
+  ///
+  /// Используется в UI (очередь, мозаика плейлиста) — чтобы кастомная
+  /// обложка трека показывалась даже тогда, когда сетевой/кэшированный
+  /// URL недоступен или устарел.
+  static String? resolveEffectiveArtwork({
+    required String? fallbackUrl,
+    required String? trackId,
+  }) {
+    if (trackId == null || trackId.isEmpty) return fallbackUrl;
+    final custom = getCustomArtworkSync(trackId);
+    if (custom != null && custom.isNotEmpty) return custom;
+    return fallbackUrl;
+  }
+
   /// Выбор изображения из галереи, сброс кэша картинок Flutter и персист на диск
   static Future<String?> pickAndSaveArtwork(String trackId) async {
     try {

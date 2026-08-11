@@ -16,9 +16,12 @@ import '../../core/artwork_helper.dart';
 extension MediaItemToTrack on MediaItem {
   Track toTrack() {
     final extra = extras ?? {};
+    final sourceId = (extra['sourceId'] as String?) ??
+        (extra['source_id'] as String?) ??
+        'local';
     return Track(
       id: id,
-      sourceId: extra['source_id'] as String? ?? 'local',
+      sourceId: sourceId,
       title: title,
       artist: artist ?? '',
       duration: duration,
@@ -629,15 +632,26 @@ class _QueueListState extends State<_QueueList> {
           final tracks = widget.player.trackQueue;
           final all = tracks
               .map(
-                (t) => MediaItem(
-                  id: t.globalId,
-                  title: t.title,
-                  artist: t.artist,
-                  duration: t.duration,
-                  artUri: t.artworkUrl != null
-                      ? Uri.tryParse(t.artworkUrl!)
-                      : null,
-                ),
+                (t) {
+                  final art = ArtworkHelper.resolveEffectiveArtwork(
+                    fallbackUrl: t.artworkUrl,
+                    trackId: t.id,
+                  );
+                  return MediaItem(
+                    id: t.globalId,
+                    title: t.title,
+                    artist: t.artist,
+                    duration: t.duration,
+                    artUri: art != null && art.isNotEmpty
+                        ? Uri.tryParse(art)
+                        : null,
+                    extras: {
+                      'sourceId': t.sourceId,
+                      'trackId': t.id,
+                      'originalArtworkUrl': t.artworkUrl,
+                    },
+                  );
+                },
               )
               .toList();
 
