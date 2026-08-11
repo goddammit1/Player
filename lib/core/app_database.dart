@@ -707,8 +707,11 @@ class AppDatabase {
 
   /// Обновляет [artworkUrl] во всех записях истории для трека с указанным
   /// [globalId]. Используется после ленивой подгрузки обложки.
+  ///
+  /// [artworkUrl] может быть null — тогда URL обложки очищается (нужно при
+  /// сбросе обложек в истории: `resetAllTrackArtworks`).
   Future<void> updateListenHistoryArtwork(
-      String globalId, String artworkUrl) async {
+      String globalId, String? artworkUrl) async {
     final db = await database;
     await db.update(
       'listen_history',

@@ -4,9 +4,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/history_repository.dart';
 import '../../core/providers.dart';
 import '../../core/playlist_repository.dart';
 import '../../core/youtube_cache.dart';
+import '../../sources/artwork_provider.dart';
 import '../widgets/desktop_layout.dart';
 
 /// Страница управления кэшем.
@@ -135,9 +137,16 @@ class _CachePageState extends ConsumerState<CachePage> {
     // Дисковый кэш CachedNetworkImage чистит YoutubeCache.
     await YoutubeCache.instance.clearArtworkCache();
 
-    // Сбрасываем artworkUrl у треков в плейлистах, чтобы они
-    // перезапросили обложки через Genius/iTunes при следующем проигрывании.
+    // Сбрасываем кэш НАЙДЕННЫХ URL обложек (in-memory + SQLite), чтобы
+    // «очистка кэша обложек» действительно перезапросила Genius/iTunes
+    // заново и подхватила самую свежую обложку на стороне провайдера.
+    await ArtworkProvider.instance.clearCache();
+
+    // Сбрасываем artworkUrl у треков в ПЛЕЙЛИСТАХ И ИСТОРИИ, чтобы они
+    // перезапросили обложки через Genius/iTunes (фоновое обогащение
+    // запускается самим сбросом).
     PlaylistRepository.instance.resetAllTrackArtworks();
+    HistoryRepository.instance.resetAllTrackArtworks();
 
     await _refreshStats();
     if (mounted) _showSnack('Artwork cache cleared');
@@ -155,8 +164,11 @@ class _CachePageState extends ConsumerState<CachePage> {
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
 
-    // Сбрасываем artworkUrl у треков в плейлистах.
+    // Сбрасываем кэш найденных URL обложек + artworkUrl у треков
+    // в плейлистах и истории (см. комментарий в _clearArtworkCache).
+    await ArtworkProvider.instance.clearCache();
     PlaylistRepository.instance.resetAllTrackArtworks();
+    HistoryRepository.instance.resetAllTrackArtworks();
 
     await _refreshStats();
 
