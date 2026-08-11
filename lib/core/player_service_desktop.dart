@@ -453,7 +453,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
       }
     }
     if (gid != null && gid.isNotEmpty) {
-      PlaylistRepository.instance.updateTrackArtwork(gid, p);
+      unawaited(PlaylistRepository.instance.updateTrackArtwork(gid, p));
       unawaited(HistoryRepository.instance.updateTrackArtwork(gid, p));
     }
   }
@@ -470,7 +470,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
       }
     }
     if (gid != null && orig != null && gid.isNotEmpty) {
-      PlaylistRepository.instance.updateTrackArtwork(gid, orig);
+      unawaited(PlaylistRepository.instance.updateTrackArtwork(gid, orig));
       unawaited(HistoryRepository.instance.updateTrackArtwork(gid, orig));
     }
   }

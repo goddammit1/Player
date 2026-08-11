@@ -572,7 +572,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       // Обновляем queue stream — список обложек в UI должен быть актуален.
       queue.add(_queue.map(_toMediaItem).toList());
       // Пробрасываем обложку в плейлисты — чтобы она отображалась и сохранялась в БД
-      PlaylistRepository.instance.updateTrackArtwork(current.globalId, url);
+      unawaited(PlaylistRepository.instance.updateTrackArtwork(current.globalId, url));
       // И в историю прослушивания
       unawaited(HistoryRepository.instance.updateTrackArtwork(current.globalId, url));
     }).catchError((_) {});
@@ -916,7 +916,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       }
     }
     if (globalId != null && globalId.isNotEmpty && originalUrl != null) {
-      PlaylistRepository.instance.updateTrackArtwork(globalId, originalUrl);
+      unawaited(PlaylistRepository.instance.updateTrackArtwork(globalId, originalUrl));
       unawaited(
         HistoryRepository.instance.updateTrackArtwork(globalId, originalUrl),
       );
@@ -971,7 +971,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     // 4. Синхронизируем обложку с репозиториями (плейлисты, история), чтобы
     //    она сохранилась в БД и отражалась при экспорте бэкапа.
     if (globalId != null && globalId.isNotEmpty) {
-      PlaylistRepository.instance.updateTrackArtwork(globalId, newPath);
+      unawaited(PlaylistRepository.instance.updateTrackArtwork(globalId, newPath));
       unawaited(
         HistoryRepository.instance.updateTrackArtwork(globalId, newPath),
       );
