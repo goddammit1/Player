@@ -53,6 +53,7 @@ app.*.map.json
 # IDE
 .vscode/
 .cline/
+.claude/
 
 # Local artifacts from project scripts
 /rmr_*.html
