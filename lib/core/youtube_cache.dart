@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/track.dart';
 import '../sources/artwork_provider.dart';
 import 'app_database.dart';
+import 'artwork_helper.dart';
 
 /// Дисковый кэш приложения.
 ///
@@ -428,6 +429,11 @@ class YoutubeCache {
       await AppDatabase.instance.clearCacheData();
     } catch (_) {}
     ArtworkProvider.instance.clearMemCache();
+    // Полная очистка кастомных обложек: файлы на диске + in-memory кэш.
+    // SQLite-ключи custom_art_v* уже удалены clearCacheData выше, но оставались
+    // файлы на диске и RAM-кэш ArtworkHelper, из-за чего обложка «висела» до
+    // рестарта и файлы оставались сиротами. Теперь — как при первом запуске.
+    await ArtworkHelper.clearAllCustomArtwork();
   }
 
   // ═══════════════════════════════════════════════════════════════════

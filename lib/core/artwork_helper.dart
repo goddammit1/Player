@@ -157,6 +157,37 @@ class ArtworkHelper {
     }
   }
 
+  /// Полностью очищает ВСЕ кастомные обложки: файлы на диске
+  /// (`custom_artworks/` и подкаталог `custom_artworks/playlists/`) + in-memory
+  /// кэш (`resetInit`).
+  ///
+  /// SQLite-записи (`custom_art_v*`) чистит вызывающая сторона через
+  /// `AppDatabase.clearCacheData()`. Используется при `clear_all_cache`,
+  /// чтобы поведение стало «как при первом запуске» — без сиротских файлов
+  /// на диске и без кастомной обложки, «воскресающей» из RAM-кэша до рестарта.
+  static Future<void> clearAllCustomArtwork() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final root = Directory('${appDir.path}/custom_artworks');
+      if (await root.exists()) {
+        await for (final entity in root.list(followLinks: false)) {
+          if (entity is File) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          } else if (entity is Directory) {
+            try {
+              await entity.delete(recursive: true);
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[ArtworkHelper.clearAllCustomArtwork] Failed: $e');
+    }
+    resetInit();
+  }
+
   /// Удаляет кастомную обложку трека (файл + кэш + SQLite)
   static Future<void> removeCustomArtwork(String trackId) async {
     try {
