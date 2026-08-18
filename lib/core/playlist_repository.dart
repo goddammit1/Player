@@ -612,7 +612,16 @@ class PlaylistRepository {
       var playlistChanged = false;
       final newTracks = p.tracks.map((t) {
         final url = t.artworkUrl;
-        if (url != null && ArtworkProvider.isProviderArtworkUrl(url)) {
+        // Сбрасываем ссылку на кастомную обложку, файл которой уже удалён
+        // («Clear all cache» стёр custom_artworks/). Иначе в БД останется
+        // мёртвый локальный путь и фоновое обогащение его не перезапросит —
+        // трек останется без обложки. Живая кастомная обложка (файл на
+        // диске есть, напр. ветка «Clear artwork cache») сохраняется.
+        final isDeadCustom = url != null &&
+            url.contains('custom_artworks') &&
+            ArtworkHelper.getCustomArtworkSync(t.id) == null;
+        if (url != null &&
+            (ArtworkProvider.isProviderArtworkUrl(url) || isDeadCustom)) {
           playlistChanged = true;
           return _withoutArtwork(t);
         }

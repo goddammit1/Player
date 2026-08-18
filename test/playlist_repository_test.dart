@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:player/core/app_database.dart';
+import 'package:player/core/artwork_helper.dart';
 import 'package:player/core/history_repository.dart';
 import 'package:player/core/playlist_backup.dart';
 import 'package:player/core/playlist_repository.dart';
@@ -249,7 +253,8 @@ void main() {
     setUp(() => ArtworkProvider.instance.clearMemCache());
 
     test(
-      'resetAllTrackArtworks clears provider urls but keeps source/local paths',
+      'resetAllTrackArtworks clears provider urls and dead custom-art paths, '
+      'keeps live ones and source artwork',
       () async {
         await PlaylistRepository.instance.ensureLoaded();
         final p = PlaylistRepository.instance.create('Test');
@@ -293,9 +298,29 @@ void main() {
             artworkUrl: 'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
           ),
         );
+        // Трек 5: «мёртвая» ссылка на кастомную обложку — файл удалён
+        // («Clear all cache»), в RAM-кэше ArtworkHelper её тоже нет.
         PlaylistRepository.instance.addTrack(
           p.id,
-          const Track(id: '5', sourceId: 'youtube', title: 'None', artist: 'E'),
+          const Track(
+            id: '5',
+            sourceId: 'youtube',
+            title: 'DeadCustom',
+            artist: 'E',
+            artworkUrl: '/data/user/0/player/custom_artworks/5.jpg',
+          ),
+        );
+        // Трек 6: «живая» кастомная обложка — файл на диске существует,
+        // её путь лежит в RAM-кэше ArtworkHelper (как после pickAndSaveArtwork).
+        PlaylistRepository.instance.addTrack(
+          p.id,
+          const Track(
+            id: '6',
+            sourceId: 'youtube',
+            title: 'LiveCustom',
+            artist: 'F',
+            artworkUrl: '/data/user/0/player/custom_artworks/6.jpg',
+          ),
         );
 
         // Сидим mem-cache ДО сброса: запущенный сбросом enrichment вернёт
@@ -306,30 +331,76 @@ void main() {
           'Genius',
           'https://images.genius.com/genius-new.jpg',
         );
-        ArtworkProvider.instance.cacheArtworkForTesting('E', 'None', '');
+        // Треки 2 и 3 (Local/File) тоже станут кандидатами после сброса
+        // мёртвых кастомных путей — сидим кэш, чтобы перезапрос завершился
+        // мгновенно и заменил битый локальный путь на оригинальный URL.
+        ArtworkProvider.instance.cacheArtworkForTesting(
+          'B',
+          'Local',
+          'https://images.genius.com/local-restored.jpg',
+        );
+        ArtworkProvider.instance.cacheArtworkForTesting(
+          'C',
+          'File',
+          'https://images.genius.com/file-restored.jpg',
+        );
+        ArtworkProvider.instance.cacheArtworkForTesting(
+          'E',
+          'DeadCustom',
+          'https://images.genius.com/dead-custom-restored.jpg',
+        );
+        ArtworkProvider.instance.cacheArtworkForTesting('F', 'LiveCustom', '');
+
+        // «Живая» кастомная обложка: реальный файл в docsDir + запись в БД +
+        // init() — ровно как pickAndSaveArtwork. Тогда getCustomArtworkSync
+        // вернёт путь, и resetAllTrackArtworks не должен её сбрасывать.
+        ArtworkHelper.resetInit();
+        final docsDir = Directory.systemTemp.createTempSync('custom_art_docs_');
+        addTearDown(() {
+          ArtworkHelper.setDocsDirForTesting(null);
+          try {
+            docsDir.deleteSync(recursive: true);
+          } catch (_) {}
+        });
+        // ignore: invalid_use_of_visible_for_testing_member
+        ArtworkHelper.setDocsDirForTesting(docsDir);
+        final liveDir = Directory('${docsDir.path}/custom_artworks');
+        liveDir.createSync(recursive: true);
+        // Путь «как его видит init()»: берём из listSync (на Windows он
+        // содержит нативный разделитель, а p.join/File.path — нет).
+        final liveFile = File('${liveDir.path}/6.jpg');
+        await liveFile.writeAsString('img');
+        final livePath = liveDir
+            .listSync()
+            .whereType<File>()
+            .firstWhere((f) => f.path.endsWith('6.jpg'))
+            .path;
+        await AppDatabase.instance.setCustomArtworkPath('6', livePath);
+        await ArtworkHelper.init();
+        expect(ArtworkHelper.getCustomArtworkSync('6'), livePath);
 
         PlaylistRepository.instance.resetAllTrackArtworks();
 
-        // Сброс обнуляет только провайдерские (Genius/iTunes) URL;
-        // обложки источника (sndcdn) и локальные пути остаются.
+        // Сброс обнуляет провайдерские (Genius/iTunes) URL и «мёртвые»
+        // ссылки на удалённые кастомные обложки; «живая» кастомная обложка
+        // и родная обложка источника (sndcdn) сохраняются.
         var tracks = PlaylistRepository.instance.current.first.tracks;
         expect(tracks[0].artworkUrl, isNull);
-        expect(
-          tracks[1].artworkUrl,
-          '/data/user/0/player/custom_artworks/2.jpg',
-        );
-        expect(
-          tracks[2].artworkUrl,
-          'file:///data/user/0/player/custom_artworks/3.jpg',
-        );
+        expect(tracks[1].artworkUrl, isNull);
+        expect(tracks[2].artworkUrl, isNull);
         expect(
           tracks[3].artworkUrl,
           'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
         );
         expect(tracks[4].artworkUrl, isNull);
+        expect(
+          tracks[5].artworkUrl,
+          '/data/user/0/player/custom_artworks/6.jpg',
+        );
 
         // Сброс сам запустил фоновую дозагрузку: Genius перезапрошен,
-        // None остаётся без обложки, sndcdn/локальные пути не тронуты.
+        // «мёртвый» кастомный путь перезапрошен и заменён на оригинальную
+        // обложку (restored), sndcdn и живой кастом не тронуты.
         await PlaylistRepository.instance.flushEnrichmentForTesting();
 
         tracks = PlaylistRepository.instance.current.first.tracks;
@@ -339,17 +410,24 @@ void main() {
         );
         expect(
           tracks[1].artworkUrl,
-          '/data/user/0/player/custom_artworks/2.jpg',
+          'https://images.genius.com/local-restored.jpg',
         );
         expect(
           tracks[2].artworkUrl,
-          'file:///data/user/0/player/custom_artworks/3.jpg',
+          'https://images.genius.com/file-restored.jpg',
         );
         expect(
           tracks[3].artworkUrl,
           'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
         );
-        expect(tracks[4].artworkUrl, isNull);
+        expect(
+          tracks[4].artworkUrl,
+          'https://images.genius.com/dead-custom-restored.jpg',
+        );
+        expect(
+          tracks[5].artworkUrl,
+          '/data/user/0/player/custom_artworks/6.jpg',
+        );
       },
     );
 

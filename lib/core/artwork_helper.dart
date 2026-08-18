@@ -12,6 +12,25 @@ import '../models/track.dart';
 class ArtworkHelper {
   static final ImagePicker _picker = ImagePicker();
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  TEST HOOKS
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Тестовый хук: подменяет каталог документов приложения, чтобы не
+  /// дёргать path_provider в тестах. После теста вернуть `null`.
+  @visibleForTesting
+  static void setDocsDirForTesting(Directory? dir) => _docsDirOverride = dir;
+
+  static Directory? _docsDirOverride;
+
+  /// Каталог документов приложения (или тестовая подмена из
+  /// [setDocsDirForTesting]).
+  static Future<Directory> _docsDir() async {
+    final override = _docsDirOverride;
+    if (override != null) return override;
+    return getApplicationDocumentsDirectory();
+  }
+
   /// Выбор изображения для плейлиста (без привязки к trackId)
   static Future<String?> pickCustomArtwork() async {
     try {
@@ -23,7 +42,7 @@ class ArtworkHelper {
       );
       if (file == null) return null;
 
-      final appDir = await getApplicationDocumentsDirectory();
+      final appDir = await _docsDir();
       final artDir = Directory('${appDir.path}/custom_artworks/playlists');
       if (!await artDir.exists()) await artDir.create(recursive: true);
 
@@ -56,7 +75,7 @@ class ArtworkHelper {
   static Future<void> init() async {
     if (_initialized) return;
     try {
-      final appDir = await getApplicationDocumentsDirectory();
+      final appDir = await _docsDir();
       await Directory('${appDir.path}/custom_artworks').create(recursive: true);
       await Directory('${appDir.path}/custom_artworks/playlists').create(recursive: true);
 
@@ -68,14 +87,12 @@ class ArtworkHelper {
 
       // Загружаем кастомные обложки через AppDatabase
       try {
-        final loaded = await AppDatabase.instance.loadCustomArtworks(
-          // Передаём set реальных файлов на диске для проверки
-          Directory('${appDir.path}/custom_artworks')
-              .listSync()
-              .whereType<File>()
-              .map((f) => f.path)
-              .toSet(),
-        );
+        final existing = Directory('${appDir.path}/custom_artworks')
+            .listSync()
+            .whereType<File>()
+            .map((f) => f.path)
+            .toSet();
+        final loaded = await AppDatabase.instance.loadCustomArtworks(existing);
         _customArtCache.addAll(loaded);
       } catch (_) {}
     } catch (e) {
@@ -122,7 +139,7 @@ class ArtworkHelper {
 
       if (file == null) return null;
 
-      final appDir = await getApplicationDocumentsDirectory();
+      final appDir = await _docsDir();
       final artDir = Directory('${appDir.path}/custom_artworks');
       if (!await artDir.exists()) {
         await artDir.create(recursive: true);
@@ -167,7 +184,7 @@ class ArtworkHelper {
   /// на диске и без кастомной обложки, «воскресающей» из RAM-кэша до рестарта.
   static Future<void> clearAllCustomArtwork() async {
     try {
-      final appDir = await getApplicationDocumentsDirectory();
+      final appDir = await _docsDir();
       final root = Directory('${appDir.path}/custom_artworks');
       if (await root.exists()) {
         await for (final entity in root.list(followLinks: false)) {
@@ -192,7 +209,7 @@ class ArtworkHelper {
   static Future<void> removeCustomArtwork(String trackId) async {
     try {
       // Удаляем файл с диска
-      final appDir = await getApplicationDocumentsDirectory();
+      final appDir = await _docsDir();
       final file = File('${appDir.path}/custom_artworks/$trackId.jpg');
       if (await file.exists()) await file.delete();
 

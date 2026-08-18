@@ -2,23 +2,37 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:player/core/app_database.dart';
+import 'package:player/core/artwork_helper.dart';
 import 'package:player/core/youtube_cache.dart';
+
+import '../setup/test_harness.dart';
 
 /// Unit-тесты YoutubeCache (cacheIdFor, эвикция, pin/unpin, protected id).
 ///
-/// Используют тестовый хук `setAudioDirForTesting` — работают с реальной
-/// файловой системой (temp dir), но без зависимости от path_provider / БД.
+/// Все используют тестовые хуки `setAudioDirForTesting` /
+/// `setArtworkDirForTesting` / `setDocsDirForTesting` (ArtworkHelper) —
+/// работают с реальной файловой системой (temp dir), но без зависимости
+/// от path_provider. Группа clearAllCache поднимает БД через TestHarness
+/// (sqflite_common_ffi), остальные группы БД не используют.
 void main() {
+  TestHarness.ensureInitialized();
+
   late Directory tempDir;
   late Directory audioDir;
+  late Directory artworkDir;
 
   setUp(() {
     tempDir = Directory.systemTemp.createTempSync('yt_cache_test_');
     audioDir = Directory(p.join(tempDir.path, 'audio'));
     audioDir.createSync(recursive: true);
-    // Подменяем каталог аудио, минуя path_provider
+    artworkDir = Directory(p.join(tempDir.path, 'artwork'));
+    artworkDir.createSync(recursive: true);
+    // Подменяем каталоги аудио и обложек, минуя path_provider
     // ignore: invalid_use_of_visible_for_testing_member
     YoutubeCache.instance.setAudioDirForTesting(audioDir);
+    // ignore: invalid_use_of_visible_for_testing_member
+    YoutubeCache.instance.setArtworkDirForTesting(artworkDir);
     // Отменяем дебаунс-таймер от предыдущих тестов
     // ignore: invalid_use_of_visible_for_testing_member
     YoutubeCache.instance.cancelPendingEvictionForTesting();
@@ -31,6 +45,10 @@ void main() {
     YoutubeCache.instance.cancelPendingEvictionForTesting();
     // ignore: invalid_use_of_visible_for_testing_member
     YoutubeCache.instance.setAudioDirForTesting(null);
+    // ignore: invalid_use_of_visible_for_testing_member
+    YoutubeCache.instance.setArtworkDirForTesting(null);
+    // ignore: invalid_use_of_visible_for_testing_member
+    ArtworkHelper.setDocsDirForTesting(null);
     try {
       tempDir.deleteSync(recursive: true);
     } catch (_) {}
@@ -188,6 +206,127 @@ void main() {
       expect(YoutubeCache.audioExtensions, contains('mp3'));
       expect(YoutubeCache.audioExtensions, contains('m4a'));
       expect(YoutubeCache.audioExtensions, contains('webm'));
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════════════
+  //  clearAllCache
+  // ═════════════════════════════════════════════════════════════════
+  //  Полная очистка: аудио + обложки CachedNetworkImage на диске +
+  //  SQLite-кэш обложек + кастомные обложки (файлы custom_artworks/
+  //  с подкаталогом playlists/) + RAM-кэш ArtworkHelper.
+  //
+  //  Использует: setAudioDirForTesting / setArtworkDirForTesting (YoutubeCache),
+  //  setDocsDirForTesting (ArtworkHelper) и TestHarness для БД.
+
+  group('clearAllCache', () {
+    late Directory docsDir;
+
+    setUp(() async {
+      await TestHarness.setUpDb();
+      // Сбрасываем статическое состояние ArtworkHelper между тестами.
+      ArtworkHelper.resetInit();
+      docsDir = Directory(p.join(tempDir.path, 'docs'));
+      docsDir.createSync(recursive: true);
+      // Подменяем каталог документов для ArtworkHelper, минуя path_provider
+      // ignore: invalid_use_of_visible_for_testing_member
+      ArtworkHelper.setDocsDirForTesting(docsDir);
+    });
+
+    tearDown(() async {
+      await TestHarness.tearDownDb();
+    });
+
+    /// Заполняет «кэш» как в реальном приложении:
+    /// аудио, обложки CachedNetworkImage, кастомные обложки на диске
+    /// (включая playlists/) и RAM-кэш ArtworkHelper.
+    Future<({File trackFile, File artFile, File customFile})> seedCache(
+        {String protectedId = ''}) async {
+      // Аудио-кэш: трек-файл (и защищённый, если задан).
+      final trackId = 'some_id';
+      final trackFile = File(p.join(audioDir.path, '$trackId.mp3'));
+      await trackFile.writeAsString('audio');
+      if (protectedId.isNotEmpty) {
+        await File(
+          p.join(audioDir.path, '$protectedId.mp3'),
+        ).writeAsString('audio-playing');
+      }
+
+      // Обложки CachedNetworkImage на диске.
+      final artFile = File(p.join(artworkDir.path, 'artwork_cache_file.img'));
+      await artFile.writeAsString('art');
+
+      // Кастомные обложки на диске: треки + playlists/.
+      // Каталоги строим конкатенацией через '/', ровно как production-код
+      // (init() → '${appDir.path}/custom_artworks'). На Windows это даёт те же
+      // строки путей в Directory.listSync(), что и внутри init(), поэтому
+      // loadCustomArtworks() по точному строковому сравнению их находит.
+      final customArtRoot = Directory('${docsDir.path}/custom_artworks');
+      final playlistsDir = Directory('${customArtRoot.path}/playlists');
+      playlistsDir.createSync(recursive: true);
+      final customFile = File('${customArtRoot.path}/$trackId.jpg');
+      await customFile.writeAsString('custom-track');
+      await File(
+        '${playlistsDir.path}/cover_123.jpg',
+      ).writeAsString('custom-cover');
+
+      // Путь «как его видит init()»: Directory.listSync() возвращает путь,
+      // который init() кладёт в existingFiles, и с ним loadCustomArtworks()
+      // сравнивает строки из БД. Берём путь прямо из listSync (на Windows он
+      // содержит нативный разделитель, которого нет в customFile.path).
+      final customArtPath = customArtRoot
+          .listSync()
+          .whereType<File>()
+          .firstWhere((f) => f.path.endsWith('$trackId.jpg'))
+          .path;
+
+      // RAM-кэш ArtworkHelper через реальный путь init() → БД.
+      await AppDatabase.instance.setCustomArtworkPath(trackId, customArtPath);
+      ArtworkHelper.resetInit();
+      await ArtworkHelper.init();
+      expect(ArtworkHelper.getCustomArtworkSync(trackId), customArtPath);
+
+      return (trackFile: trackFile, artFile: artFile, customFile: customFile);
+    }
+
+    test('удаляет аудио, обложки и кастомные обои (файлы + RAM-кэш)',
+        () async {
+      final files = await seedCache();
+
+      await YoutubeCache.instance.clearAllCache();
+
+      // Аудио удалено.
+      expect(await files.trackFile.exists(), false);
+      // Обложки CachedNetworkManager удалены.
+      expect(await files.artFile.exists(), false);
+      // Кастомные обои на диске удалены (включая вложенный playlists/).
+      expect(await files.customFile.exists(), false);
+      final playlistsDir =
+          Directory(p.join(docsDir.path, 'custom_artworks', 'playlists'));
+      expect(await playlistsDir.exists(), false);
+      // RAM-кэш ArtworkHelper сброшен.
+      expect(ArtworkHelper.getCustomArtworkSync('some_id'), isNull);
+      // SQLite-записи кастомных обоев тоже удалены clearCacheData.
+      expect(
+        await AppDatabase.instance.getCustomArtworkPath('some_id'),
+        isNull,
+      );
+    });
+
+    test('protected id: файл играющего трека не удаляется', () async {
+      // ignore: invalid_use_of_visible_for_testing_member
+      YoutubeCache.instance.setProtectedId('playing');
+      final files = await seedCache(protectedId: 'playing');
+
+      await YoutubeCache.instance.clearAllCache();
+
+      // Аудио-файл играющего трека выживает.
+      expect(await File(p.join(audioDir.path, 'playing.mp3')).exists(), true);
+      // Остальное удаляется.
+      expect(await files.trackFile.exists(), false);
+      expect(await files.artFile.exists(), false);
+      expect(await files.customFile.exists(), false);
+      expect(ArtworkHelper.getCustomArtworkSync('some_id'), isNull);
     });
   });
 }
