@@ -144,6 +144,12 @@ class YoutubeCache {
   @visibleForTesting
   void setAudioDirForTesting(Directory? dir) => _audioDir = dir;
 
+  /// Тестовый хук: подменяет каталог обложек CachedNetworkImage
+  /// (`libCachedImageData`) напрямую, минуя path_provider. После теста
+  /// вернуть `null`.
+  @visibleForTesting
+  void setArtworkDirForTesting(Directory? dir) => _artworkDir = dir;
+
   /// Тестовый хук: немедленный запуск проверки эвикции — без
   /// 30-секундного дебаунса [_evictDebounce].
   @visibleForTesting

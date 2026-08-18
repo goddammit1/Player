@@ -548,7 +548,11 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     final existing = track.artworkUrl;
     if (existing != null &&
         existing.isNotEmpty &&
-        !ArtworkProvider.isProviderArtworkUrl(existing)) {
+        !ArtworkProvider.isProviderArtworkUrl(existing) &&
+        // Ссылка на кастомную обложку, файл которой удалён («Clear all
+        // cache»), — мёртвая: перезапрашиваем оригинал из источника/провайдера.
+        !(existing.contains('custom_artworks') &&
+            ArtworkHelper.getCustomArtworkSync(track.id) == null)) {
       return;
     }
     _fetchArtworkUrl(track).then((url) {

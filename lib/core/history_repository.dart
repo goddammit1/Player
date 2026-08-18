@@ -6,6 +6,7 @@ import '../models/track.dart';
 import '../sources/artwork_provider.dart';
 import '../sources/source_registry.dart';
 import 'app_database.dart';
+import 'artwork_helper.dart';
 import 'playlist_repository.dart';
 
 /// Одна запись истории прослушивания: трек + момент воспроизведения.
@@ -427,7 +428,16 @@ class HistoryRepository {
     final newList = <HistoryEntry>[];
     for (final e in _list) {
       final url = e.track.artworkUrl;
-      if (url != null && ArtworkProvider.isProviderArtworkUrl(url)) {
+      // Сбрасываем ссылку на кастомную обложку, файл которой уже удалён
+      // («Clear all cache» стёр custom_artworks/). Иначе в БД останется
+      // мёртвый локальный путь и фоновое обогащение его не перезапросит —
+      // трек останется без обложки. Живая кастомная обложка (файл на
+      // диске есть, напр. ветка «Clear artwork cache») сохраняется.
+      final isDeadCustom = url != null &&
+          url.contains('custom_artworks') &&
+          ArtworkHelper.getCustomArtworkSync(e.track.id) == null;
+      if (url != null &&
+          (ArtworkProvider.isProviderArtworkUrl(url) || isDeadCustom)) {
         anyChanged = true;
         cleared.add(e.track.globalId);
         newList.add(

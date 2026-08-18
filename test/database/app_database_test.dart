@@ -52,7 +52,7 @@ void main() {
   });
 
   group('AppDatabase - Custom artwork', () {
-    test('set/get', () async {
+    test('setCustomArtworkPath / getCustomArtworkPath roundtrip', () async {
       await AppDatabase.instance.setCustomArtworkPath('t1', '/p.jpg');
       expect(await AppDatabase.instance.getCustomArtworkPath('t1'), '/p.jpg');
     });
@@ -63,6 +63,39 @@ void main() {
       await AppDatabase.instance.setCustomArtworkPath('t1', '/p.jpg');
       await AppDatabase.instance.removeCustomArtworkPath('t1');
       expect(await AppDatabase.instance.getCustomArtworkPath('t1'), isNull);
+    });
+  });
+
+  group('AppDatabase - clearCacheData', () {
+    test('удаляет custom_art_v* и artwork_v3_* ключи, сохраняя остальные',
+        () async {
+      final customKey1 = AppDatabase.customArtworkKey('t1');
+      final customKey2 = AppDatabase.customArtworkKey('t2');
+      final artworkKey = 'artwork_v3_artist_title';
+
+      // Заполняем кэш-записи.
+      await AppDatabase.instance.setSetting(customKey1, '/docs/custom_artworks/t1.jpg');
+      await AppDatabase.instance.setSetting(customKey2, '/docs/custom_artworks/t2.jpg');
+      await AppDatabase.instance.setSetting(artworkKey, 'https://img.example.com/a.jpg');
+
+      // Пользовательские записи, которые НЕ должны удаляться.
+      await AppDatabase.instance.setSetting('theme', 'dark');
+      await AppDatabase.instance.setSetting('cache_audio_limit_mb', '5120');
+
+      expect(await AppDatabase.instance.getCustomArtworkPath('t1'), isNotNull);
+      expect(await AppDatabase.instance.getCustomArtworkPath('t2'), isNotNull);
+      expect(await AppDatabase.instance.getSetting(artworkKey), isNotNull);
+
+      await AppDatabase.instance.clearCacheData();
+
+      // custom_art_v* и artwork_v3_* удалены.
+      expect(await AppDatabase.instance.getCustomArtworkPath('t1'), isNull);
+      expect(await AppDatabase.instance.getCustomArtworkPath('t2'), isNull);
+      expect(await AppDatabase.instance.getSetting(artworkKey), isNull);
+      // Пользовательские настройки сохранились.
+      expect(await AppDatabase.instance.getSetting('theme'), 'dark');
+      expect(
+          await AppDatabase.instance.getSetting('cache_audio_limit_mb'), '5120');
     });
   });
 
