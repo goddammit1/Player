@@ -20,12 +20,23 @@ import 'search_history_page.dart';
 import 'settings_page.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
-  const SearchPage({super.key, this.showNowPlayingOverlay = true});
+  const SearchPage({
+    super.key,
+    this.showNowPlayingOverlay = true,
+    this.showInPageSearchBar = true,
+  });
 
   /// Отключает встроенный мини-плеер поверх страницы. Нужно, когда страница
   /// встраивается в десктопный shell — там свою панель плеера рисует
   /// [DesktopPlayerBar] (см. ui/desktop/desktop_player_bar.dart).
   final bool showNowPlayingOverlay;
+
+  /// Показывать ли строку поиска внутри страницы. Десктопный shell передаёт
+  /// `false`: там единственная строка поиска — в верхней панели (см.
+  /// ui/desktop/desktop_top_bar.dart), а страница показывает только
+  /// результаты. Мобильная версия (Android/iOS) не меняется — по умолчанию
+  /// [true], со своей строкой ввода.
+  final bool showInPageSearchBar;
 
   @override
   ConsumerState<SearchPage> createState() => _SearchPageState();
@@ -116,28 +127,39 @@ class _SearchPageState extends ConsumerState<SearchPage>
                 maxWidth: isDesktop ? 900 : double.infinity,
               ),
               child: SafeArea(
+                // На десктопе (без строки в странице) системный отступ сверху
+                // не нужен — верхнюю панель с поиском рисует shell.
+                top: !widget.showInPageSearchBar,
                 bottom: false,
                 child: CustomScrollView(
                   slivers: [
                     // === PINNED SEARCH BAR ===
-                    SliverPersistentHeader(
-                      pinned: true,
-                      delegate: _SearchBarDelegate(
-                        barAnim: _barAnim,
-                        barExpand: _barExpand,
-                        colors: colors,
-                        query: state.query,
-                        onPop: _popWithAnimation,
-                        onTapSearch: _goToSearchHistory,
-                        onTapSettings: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const SettingsPage(),
-                            ),
-                          );
-                        },
+                    // На десктопе строку поиска рисует верхняя панель shell'а
+                    // (DesktopTopBar), поэтому здесь она скрывается — страница
+                    // показывает только фильтры и результаты.
+                    if (widget.showInPageSearchBar)
+                      SliverPersistentHeader(
+                        pinned: true,
+                        delegate: _SearchBarDelegate(
+                          barAnim: _barAnim,
+                          barExpand: _barExpand,
+                          colors: colors,
+                          query: state.query,
+                          onPop: _popWithAnimation,
+                          onTapSearch: _goToSearchHistory,
+                          onTapSettings: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const SettingsPage(),
+                              ),
+                            );
+                          },
+                        ),
                       ),
-                    ),
+                    // На десктопе (без строки в странице) нужен небольшой
+                    // отступ сверху, чтобы результаты не прилипали к краю.
+                    if (!widget.showInPageSearchBar)
+                      const SliverToBoxAdapter(child: SizedBox(height: 16)),
 
                     // === FILTERS (no animation) ===
                     if (state.results.isNotEmpty || state.loading)

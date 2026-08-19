@@ -13,6 +13,11 @@ abstract class PlayerServiceInterface {
   Stream<double> get boostDbStream;
   void setBoost(double db);
 
+  /// Громкость воспроизведения, 0.0..1.0.
+  double get volume;
+  Stream<double> get volumeStream;
+  Future<void> setVolume(double volume);
+
   LoopMode get loopMode;
   Stream<LoopMode> get loopModeStream;
   Future<void> setLoopMode(LoopMode mode);

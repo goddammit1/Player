@@ -82,6 +82,16 @@ class _FakePlayer implements PlayerServiceInterface {
   void setBoost(double db) {}
 
   @override
+  double get volume => 1.0;
+
+  @override
+  Stream<double> get volumeStream =>
+      BehaviorSubject.seeded(1.0).stream;
+
+  @override
+  Future<void> setVolume(double volume) async {}
+
+  @override
   LoopMode get loopMode => LoopMode.off;
 
   @override
@@ -196,7 +206,7 @@ void main() {
     // Никаких исключений (в т.ч. overflow) — тест упадёт, если FlutterError
     // зарепортит проблему во время отрисовки панели.
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
+    final slider = tester.widget<Slider>(find.byKey(const Key('seek_slider')));
     expect(slider.onChanged, isNull, reason: 'слайдер должен быть disabled');
     expect(slider.value, 0.0);
 
@@ -213,7 +223,7 @@ void main() {
     await tester.pumpWidget(_wrap(_FakePlayer(duration: dur)));
     await tester.pumpAndSettle();
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
+    final slider = tester.widget<Slider>(find.byKey(const Key('seek_slider')));
     expect(slider.onChanged, isNotNull, reason: 'слайдер должен быть активен');
     expect(slider.max, closeTo(214000, 1));
 

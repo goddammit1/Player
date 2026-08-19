@@ -315,6 +315,7 @@ class PlayerApp extends ConsumerWidget {
     return MaterialApp(
       title: 'Player',
       debugShowCheckedModeBanner: false,
+      navigatorKey: rootNavigatorKey,
       theme: base.copyWith(
         textTheme: base.textTheme.apply(
           bodyColor: colors.textPrimary,

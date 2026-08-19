@@ -17,20 +17,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
-import '../pages/cache_page.dart';
 import '../pages/history_page.dart';
 import '../pages/playlist_page.dart';
 import '../pages/search_page.dart';
 import '../pages/settings_page.dart';
+import 'design/dimens.dart';
+import 'design/floating_panel.dart';
 import 'desktop_home_page.dart';
+import 'desktop_top_bar.dart';
+import 'queue_panel.dart';
 
 /// Разделы боковой панели. Добавление нового раздела = новая константа
 /// здесь + виджет в IndexedStack в [_DesktopShellState.build].
+///
+/// В ТЗ в левой панели остаются только Playlists / History / Settings.
+/// Поиск (Search) перенесён в верхнюю строку TopBar, а Cache доступен из
+/// настроек (см. _CacheTile в settings_page.dart).
 enum DesktopSection {
   playlists('Playlists', Icons.library_music_rounded),
-  search('Search', Icons.search_rounded),
   history('History', Icons.history_rounded),
-  cache('Cache', Icons.download_rounded),
   settings('Settings', Icons.settings_rounded);
 
   const DesktopSection(this.label, this.icon);
@@ -52,7 +57,7 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
 
   /// Стек открытых «страниц» внутри контентной области. Пока пуст —
   /// показывается IndexedStack разделов; иначе поверх — последний элемент
-  /// (например, PlaylistPage), а наверх контента выводится кнопка «назад».
+  /// (например, PlaylistPage).
   final List<Widget> _contentStack = [];
 
   void _openPlaylist(String playlistId) {
@@ -65,6 +70,12 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
 
   void _closeContent() {
     setState(() => _contentStack.removeLast());
+  }
+
+  /// Очищает активный поисковый запрос — верхняя строка пустеет, а контент
+  /// возвращается к выбранному разделу / открытому плейлисту.
+  void _clearSearch() {
+    ref.read(searchProvider.notifier).search('');
   }
 
   void _selectSection(DesktopSection section) {
@@ -80,39 +91,82 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
   Widget build(BuildContext context) {
     final colors = ref.watch(animatedPaletteProvider);
 
+    // Поиск больше не открывается через push страницы: верхняя строка пишет
+    // в searchProvider, и как только запрос непустой — контентная область
+    // показывает результаты поиска (SearchPage без собственной строки ввода).
+    final searchQuery = ref.watch(searchProvider).query.trim();
+    final bool isSearching = searchQuery.isNotEmpty;
+
     final Widget content;
-    if (_contentStack.isEmpty) {
+    if (isSearching) {
+      content = const SearchPage(
+        showNowPlayingOverlay: false,
+        showInPageSearchBar: false,
+      );
+    } else if (_contentStack.isEmpty) {
       content = IndexedStack(
         index: _section.index,
-        children: [
-          DesktopHomePage(onOpenPlaylist: _openPlaylist),
-          const SearchPage(showNowPlayingOverlay: false),
-          const HistoryPage(showNowPlayingOverlay: false),
-          const CachePage(),
-          const SettingsPage(),
+        children: [ // по порядку enum DesktopSection
+          DesktopHomePage(onOpenPlaylist: _openPlaylist), // playlists
+          const HistoryPage(showNowPlayingOverlay: false), // history
+          const SettingsPage(), // settings
         ],
       );
     } else {
       content = _contentStack.last;
     }
 
+    // Правая колонка «Queue/Track» на узких окнах скрывается, чтобы контент
+    // не сжимался. Вариант B — показывать всегда (раскомментируй ниже):
+    //   final bool showQueue = true;
+    final bool showQueue =
+        MediaQuery.sizeOf(context).width >= _queuePanelMinScreenWidth;
+
     return Scaffold(
       backgroundColor: colors.background,
       body: Column(
         children: [
+          // Зона 1 — верхняя панель (логотип + строка поиска).
+          const DesktopTopBar(),
+          // Зона 5 — нижний плеер-бар остаётся ВНЕ shell (рисует
+          // _DesktopFrame в lib/main.dart). Когда интеграция FloatingPanel
+          // будет готова, панель перенесут внутрь, например так:
+          //   SizedBox(
+          //     height: Dimens.playerBarHeight,
+          //     child: FloatingPanel(child: DesktopPlayerBar()),
+          //   ),
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _NavRail(
-                  selected: _section,
-                  onSelect: _selectSection,
-                  colors: colors,
-                  showBack: _contentStack.isNotEmpty,
-                  onBack: _closeContent,
+                // Зона 2 — левая навигация в «плавающей» панели.
+                FloatingPanel(
+                  padding: EdgeInsets.zero,
+                  child: _NavRail(
+                    selected: _section,
+                    onSelect: _selectSection,
+                    colors: colors,
+                    // «Назад»: сбрасываем поиск, если он активен; иначе
+                    // закрываем открытый плейлист.
+                    showBack: isSearching || _contentStack.isNotEmpty,
+                    onBack: isSearching ? _clearSearch : _closeContent,
+                  ),
                 ),
-                VerticalDivider(width: 1, color: colors.outline),
-                Expanded(child: content),
+                // Зазор между левой панелью и контентом.
+                const SizedBox(width: Dimens.gap),
+                // Зона 3 — центральный контент в «плавающей» панели.
+                Expanded(
+                  child: FloatingPanel(
+                    padding: EdgeInsets.zero,
+                    child: content,
+                  ),
+                ),
+                if (showQueue) ...[
+                  // Зазор между контентом и правой колонкой.
+                  const SizedBox(width: Dimens.gap),
+                  // Зона 4 — правая колонка «Queue/Track».
+                  const QueuePanel(),
+                ],
               ],
             ),
           ),
@@ -120,6 +174,10 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
       ),
     );
   }
+
+  /// Минимальная ширина окна, при которой показывается правая колонка
+  /// «Queue/Track» (ниже — скрывается, контент растягивается).
+  static const double _queuePanelMinScreenWidth = 1000;
 }
 
 /// Боковая панель навигации (классика: иконка + подпись, всегда раскрыта).
@@ -140,9 +198,11 @@ class _NavRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Цвет подложки задаёт внешняя FloatingPanel (desktop_shell.dart);
+    // здесь — прозрачный, чтобы панель скругляла углы навигации.
     return Container(
       width: 220,
-      color: colors.elevatedVariant,
+      color: Colors.transparent,
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

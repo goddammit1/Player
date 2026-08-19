@@ -47,6 +47,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
   @override
   double get boostDb => _boostDb.value;
 
+  final BehaviorSubject<double> _volume = BehaviorSubject<double>.seeded(1.0);
+  @override
+  Stream<double> get volumeStream => _volume.stream;
+  @override
+  double get volume => _volume.value;
+
   late final AndroidLoudnessEnhancer _loudnessEnhancer;
   late final AudioPlayer _player;
 
@@ -287,6 +293,15 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     try {
       await _loudnessEnhancer.setEnabled(true);
       await _loudnessEnhancer.setTargetGain(_boostDb.value);
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> setVolume(double volume) async {
+    final c = volume.clamp(0.0, 1.0);
+    _volume.add(c);
+    try {
+      await _player.setVolume(c);
     } catch (_) {}
   }
 
@@ -860,6 +875,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
         'sourceId': t.sourceId,
         'trackId': t.id,
         'originalArtworkUrl': t.artworkUrl,
+        'qualityLabel': t.qualityLabel,
       },
     );
   }

@@ -18,9 +18,17 @@ import 'package:rxdart/rxdart.dart';
 
 import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
+import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
 
 /// Нижняя панель плеера в [DesktopShell].
+///
+/// Три блока (как в ТЗ):
+///  1. Информация о треке (обложка, название, исполнитель + метаданные
+///     «источник • качество» из extras MediaItem).
+///  2. Управление воспроизведением (в очередь, shuffle, prev, play, next,
+///     repeat) + прогресс с перемоткой.
+///  3. Регулятор громкости.
 class DesktopPlayerBar extends ConsumerWidget {
   const DesktopPlayerBar({super.key});
 
@@ -54,66 +62,229 @@ class DesktopPlayerBar extends ConsumerWidget {
           return Row(
             children: [
               const SizedBox(width: 20),
-              Artwork(
-                url: item.artUri?.toString(),
-                size: 56,
-                borderRadius: 8,
-                trackId: (item.extras?['trackId'] as String?) ?? item.id,
+              // ===== Блок 1: информация о треке =====
+              SizedBox(
+                width: 260,
+                child: _TrackInfo(item: item, colors: colors),
               ),
-              const SizedBox(width: 14),
-              // Название / исполнитель.
+              const SizedBox(width: 16),
+              // ===== Блок 2: управление + прогресс =====
               Expanded(
-                flex: 3,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      item.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      item.artist ?? '',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.textSecondary,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
+                child: _Controls(player: player, colors: colors),
               ),
-              // Прогресс + перемотка.
-              Expanded(
-                flex: 4,
-                child: _SeekSlider(player: player, colors: colors),
-              ),
-              const SizedBox(width: 8),
-              _LoopButton(player: player, colors: colors),
-              _SkipButton(
-                icon: Icons.skip_previous_rounded,
-                onTap: player.skipToPrevious,
-                colors: colors,
-              ),
-              _PlayPauseButton(player: player, colors: colors),
-              _SkipButton(
-                icon: Icons.skip_next_rounded,
-                onTap: player.skipToNext,
-                colors: colors,
+              const SizedBox(width: 16),
+              // ===== Блок 3: громкость =====
+              SizedBox(
+                width: 200,
+                child: _VolumeSlider(player: player, colors: colors),
               ),
               const SizedBox(width: 20),
             ],
           );
         },
       ),
+    );
+  }
+}
+
+/// Блок информации о треке с метаданными «источник • качество».
+class _TrackInfo extends StatelessWidget {
+  const _TrackInfo({required this.item, required this.colors});
+
+  final MediaItem item;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    final sourceId = (item.extras?['sourceId'] as String?)?.toUpperCase();
+    final quality = (item.extras?['qualityLabel'] as String?)
+        ?.toUpperCase();
+    final meta = [if (sourceId != null && sourceId.isNotEmpty) sourceId,
+      if (quality != null && quality.isNotEmpty) quality]
+        .join(' • ');
+
+    return Row(
+      children: [
+        Artwork(
+          url: item.artUri?.toString(),
+          size: 56,
+          borderRadius: 8,
+          trackId: (item.extras?['trackId'] as String?) ?? item.id,
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                item.artist ?? '',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: colors.textSecondary, fontSize: 12),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                meta,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: colors.textTertiary, fontSize: 10),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Блок управления: кнопки (в очередь, shuffle, prev, play, next, repeat)
+/// над прогрессом с перемоткой.
+class _Controls extends StatelessWidget {
+  const _Controls({required this.player, required this.colors});
+
+  final PlayerServiceInterface player;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    // Панель живёт ВЫШЕ Navigator'а (в MaterialApp.builder) — для открытия
+    // шторки используем корневой navigator через [rootNavigatorKey].
+    final navCtx = rootNavigatorKey.currentContext;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _SmallButton(
+              icon: Icons.queue_music_rounded,
+              tooltip: 'Add to queue',
+              color: colors.textSecondary,
+              onTap: () {
+                final list = player.trackQueue;
+                final idx = player.currentIndex;
+                if (navCtx != null && idx >= 0 && idx < list.length) {
+                  showAddToPlaylistSheet(navCtx, list[idx]);
+                }
+              },
+            ),
+            _SmallButton(
+              icon: Icons.shuffle_rounded,
+              tooltip: 'Shuffle',
+              color: colors.textSecondary,
+              onTap: player.shuffleQueue,
+            ),
+            _SmallButton(
+              icon: Icons.skip_previous_rounded,
+              tooltip: 'Previous',
+              color: colors.textPrimary,
+              onTap: player.skipToPrevious,
+            ),
+            _PlayPauseButton(player: player, colors: colors),
+            _SmallButton(
+              icon: Icons.skip_next_rounded,
+              tooltip: 'Next',
+              color: colors.textPrimary,
+              onTap: player.skipToNext,
+            ),
+            _LoopButton(player: player, colors: colors),
+          ],
+        ),
+        _SeekSlider(player: player, colors: colors),
+      ],
+    );
+  }
+}
+
+/// Небольшая иконка-кнопка для блока управления.
+class _SmallButton extends StatelessWidget {
+  const _SmallButton({
+    required this.icon,
+    required this.tooltip,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String? tooltip;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasOverlay = Overlay.maybeOf(context) != null;
+    return IconButton(
+      tooltip: hasOverlay ? tooltip : null,
+      iconSize: 24,
+      visualDensity: VisualDensity.compact,
+      icon: Icon(icon, color: color),
+      onPressed: onTap,
+    );
+  }
+}
+
+/// Регулятор громкости: иконка + ползунок 0..1.
+class _VolumeSlider extends StatelessWidget {
+  const _VolumeSlider({required this.player, required this.colors});
+
+  final PlayerServiceInterface player;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(
+          Icons.volume_down_rounded,
+          size: 18,
+          color: colors.textSecondary,
+        ),
+        Expanded(
+          child: StreamBuilder<double>(
+            stream: player.volumeStream,
+            builder: (context, snap) {
+              final v = (snap.data ?? 1.0).clamp(0.0, 1.0);
+              return SliderTheme(
+                data: SliderThemeData(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 6,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(
+                    overlayRadius: 12,
+                  ),
+                  activeTrackColor: colors.textPrimary,
+                  inactiveTrackColor: colors.outline,
+                  thumbColor: colors.textPrimary,
+                  overlayColor: colors.textPrimary.withValues(alpha: 0.15),
+                ),
+                child: SizedBox(
+                  // Slider по умолчанию занимает 48px высоты; в компактной
+                  // панели это выталкивает Column за пределы (flex overflow).
+                  height: 24,
+                  child: Slider(
+                    key: const Key('volume_slider'),
+                    value: v,
+                    onChanged: (val) => player.setVolume(val),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
@@ -212,31 +383,36 @@ class _SeekSliderState extends State<_SeekSlider> {
                       alpha: 0.15,
                     ),
                   ),
-                  child: Slider(
-                    value: valueMs,
-                    max: maxMs,
-                    // При неизвестной длительности слайдер неактивен и не
-                    // рисует ложную заливку на всю ширину.
-                    onChanged: known
-                        ? (v) => setState(
-                              () => _dragValue =
-                                  Duration(milliseconds: v.round()),
-                            )
-                        : null,
-                    onChangeStart: known
-                        ? (v) => setState(
-                              () => _dragValue =
-                                  Duration(milliseconds: v.round()),
-                            )
-                        : null,
-                    onChangeEnd: known
-                        ? (v) {
-                            widget.player.seek(
-                              Duration(milliseconds: v.round()),
-                            );
-                            setState(() => _dragValue = null);
-                          }
-                        : null,
+                  child: SizedBox(
+                    // Компактный слайдер (см. _VolumeSlider).
+                    height: 24,
+                    child: Slider(
+                      key: const Key('seek_slider'),
+                      value: valueMs,
+                      max: maxMs,
+                      // При неизвестной длительности слайдер неактивен и не
+                      // рисует ложную заливку на всю ширину.
+                      onChanged: known
+                          ? (v) => setState(
+                                () => _dragValue =
+                                    Duration(milliseconds: v.round()),
+                              )
+                          : null,
+                      onChangeStart: known
+                          ? (v) => setState(
+                                () => _dragValue =
+                                    Duration(milliseconds: v.round()),
+                              )
+                          : null,
+                      onChangeEnd: known
+                          ? (v) {
+                              widget.player.seek(
+                                Duration(milliseconds: v.round()),
+                              );
+                              setState(() => _dragValue = null);
+                            }
+                          : null,
+                    ),
                   ),
                 ),
                 Padding(
@@ -320,8 +496,9 @@ class _PlayPauseButton extends StatelessWidget {
           builder: (context, playingSnap) {
             final playing = playingSnap.data ?? st?.playing ?? false;
             return IconButton(
-              iconSize: 34,
-              padding: const EdgeInsets.all(10),
+              iconSize: 28,
+              padding: const EdgeInsets.all(6),
+              visualDensity: VisualDensity.compact,
               icon: Icon(
                 playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
                 color: colors.textPrimary,
@@ -356,6 +533,7 @@ class _LoopButton extends StatelessWidget {
         // Overlay реально есть.
         final hasOverlay = Overlay.maybeOf(context) != null;
         return IconButton(
+          visualDensity: VisualDensity.compact,
           tooltip: hasOverlay
               ? (mode == LoopMode.off
                     ? 'Loop: off'
@@ -376,24 +554,4 @@ class _LoopButton extends StatelessWidget {
   }
 }
 
-class _SkipButton extends StatelessWidget {
-  const _SkipButton({
-    required this.icon,
-    required this.onTap,
-    required this.colors,
-  });
-
-  final IconData icon;
-  final VoidCallback onTap;
-  final AppColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      iconSize: 30,
-      icon: Icon(icon, color: colors.textPrimary),
-      onPressed: onTap,
-    );
-  }
-}
 
