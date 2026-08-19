@@ -28,6 +28,13 @@ class DesktopPlayerService implements PlayerServiceInterface {
   @override double get boostDb => _boostDb.value;
   @override Stream<double> get boostDbStream => _boostDb.stream;
 
+  static const _volumeKey = 'volume_v1';
+  // just_audio: громкость 0.0..1.0 (по умолчанию 1.0).
+  final _volume = BehaviorSubject<double>.seeded(1.0);
+
+  @override double get volume => _volume.value;
+  @override Stream<double> get volumeStream => _volume.stream;
+
   late final AudioPlayer _player;
   StreamSubscription<Duration>? _positionSub;
   final List<Track> _queue = [];
@@ -102,6 +109,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
       unawaited(HistoryRepository.instance.add(currentTrack));
     });
     _initBoost();
+    _initVolume();
     _restoreSession();
   }
 
@@ -114,6 +122,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
     _mediaItemSubject.close();
     _playbackStateSubject.close();
     _boostDb.close();
+    _volume.close();
     _currentIndexSubject.close();
     _loopMode.close();
   }
@@ -174,6 +183,29 @@ class DesktopPlayerService implements PlayerServiceInterface {
     final c = db.clamp(0.0, kMaxBoostDb);
     _boostDb.add(c);
     unawaited(AppDatabase.instance.setSetting(_boostDbKey, c.toString()));
+  }
+
+  // ===== Volume =====
+  Future<void> _initVolume() async {
+    try {
+      final raw = await AppDatabase.instance.getSetting(_volumeKey);
+      if (raw != null) {
+        final v = double.tryParse(raw);
+        if (v != null) {
+          await setVolume(v.clamp(0.0, 1.0));
+        }
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> setVolume(double volume) async {
+    final c = volume.clamp(0.0, 1.0);
+    _volume.add(c);
+    try {
+      await _player.setVolume(c);
+    } catch (_) {}
+    unawaited(AppDatabase.instance.setSetting(_volumeKey, c.toString()));
   }
 
   // ===== Sleep Timer =====
@@ -519,6 +551,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
         'sourceId': t.sourceId,
         'trackId': t.id,
         'originalArtworkUrl': t.artworkUrl,
+        'qualityLabel': t.qualityLabel,
       },
     );
   }

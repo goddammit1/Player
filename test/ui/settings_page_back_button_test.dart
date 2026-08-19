@@ -59,6 +59,15 @@ class _FakePlayer implements PlayerServiceInterface {
   void setBoost(double db) {}
 
   @override
+  double get volume => 1.0;
+
+  @override
+  Stream<double> get volumeStream => BehaviorSubject.seeded(1.0).stream;
+
+  @override
+  Future<void> setVolume(double volume) async {}
+
+  @override
   LoopMode get loopMode => LoopMode.off;
 
   @override

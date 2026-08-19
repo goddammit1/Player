@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/playlist.dart';
@@ -21,6 +21,11 @@ export 'global_theme_provider.dart';
 final playerServiceProvider = Provider<PlayerServiceInterface>((ref) {
   throw UnimplementedError('Override in ProviderScope');
 });
+
+/// Глобальный ключ Navigator'а приложения. Нужен виджетам, живущим ВЫШЕ
+/// Navigator'а (DesktopPlayerBar в MaterialApp.builder), чтобы открывать
+/// модальные шторки по корневому navigator'у.
+final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 /// Виртуальный id «искать во всех источниках сразу». Не зарегистрирован в
 /// [SourceRegistry] — обрабатывается в [SearchController] отдельно.
