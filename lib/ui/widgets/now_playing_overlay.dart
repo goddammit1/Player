@@ -20,11 +20,7 @@ class NowPlayingOverlay extends ConsumerStatefulWidget {
 
 class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 320),
-    value: 0,
-  );
+  late AnimationController _ctrl;
 
   double _maxHeight = 0;
   double _dragStartY = 0;
@@ -34,6 +30,21 @@ class _NowPlayingOverlayState extends ConsumerState<NowPlayingOverlay>
   static const double _bottomDeadZone = 40;
   static const double _maxSystemVelocity = 2500;
   static const double _minUserDistance = 60;
+
+  @override
+  void initState() {
+    super.initState();
+    // Создаём контроллер сразу, а не лениво: build() может выйти рано
+    // (пустой плеер → SizedBox.shrink) и не коснуться _ctrl, но dispose()
+    // обращается к нему всегда. Ленивая инициализация в dispose() падала
+    // бы при размонтировании дерева. Тот же паттерн, что у аниматоров
+    // остальных страниц.
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 320),
+      value: 0,
+    );
+  }
 
   @override
   void dispose() {
