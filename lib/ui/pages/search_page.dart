@@ -127,9 +127,11 @@ class _SearchPageState extends ConsumerState<SearchPage>
                 maxWidth: isDesktop ? 900 : double.infinity,
               ),
               child: SafeArea(
-                // На десктопе (без строки в странице) системный отступ сверху
+                // Верхняя строка поиска на мобильных (showInPageSearchBar=true)
+                // должна получать системный safe-area отступ, иначе уйдёт под
+                // notch/статус-бар. На десктопе (без строки в странице) отступ
                 // не нужен — верхнюю панель с поиском рисует shell.
-                top: !widget.showInPageSearchBar,
+                top: widget.showInPageSearchBar,
                 bottom: false,
                 child: CustomScrollView(
                   slivers: [
