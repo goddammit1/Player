@@ -8,6 +8,14 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/playlist.dart';
 import '../models/track.dart';
+import 'database/backup_dao.dart';
+import 'database/database_schema.dart';
+import 'database/listen_history_dao.dart';
+import 'database/playback_dao.dart';
+import 'database/playlist_dao.dart';
+import 'database/search_history_dao.dart';
+import 'database/settings_dao.dart';
+import 'database/track_row_codec.dart';
 import 'history_repository.dart';
 
 /// Единая база данных приложения (SQLite).
@@ -37,13 +45,25 @@ import 'history_repository.dart';
 /// | `playback_state`    | Сохранённая очередь плеера        |
 ///
 /// Миграции версионируются стандартным `onUpgrade` sqflite.
+///
+/// Класс декомпозирован по обязанностям:
+/// - [AppDatabaseSchema] — создание таблиц и миграции;
+/// - доменные DAO в `database/` — слой доступа к данным (плейлисты, история,
+///   поиск, настройки, состояние плеера, бэкап);
+/// - `AppDatabase` — точка входа: владеет соединением, миграцией
+///   SharedPreferences и делегирует запросы в DAO (публичный контракт
+///   сохранён для совместимости с репозиториями и тестами).
 class AppDatabase {
   AppDatabase._();
 
   static final AppDatabase instance = AppDatabase._();
 
-  static const String _dbName = 'player_data.db';
-  static const int _dbVersion = 4;
+  final PlaylistDao _playlistDao = PlaylistDao.instance;
+  final ListenHistoryDao _listenHistoryDao = ListenHistoryDao.instance;
+  final SearchHistoryDao _searchHistoryDao = SearchHistoryDao.instance;
+  final SettingsDao _settingsDao = SettingsDao.instance;
+  final PlaybackDao _playbackDao = PlaybackDao.instance;
+  final BackupDao _backupDao = BackupDao.instance;
 
   Database? _db;
 
@@ -61,7 +81,7 @@ class AppDatabase {
   Future<String> get _dbPath async {
     if (testDbPath != null) return testDbPath!;
     final dir = await getApplicationDocumentsDirectory();
-    return p.join(dir.path, _dbName);
+    return p.join(dir.path, AppDatabaseSchema.dbName);
   }
 
   /// Гарантирует, что база открыта и готова к использованию.
@@ -75,9 +95,9 @@ class AppDatabase {
     final path = await _dbPath;
     return openDatabase(
       path,
-      version: _dbVersion,
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
+      version: AppDatabaseSchema.dbVersion,
+      onCreate: AppDatabaseSchema.create,
+      onUpgrade: AppDatabaseSchema.upgrade,
       onConfigure: (db) async {
         // WAL-mode: параллельные чтения не блокируются записью.
         // Не все версии sqflite/SQLite поддерживают WAL на всех платформах,
@@ -86,136 +106,6 @@ class AppDatabase {
           await db.execute('PRAGMA journal_mode = WAL');
         } catch (_) {}
       },
-    );
-  }
-
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    debugPrint('[AppDatabase] DB upgraded: $oldVersion -> $newVersion');
-    if (oldVersion < 3) {
-      // v2 → v3: удаляем пустые artwork-кэши, оставшиеся от предыдущих версий.
-      // Раньше пустые результаты тоже писались в БД, что блокировало повторный
-      // поиск обложек для треков, которые однажды не нашлись.
-      try {
-        final deleted = await db.delete(
-          'settings',
-          where: "key LIKE 'artwork_v3_%' AND (value IS NULL OR value = '')",
-        );
-        if (deleted > 0) {
-          debugPrint('[AppDatabase] v3 migration: removed $deleted empty artwork cache entries');
-        }
-      } catch (_) {}
-    }
-    if (oldVersion < 4) {
-      // v3 → v4: полная очистка artwork-кэша. После фикса iTunes-фильтрации
-      // (artist matching) старые записи могут содержать неверные обложки
-      // Удаляем всё, чтобы запустить чистый пересбор кэша.
-      try {
-        final deleted = await db.delete(
-          'settings',
-          where: "key LIKE 'artwork_v3_%'",
-        );
-        if (deleted > 0) {
-          debugPrint('[AppDatabase] v4 migration: removed $deleted artwork cache entries (full refresh)');
-        }
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE playlists (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        created_at_ms INTEGER NOT NULL,
-        sort_order INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE playlist_tracks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
-        track_global_id TEXT NOT NULL,
-        source_id TEXT NOT NULL,
-        track_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        artist TEXT NOT NULL,
-        duration_ms INTEGER,
-        artwork_url TEXT,
-        extra_json TEXT,
-        quality_score INTEGER,
-        quality_label TEXT,
-        sort_order INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-
-    await db.execute('''
-      CREATE INDEX idx_playlist_tracks_playlist
-      ON playlist_tracks(playlist_id, sort_order)
-    ''');
-
-    await db.execute('''
-      CREATE TABLE listen_history (
-        track_global_id TEXT NOT NULL,
-        source_id TEXT NOT NULL,
-        track_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        artist TEXT NOT NULL,
-        duration_ms INTEGER,
-        artwork_url TEXT,
-        extra_json TEXT,
-        quality_score INTEGER,
-        quality_label TEXT,
-        played_at_ms INTEGER NOT NULL,
-        PRIMARY KEY (track_global_id, played_at_ms)
-      )
-    ''');
-
-    await db.execute('''
-      CREATE INDEX idx_listen_history_played
-      ON listen_history(played_at_ms DESC)
-    ''');
-
-    await db.execute('''
-      CREATE TABLE search_history (
-        query TEXT PRIMARY KEY,
-        searched_at_ms INTEGER NOT NULL
-      )
-    ''');
-
-    await db.execute('''
-      CREATE INDEX idx_search_history_time
-      ON search_history(searched_at_ms DESC)
-    ''');
-
-    await db.execute('''
-      CREATE TABLE settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE playlist_covers (
-        playlist_id TEXT PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
-        cover_url TEXT NOT NULL
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE playback_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        queue_json TEXT NOT NULL DEFAULT '[]',
-        current_index INTEGER NOT NULL DEFAULT -1,
-        position_ms INTEGER NOT NULL DEFAULT 0,
-        updated_at_ms INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-
-    // Всегда ровно одна строка
-    await db.rawInsert(
-      'INSERT OR IGNORE INTO playback_state (id, queue_json, current_index) '
-      'VALUES (1, \'[]\', -1)',
     );
   }
 
@@ -327,7 +217,7 @@ class AppDatabase {
       });
     }
 
-    // Фаза 2: плейлисты + история (v2, исправленные ключи)
+    // Фаза 2: SharedPreferences + история (v2, исправленные ключи)
     // Используем INSERT OR IGNORE, чтобы не затереть уже созданные
     // пользователем плейлисты/историю после обновления.
     if (needV2) {
@@ -376,7 +266,7 @@ class AppDatabase {
                     'duration_ms': track.duration?.inMilliseconds,
                     'artwork_url': track.artworkUrl,
                     'extra_json':
-                        jsonEncode(extraPrimitives(track.extra)),
+                        jsonEncode(TrackRowCodec.extraPrimitives(track.extra)),
                     'quality_score': track.qualityScore,
                     'quality_label': track.qualityLabel,
                     'sort_order': tOrder++,
@@ -412,7 +302,7 @@ class AppDatabase {
                   track.artist,
                   track.duration?.inMilliseconds,
                   track.artworkUrl,
-                  jsonEncode(extraPrimitives(track.extra)),
+                  jsonEncode(TrackRowCodec.extraPrimitives(track.extra)),
                   track.qualityScore,
                   track.qualityLabel,
                   entry['played_at'] as int,
@@ -437,20 +327,10 @@ class AppDatabase {
 
   /// Рекурсивно обходит [extra] и заменяет все значения на JSON-совместимые
   /// примитивы (String/num/bool/null) либо их вложенные коллекции.
+  ///
+  /// Статическая обёртка сохранена для совместимости с `PlayerService`.
   static Map<String, dynamic> extraPrimitives(Map<String, dynamic> extra) {
-    return extra.map((k, v) => MapEntry(k, _toPrimitive(v)));
-  }
-
-  static dynamic _toPrimitive(dynamic v) {
-    if (v == null) return null;
-    if (v is String || v is num || v is bool) return v;
-    if (v is Map) {
-      return v.map((k, val) => MapEntry(k.toString(), _toPrimitive(val)));
-    }
-    if (v is List) {
-      return v.map((e) => _toPrimitive(e)).toList();
-    }
-    return v.toString();
+    return TrackRowCodec.extraPrimitives(extra);
   }
 
   // ==============================================================
@@ -460,180 +340,28 @@ class AppDatabase {
   /// Загружает все плейлисты (с треками и кастомными обложками) из БД,
   /// сортируя их «новые сверху».
   Future<List<Playlist>> loadPlaylists() async {
-    final db = await database;
-    final rows = await db.query('playlists', orderBy: 'created_at_ms DESC');
-    final result = <Playlist>[];
-    for (final row in rows) {
-      final tracks = await db.query(
-        'playlist_tracks',
-        where: 'playlist_id = ?',
-        whereArgs: [row['id']],
-        orderBy: 'sort_order ASC',
-      );
-      final coverRows = await db.query(
-        'playlist_covers',
-        where: 'playlist_id = ?',
-        whereArgs: [row['id']],
-        limit: 1,
-      );
-      final coverUrl =
-          coverRows.isNotEmpty ? coverRows.first['cover_url'] as String? : null;
-
-      result.add(Playlist(
-        id: row['id'] as String,
-        name: row['name'] as String,
-        tracks: tracks.map(_trackFromRow).toList(),
-        coverCustomUrl: coverUrl,
-        createdAt: DateTime.fromMillisecondsSinceEpoch(
-            (row['created_at_ms'] as num).toInt()),
-      ));
-    }
-    return result;
-  }
-
-  Track _trackFromRow(Map<String, dynamic> row) {
-    Map<String, dynamic> extra = const {};
-    if (row['extra_json'] != null &&
-        (row['extra_json'] as String).isNotEmpty) {
-      try {
-        extra = (jsonDecode(row['extra_json'] as String) as Map)
-            .cast<String, dynamic>();
-      } catch (_) {}
-    }
-    return Track(
-      id: row['track_id'] as String,
-      sourceId: row['source_id'] as String,
-      title: row['title'] as String,
-      artist: row['artist'] as String,
-      duration: row['duration_ms'] != null
-          ? Duration(milliseconds: (row['duration_ms'] as num).toInt())
-          : null,
-      artworkUrl: row['artwork_url'] as String?,
-      qualityScore: row['quality_score'] as int?,
-      qualityLabel: row['quality_label'] as String?,
-      extra: extra,
-    );
+    return _playlistDao.loadPlaylists(await database);
   }
 
   /// Сохраняет (INSERT или REPLACE) плейлист и все его треки.
   Future<void> savePlaylist(Playlist playlist, int sortOrder) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.insert(
-        'playlists',
-        {
-          'id': playlist.id,
-          'name': playlist.name,
-          'created_at_ms': playlist.createdAt.millisecondsSinceEpoch,
-          'sort_order': sortOrder,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-
-      await txn.delete(
-        'playlist_tracks',
-        where: 'playlist_id = ?',
-        whereArgs: [playlist.id],
-      );
-
-      int tOrder = 0;
-      for (final track in playlist.tracks) {
-        await txn.insert('playlist_tracks', {
-          'playlist_id': playlist.id,
-          'track_global_id': track.globalId,
-          'source_id': track.sourceId,
-          'track_id': track.id,
-          'title': track.title,
-          'artist': track.artist,
-          'duration_ms': track.duration?.inMilliseconds,
-          'artwork_url': track.artworkUrl,
-            'extra_json': jsonEncode(extraPrimitives(track.extra)),
-            'quality_score': track.qualityScore,
-            'quality_label': track.qualityLabel,
-            'sort_order': tOrder++,
-          });
-      }
-
-      await txn.delete(
-        'playlist_covers',
-        where: 'playlist_id = ?',
-        whereArgs: [playlist.id],
-      );
-      if (playlist.coverCustomUrl != null) {
-        await txn.insert('playlist_covers', {
-          'playlist_id': playlist.id,
-          'cover_url': playlist.coverCustomUrl,
-        });
-      }
-    });
+    await _playlistDao.savePlaylist(await database, playlist, sortOrder);
   }
 
   /// Сохраняет все плейлисты разом (полный flush).
   Future<void> saveAllPlaylists(List<Playlist> playlists) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete('playlist_tracks');
-      await txn.delete('playlist_covers');
-      await txn.delete('playlists');
-
-      for (var i = 0; i < playlists.length; i++) {
-        final playlist = playlists[i];
-        await txn.insert('playlists', {
-          'id': playlist.id,
-          'name': playlist.name,
-          'created_at_ms': playlist.createdAt.millisecondsSinceEpoch,
-          'sort_order': i,
-        });
-
-        if (playlist.coverCustomUrl != null) {
-          await txn.insert('playlist_covers', {
-            'playlist_id': playlist.id,
-            'cover_url': playlist.coverCustomUrl,
-          });
-        }
-
-        for (var j = 0; j < playlist.tracks.length; j++) {
-          final track = playlist.tracks[j];
-          await txn.insert('playlist_tracks', {
-            'playlist_id': playlist.id,
-            'track_global_id': track.globalId,
-            'source_id': track.sourceId,
-            'track_id': track.id,
-            'title': track.title,
-            'artist': track.artist,
-            'duration_ms': track.duration?.inMilliseconds,
-            'artwork_url': track.artworkUrl,
-            'extra_json': jsonEncode(extraPrimitives(track.extra)),
-            'quality_score': track.qualityScore,
-            'quality_label': track.qualityLabel,
-            'sort_order': j,
-          });
-        }
-      }
-    });
+    await _playlistDao.saveAllPlaylists(await database, playlists);
   }
 
   /// Удаляет плейлист из БД.
   Future<void> deletePlaylist(String id) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete('playlist_covers',
-          where: 'playlist_id = ?', whereArgs: [id]);
-      await txn.delete('playlist_tracks',
-          where: 'playlist_id = ?', whereArgs: [id]);
-      await txn.delete('playlists', where: 'id = ?', whereArgs: [id]);
-    });
+    await _playlistDao.deletePlaylist(await database, id);
   }
 
   /// Полная очистка таблиц плейлистов (для тестов).
   @visibleForTesting
   Future<void> clearPlaylists() async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete('playlist_tracks');
-      await txn.delete('playlist_covers');
-      await txn.delete('playlists');
-    });
+    await _playlistDao.clearPlaylists(await database);
   }
 
   // ==============================================================
@@ -642,102 +370,37 @@ class AppDatabase {
 
   /// Возвращает историю прослушивания, новые сверху, с учётом лимита.
   Future<List<HistoryEntry>> loadListenHistory(int limit) async {
-    final db = await database;
-    final rows = await db.query(
-      'listen_history',
-      orderBy: 'played_at_ms DESC',
-      limit: limit,
-    );
-    return rows.map((row) {
-      final track = _trackFromRow(row);
-      return HistoryEntry(
-        track: track,
-        playedAt: DateTime.fromMillisecondsSinceEpoch(
-            (row['played_at_ms'] as num).toInt()),
-      );
-    }).toList();
+    return _listenHistoryDao.loadListenHistory(await database, limit);
   }
 
-  /// Добавляет запись в историю (одну).
-  ///
-  /// Операция атомарна: DELETE + INSERT выполняются в одной транзакции,
-  /// чтобы при падении INSERT старая запись не была потеряна.
-  Future<void> addListenHistoryEntry(HistoryEntry entry) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete(
-        'listen_history',
-        where: 'track_global_id = ?',
-        whereArgs: [entry.track.globalId],
-      );
-      await txn.insert('listen_history', {
-        'track_global_id': entry.track.globalId,
-        'source_id': entry.track.sourceId,
-        'track_id': entry.track.id,
-        'title': entry.track.title,
-        'artist': entry.track.artist,
-        'duration_ms': entry.track.duration?.inMilliseconds,
-        'artwork_url': entry.track.artworkUrl,
-        'extra_json': jsonEncode(extraPrimitives(entry.track.extra)),
-        'quality_score': entry.track.qualityScore,
-        'quality_label': entry.track.qualityLabel,
-        'played_at_ms': entry.playedAt.millisecondsSinceEpoch,
-      });
-    });
+  /// Добавляет запись в историю (одну) и подрезает её до [limit] (если > 0)
+  /// в той же транзакции — один коммит вместо двух.
+  Future<void> addListenHistoryEntry(HistoryEntry entry, {int limit = 0}) async {
+    await _listenHistoryDao.addListenHistoryEntry(
+        await database, entry, limit: limit);
   }
 
   /// Удаляет конкретную запись из истории.
   Future<void> removeListenHistoryEntry(HistoryEntry entry) async {
-    final db = await database;
-    await db.delete(
-      'listen_history',
-      where: 'track_global_id = ? AND played_at_ms = ?',
-      whereArgs: [
-        entry.track.globalId,
-        entry.playedAt.millisecondsSinceEpoch,
-      ],
-    );
+    await _listenHistoryDao.removeListenHistoryEntry(await database, entry);
   }
 
   /// Очищает всю историю.
   Future<void> clearListenHistory() async {
-    final db = await database;
-    await db.delete('listen_history');
+    await _listenHistoryDao.clearListenHistory(await database);
   }
 
   /// Обновляет [artworkUrl] во всех записях истории для трека с указанным
   /// [globalId]. Используется после ленивой подгрузки обложки.
-  ///
-  /// [artworkUrl] может быть null — тогда URL обложки очищается (нужно при
-  /// сбросе обложек в истории: `resetAllTrackArtworks`).
   Future<void> updateListenHistoryArtwork(
       String globalId, String? artworkUrl) async {
-    final db = await database;
-    await db.update(
-      'listen_history',
-      {'artwork_url': artworkUrl},
-      where: 'track_global_id = ?',
-      whereArgs: [globalId],
-    );
+    await _listenHistoryDao.updateListenHistoryArtwork(
+        await database, globalId, artworkUrl);
   }
 
   /// Подрезает историю до лимита (удаляет старые записи).
   Future<void> trimListenHistory(int limit) async {
-    final db = await database;
-    final rows = await db.query(
-      'listen_history',
-      columns: ['played_at_ms'],
-      orderBy: 'played_at_ms DESC',
-      limit: limit,
-    );
-    if (rows.length >= limit) {
-      final cutoff = rows.last['played_at_ms'] as int;
-      await db.delete(
-        'listen_history',
-        where: 'played_at_ms < ?',
-        whereArgs: [cutoff],
-      );
-    }
+    await _listenHistoryDao.trimListenHistory(await database, limit);
   }
 
   // ==============================================================
@@ -746,74 +409,32 @@ class AppDatabase {
 
   /// Возвращает историю поиска, новые сверху, не более [limit].
   Future<List<String>> getSearchHistory(int limit) async {
-    final db = await database;
-    final rows = await db.query(
-      'search_history',
-      columns: ['query'],
-      orderBy: 'searched_at_ms DESC',
-      limit: limit,
-    );
-    return rows.map((r) => r['query'] as String).toList();
+    return _searchHistoryDao.getSearchHistory(await database, limit);
   }
 
   /// Записывает историю поиска целиком (с дедупликацией и лимитом).
   Future<void> setSearchHistory(List<String> queries, int limit) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete('search_history');
-      final now = DateTime.now().millisecondsSinceEpoch;
-      for (var i = 0; i < queries.length && i < limit; i++) {
-        await txn.insert('search_history', {
-          'query': queries[i],
-          'searched_at_ms': now - i * 1000,
-        });
-      }
-    });
+    await _searchHistoryDao.setSearchHistory(await database, queries, limit);
   }
 
   /// Добавляет поисковый запрос.
   Future<void> addSearchQuery(String query) async {
-    final db = await database;
-    await db.delete(
-      'search_history',
-      where: 'LOWER(query) = LOWER(?)',
-      whereArgs: [query],
-    );
-    await db.insert('search_history', {
-      'query': query,
-      'searched_at_ms': DateTime.now().millisecondsSinceEpoch,
-    });
+    await _searchHistoryDao.addSearchQuery(await database, query);
   }
 
   /// Удаляет конкретный поисковый запрос.
   Future<void> removeSearchQuery(String query) async {
-    final db = await database;
-    await db.delete('search_history', where: 'query = ?', whereArgs: [query]);
+    await _searchHistoryDao.removeSearchQuery(await database, query);
   }
 
   /// Очищает всю историю поиска.
   Future<void> clearSearchHistory() async {
-    final db = await database;
-    await db.delete('search_history');
+    await _searchHistoryDao.clearSearchHistory(await database);
   }
 
   /// Подрезает историю поиска до лимита.
   Future<void> trimSearchHistory(int limit) async {
-    final db = await database;
-    final rows = await db.query(
-      'search_history',
-      columns: ['searched_at_ms'],
-      orderBy: 'searched_at_ms DESC',
-      limit: limit,
-    );
-    if (rows.length >= limit) {
-      final cutoff = rows.last['searched_at_ms'] as int;
-      await db.delete(
-        'search_history',
-        where: 'searched_at_ms < ?',
-        whereArgs: [cutoff],
-      );
-    }
+    await _searchHistoryDao.trimSearchHistory(await database, limit);
   }
 
   // ==============================================================
@@ -822,42 +443,63 @@ class AppDatabase {
 
   /// Читает значение настройки.
   Future<String?> getSetting(String key) async {
-    final db = await database;
-    final rows = await db.query(
-      'settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: [key],
-      limit: 1,
-    );
-    return rows.isNotEmpty ? rows.first['value'] as String? : null;
+    return _settingsDao.getSetting(await database, key);
   }
 
   /// Записывает значение настройки.
   Future<void> setSetting(String key, String value) async {
-    final db = await database;
-    try {
-      await db.insert(
-        'settings',
-        {'key': key, 'value': value},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    } catch (e, st) {
-      debugPrint('[AppDatabase] Failed to persist setting $key: $e\n$st');
-    }
+    await _settingsDao.setSetting(await database, key, value);
   }
 
   /// Удаляет настройку.
   Future<void> removeSetting(String key) async {
-    final db = await database;
-    await db.delete('settings', where: 'key = ?', whereArgs: [key]);
+    await _settingsDao.removeSetting(await database, key);
   }
 
   /// Возвращает все настройки в виде мапы.
   Future<Map<String, String>> getAllSettings() async {
-    final db = await database;
-    final rows = await db.query('settings');
-    return {for (final r in rows) r['key'] as String: r['value'] as String};
+    return _settingsDao.getAllSettings(await database);
+  }
+
+  /// Полная очистка кэша URL обложек (artwork_v3_*) из таблицы settings.
+  Future<void> clearArtworkCacheDb() async {
+    await _settingsDao.clearArtworkCacheDb(await database);
+  }
+
+  /// Удаляет все кэш-данные из SQLite, сохраняя пользовательские данные.
+  Future<void> clearCacheData() async {
+    await _settingsDao.clearCacheData(await database);
+  }
+
+  /// Ключ в таблице settings для кастомной обложки трека.
+  static String customArtworkKey(String trackId) {
+    return SettingsDao.customArtworkKey(trackId);
+  }
+
+  /// Возвращает путь к кастомной обложке трека из таблицы settings.
+  Future<String?> getCustomArtworkPath(String trackId) async {
+    return _settingsDao.getCustomArtworkPath(await database, trackId);
+  }
+
+  /// Сохраняет путь к кастомной обложке трека (REPLACE).
+  Future<void> setCustomArtworkPath(String trackId, String path) async {
+    await _settingsDao.setCustomArtworkPath(await database, trackId, path);
+  }
+
+  /// Удаляет запись о кастомной обложке трека.
+  Future<void> removeCustomArtworkPath(String trackId) async {
+    await _settingsDao.removeCustomArtworkPath(await database, trackId);
+  }
+
+  /// Возвращает все кастомные обложки (trackId -> path), которые есть на диске.
+  Future<Map<String, String>> loadCustomArtworks(
+      Set<String> existingFiles) async {
+    return _settingsDao.loadCustomArtworks(await database, existingFiles);
+  }
+
+  /// Удаляет legacy-ключи custom_art_ (без версионного суффикса v1).
+  Future<void> cleanupLegacyCustomArtKeys() async {
+    await _settingsDao.cleanupLegacyCustomArtKeys(await database);
   }
 
   // ==============================================================
@@ -865,162 +507,22 @@ class AppDatabase {
   // ==============================================================
 
   /// Сохраняет текущую очередь и индекс в `playback_state`.
-  /// Вызывается из [PlayerService] при каждом изменении очереди.
   Future<void> savePlaybackSession({
     required List<Map<String, dynamic>> queueRows,
     required int currentIndex,
     required int positionMs,
   }) async {
-    final db = await database;
-    final json = jsonEncode(queueRows);
-    await db.update(
-      'playback_state',
-      {
-        'queue_json': json,
-        'current_index': currentIndex,
-        'position_ms': positionMs,
-        'updated_at_ms': DateTime.now().millisecondsSinceEpoch,
-      },
-      where: 'id = 1',
-    );
+    await _playbackDao.savePlaybackSession(
+        await database,
+        queueRows: queueRows,
+        currentIndex: currentIndex,
+        positionMs: positionMs);
   }
 
   /// Загружает сохранённое состояние плеера.
-  ///
-  /// Возвращает `null`, если очередь пуста (ничего не восстанавливаем).
   Future<({List<Track> queue, int currentIndex, int positionMs})?>
       loadPlaybackSession() async {
-    final db = await database;
-    final rows = await db.query('playback_state', where: 'id = 1', limit: 1);
-    if (rows.isEmpty) return null;
-
-    final row = rows.first;
-    final json = row['queue_json'] as String;
-    if (json.isEmpty || json == '[]') return null;
-
-    final List raw;
-    try {
-      raw = jsonDecode(json) as List;
-    } catch (_) {
-      return null;
-    }
-
-    final queue = raw.cast<Map<String, dynamic>>().map((r) {
-      return Track.fromMap(r);
-    }).toList();
-
-    if (queue.isEmpty) return null;
-
-    return (
-      queue: queue,
-      currentIndex: (row['current_index'] as int?) ?? -1,
-      positionMs: (row['position_ms'] as int?) ?? 0,
-    );
-  }
-
-  // ==============================================================
-  //  CACHE CLEANUP (SQLite)
-  // ==============================================================
-
-  /// Полная очистка кэша URL обложек (artwork_v3_*) из таблицы settings.
-  ///
-  /// Удаляет все записи, которые ArtworkProvider сохраняет как результат
-  /// поиска обложек через Genius / iTunes. После очистки обложки будут
-  /// перезапрошены заново при следующем воспроизведении трека.
-  Future<void> clearArtworkCacheDb() async {
-    final db = await database;
-    await db.delete(
-      'settings',
-      where: "key LIKE 'artwork_v3_%'",
-    );
-  }
-
-  /// Удаляет все кэш-данные из SQLite, сохраняя пользовательские данные
-  /// (плейлисты, историю прослушивания, настройки приложения).
-  ///
-  /// Очищает:
-  /// - artwork URL cache (artwork_v3_*)
-  /// - custom artwork cache (custom_art_v*)
-  Future<void> clearCacheData() async {
-    final db = await database;
-    await db.delete('settings', where: "key LIKE 'artwork_v3_%'");
-    await db.delete('settings', where: "key LIKE 'custom_art_v%'");
-  }
-
-  // ==============================================================
-  //  CUSTOM ARTWORK PATHS (settings table)
-  // ==============================================================
-
-  /// Ключ в таблице settings для кастомной обложки трека.
-  static String customArtworkKey(String trackId) => 'custom_art_v1_$trackId';
-
-  /// Возвращает путь к кастомной обложке трека из таблицы settings.
-  /// null — обложка не установлена.
-  Future<String?> getCustomArtworkPath(String trackId) async {
-    final db = await database;
-    final rows = await db.query(
-      'settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: [customArtworkKey(trackId)],
-      limit: 1,
-    );
-    if (rows.isNotEmpty) {
-      final val = rows.first['value'] as String?;
-      if (val != null && val.isNotEmpty) return val;
-    }
-    return null;
-  }
-
-  /// Сохраняет путь к кастомной обложке трека (REPLACE).
-  Future<void> setCustomArtworkPath(String trackId, String path) async {
-    final db = await database;
-    await db.insert(
-      'settings',
-      {'key': customArtworkKey(trackId), 'value': path},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  /// Удаляет запись о кастомной обложке трека.
-  Future<void> removeCustomArtworkPath(String trackId) async {
-    final db = await database;
-    await db.delete(
-      'settings',
-      where: 'key = ?',
-      whereArgs: [customArtworkKey(trackId)],
-    );
-  }
-
-  /// Возвращает все кастомные обложки (trackId -> path), которые есть на диске.
-  /// [existingFiles] — set путей, реально существующих (проверено вызывающей стороной).
-  Future<Map<String, String>> loadCustomArtworks(
-      Set<String> existingFiles) async {
-    final db = await database;
-    final rows = await db.query(
-      'settings',
-      columns: ['key', 'value'],
-      where: "key LIKE 'custom_art_v1_%'",
-    );
-    final result = <String, String>{};
-    for (final row in rows) {
-      final key = row['key'] as String;
-      final trackId = key.replaceFirst('custom_art_v1_', '');
-      final path = row['value'] as String;
-      if (path.isNotEmpty && existingFiles.contains(path)) {
-        result[trackId] = path;
-      }
-    }
-    return result;
-  }
-
-  /// Удаляет legacy-ключи custom_art_ (без версионного суффикса v1).
-  Future<void> cleanupLegacyCustomArtKeys() async {
-    final db = await database;
-    await db.delete(
-      'settings',
-      where: "key LIKE 'custom_art_%' AND key NOT LIKE 'custom_art_v%'",
-    );
+    return _playbackDao.loadPlaybackSession(await database);
   }
 
   // ==============================================================
@@ -1029,102 +531,11 @@ class AppDatabase {
 
   /// Экспортирует всю БД в JSON-строку (полный бэкап).
   Future<String> exportFullBackup() async {
-    final db = await database;
-    final playlists =
-        await db.query('playlists', orderBy: 'sort_order ASC');
-    final playlistTracks =
-        await db.query('playlist_tracks', orderBy: 'sort_order ASC');
-    final playlistCovers = await db.query('playlist_covers');
-    final history =
-        await db.query('listen_history', orderBy: 'played_at_ms DESC');
-    final search =
-        await db.query('search_history', orderBy: 'searched_at_ms DESC');
-    final settings = await db.query('settings');
-    final playbackState =
-        await db.query('playback_state', where: 'id = 1', limit: 1);
-
-    final map = <String, dynamic>{
-      'format': 'player_full_backup',
-      'version': 2,
-      'exported_at_ms': DateTime.now().millisecondsSinceEpoch,
-      'playlists': playlists,
-      'playlist_tracks': playlistTracks,
-      'playlist_covers': playlistCovers,
-      'listen_history': history,
-      'search_history': search,
-      'settings': settings,
-      'playback_state': playbackState,
-    };
-    return const JsonEncoder().convert(map);
+    return _backupDao.exportFullBackup(await database);
   }
 
   /// Импортирует полный бэкап из JSON-строки.
-  /// Замещает все текущие данные. Бросает [FormatException] при ошибке.
   Future<void> importFullBackup(String raw) async {
-    final dynamic parsed;
-    try {
-      parsed = jsonDecode(raw);
-    } catch (_) {
-      throw const FormatException('Not a valid JSON file');
-    }
-    if (parsed is! Map) {
-      throw const FormatException('Unexpected JSON structure');
-    }
-    final format = parsed['format'];
-    if (format != 'player_full_backup') {
-      throw const FormatException('Not a full backup file');
-    }
-    final version = parsed['version'];
-    if (version != 1 && version != 2) {
-      throw FormatException('Unsupported backup version: $version');
-    }
-
-    final db = await database;
-    await db.transaction((txn) async {
-      // Очищаем все таблицы в правильном порядке (сначала дочерние)
-      await txn.delete('playlist_tracks');
-      await txn.delete('playlist_covers');
-      await txn.delete('playlists');
-      await txn.delete('listen_history');
-      await txn.delete('search_history');
-      await txn.delete('settings');
-
-      // Восстанавливаем в правильном порядке (сначала родительские)
-      for (final row in (parsed['playlists'] as List?) ?? []) {
-        await txn.insert('playlists', (row as Map).cast<String, dynamic>());
-      }
-      for (final row in (parsed['playlist_tracks'] as List?) ?? []) {
-        await txn.insert(
-            'playlist_tracks', (row as Map).cast<String, dynamic>());
-      }
-      for (final row in (parsed['playlist_covers'] as List?) ?? []) {
-        await txn.insert(
-            'playlist_covers', (row as Map).cast<String, dynamic>());
-      }
-      for (final row in (parsed['listen_history'] as List?) ?? []) {
-        await txn.insert(
-            'listen_history', (row as Map).cast<String, dynamic>());
-      }
-      for (final row in (parsed['search_history'] as List?) ?? []) {
-        await txn.insert(
-            'search_history', (row as Map).cast<String, dynamic>());
-      }
-      for (final row in (parsed['settings'] as List?) ?? []) {
-        await txn.insert('settings', (row as Map).cast<String, dynamic>());
-      }
-
-      // playback_state (v2+)
-      if (version >= 2) {
-        final psRows = (parsed['playback_state'] as List?) ?? [];
-        if (psRows.isNotEmpty) {
-          // Удаляем текущую строку playback_state и вставляем из бэкапа
-          await txn.delete('playback_state');
-          for (final row in psRows) {
-            await txn.insert(
-                'playback_state', (row as Map).cast<String, dynamic>());
-          }
-        }
-      }
-    });
+    await _backupDao.importFullBackup(await database, raw);
   }
 }
