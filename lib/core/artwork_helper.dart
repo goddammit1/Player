@@ -1,11 +1,12 @@
 // lib/core/artwork_helper.dart
 
+import 'dart:async';
 import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:player/core/app_database.dart';
+import 'app_database.dart';
 
 import '../models/track.dart';
 
@@ -64,14 +65,22 @@ class ArtworkHelper {
   static final Map<String, String> _customArtCache = {};
   static bool _initialized = false;
 
+  /// Мемо: trackId → уже выполненная/выполняемая ленивая подгрузка.
+  /// Исключает дублирующие запросы в БД и гонку между суффиксами.
+  static final Map<String, Future<void>> _pendingLoads = {};
+
   /// Сбрасывает флаг инициализации, чтобы следующий вызов [init]
-  /// перечитал БД заново (нужно после импорта полного бэкапа).
+  /// заново создал каталоги и почистил legacy-ключи (нужно после импорта
+  /// полного бэкапа). In-memory кэш также очищается.
   static void resetInit() {
     _initialized = false;
     _customArtCache.clear();
   }
 
-  /// Инициализация кэша кастомных обложек при старте приложения (вызывать в main.dart)
+  /// Инициализация кастомных обложек при старте приложения (вызывать в main.dart).
+  /// Только минимальные действия: создание каталогов и очистка legacy-ключей.
+  /// Сами записи БД НЕ читаются — они подгружаются лениво, по одной записи,
+  /// в [getCustomArtwork] / [getCustomArtworkSync].
   static Future<void> init() async {
     if (_initialized) return;
     try {
@@ -79,21 +88,10 @@ class ArtworkHelper {
       await Directory('${appDir.path}/custom_artworks').create(recursive: true);
       await Directory('${appDir.path}/custom_artworks/playlists').create(recursive: true);
 
-      // Удаляем legacy-ключи custom_art_ (без версионного суффикса),
-      // оставшиеся от версий приложения до sqflite-миграции.
+      // Удаляем legacy-ключи custom_art_ (без версии с суффиксом),
+      // оставшиеся от версий до sqflite-миграции.
       try {
         await AppDatabase.instance.cleanupLegacyCustomArtKeys();
-      } catch (_) {}
-
-      // Загружаем кастомные обложки через AppDatabase
-      try {
-        final existing = Directory('${appDir.path}/custom_artworks')
-            .listSync()
-            .whereType<File>()
-            .map((f) => f.path)
-            .toSet();
-        final loaded = await AppDatabase.instance.loadCustomArtworks(existing);
-        _customArtCache.addAll(loaded);
       } catch (_) {}
     } catch (e) {
       debugPrint('[ArtworkHelper.init] Failed to initialize: $e');
@@ -101,13 +99,62 @@ class ArtworkHelper {
     _initialized = true;
   }
 
-  /// Синхронно возвращает путь к кастомной обложке из быстрой памяти
-  static String? getCustomArtworkSync(String trackId) {
+  /// Лениво загружает запись кастомной обложки [trackId] из SQLite
+  /// (если её ещё нет в памяти) и возвращает путь на диске, либо null.
+  /// Используется UI/сервисами, которые могут ждать async-результат.
+  static Future<String?> getCustomArtwork(String trackId) async {
+    final syncPath = getCustomArtworkSync(trackId);
+    if (syncPath != null) return syncPath;
+    await _ensureLoaded(trackId);
     final path = _customArtCache[trackId];
     if (path != null && File(path).existsSync()) {
       return path;
     }
     return null;
+  }
+
+  /// Синхронно возвращает путь к кастомной обложке из быстрой памяти.
+  /// Если записи в RAM-кэше нет — запускает фоновую ленивую подгрузку из
+  /// SQLite (результат появится при следующем запросе) и возвращает null.
+  /// Публичная сигнатура не изменена; поведение при заполненном кэше
+  /// идентично прежнему.
+  static String? getCustomArtworkSync(String trackId) {
+    final path = _customArtCache[trackId];
+    if (path != null && File(path).existsSync()) {
+      return path;
+    }
+    unawaited(_ensureLoaded(trackId));
+    return null;
+  }
+
+  /// Подгружает из БД путь одной записи и кладёт в [_customArtCache].
+  /// Файл НЕ обязан существовать на диске — проверка existsSync происходит
+  /// в геттерах при отдаче (и в resolveEffectiveArtwork — по пути).
+  static Future<void> _ensureLoaded(String trackId) async {
+    final pending = _pendingLoads[trackId];
+    if (pending != null) return pending;
+    final future = _loadOne(trackId);
+    _pendingLoads[trackId] = future;
+    try {
+      await future;
+    } finally {
+      _pendingLoads.remove(trackId);
+    }
+  }
+
+  static Future<void> _loadOne(String trackId) async {
+    // Даже без явного init() каталоги должны существовать — иначе
+    // pickAndSaveArtwork/clear ломаются; создаём тихо при необходимости.
+    try {
+      final appDir = await _docsDir();
+      await Directory('${appDir.path}/custom_artworks').create(recursive: true);
+    } catch (_) {}
+    try {
+      final path = await AppDatabase.instance.getCustomArtworkPath(trackId);
+      if (path != null && path.isNotEmpty) {
+        _customArtCache[trackId] = path;
+      }
+    } catch (_) {}
   }
 
   /// Возвращает эффективный artwork для отображения: если для [trackId]

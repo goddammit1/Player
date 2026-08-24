@@ -377,6 +377,8 @@ void main() {
             .path;
         await AppDatabase.instance.setCustomArtworkPath('6', livePath);
         await ArtworkHelper.init();
+        // Ленивая подгрузка по запросу — init() RAM-кэш не наполняет.
+        await ArtworkHelper.getCustomArtwork('6');
         expect(ArtworkHelper.getCustomArtworkSync('6'), livePath);
 
         PlaylistRepository.instance.resetAllTrackArtworks();

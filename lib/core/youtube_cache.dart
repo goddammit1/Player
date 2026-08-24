@@ -119,6 +119,11 @@ class YoutubeCache {
   Future<void>? _initFuture;
   Timer? _evictTimer;
 
+  /// Guard эвикции: таймер и ручные вызовы не должны сканировать каталог
+  /// конкурентно. Если прогон уже идёт, новый вызов получает тот же Future
+  /// (см. [_evictIfNeeded]).
+  Future<void>? _evictInFlight;
+
   /// id трека, который играет прямо сейчас: его файл нельзя эвиктить
   /// или удалять при «Clear audio cache» — LockCachingAudioSource держит
   /// его открытым, удаление на лету роняет воспроизведение.
@@ -255,9 +260,13 @@ class YoutubeCache {
       try {
         await file.setLastModified(DateTime.now());
       } catch (_) {}
+    } else {
+      // Новый кэш-файл появится — каталог изменится, планируем эвикцию.
+      // Простое открытие существующего файла для воспроизведения каталог
+      // не меняет, поэтому скан не планируем.
+      _scheduleEviction();
     }
 
-    _scheduleEviction();
     return file;
   }
 
@@ -297,7 +306,21 @@ class YoutubeCache {
     });
   }
 
-  Future<void> _evictIfNeeded() async {
+  Future<void> _evictIfNeeded() {
+    // Единый guard: пока один прогон (таймер/тест/ручной вызов) идёт,
+    // второй получает тот же Future вместо параллельного сканирования.
+    final inFlight = _evictInFlight;
+    if (inFlight != null) return inFlight;
+
+    final run = _runEviction();
+    _evictInFlight = run;
+    unawaited(run.whenComplete(() {
+      if (identical(_evictInFlight, run)) _evictInFlight = null;
+    }));
+    return run;
+  }
+
+  Future<void> _runEviction() async {
     await _evictAudioIfNeeded();
     await _evictArtworkIfNeeded();
   }
@@ -316,11 +339,11 @@ class YoutubeCache {
     var overflow = totalBytes - limitBytes;
     final now = DateTime.now();
 
-    for (final (file, size, _) in files) {
+    // mtime берём из листинга — повторный stat() на каждый кандидат не нужен.
+    for (final (file, size, modified) in files) {
       if (overflow <= 0) break;
 
-      final stat = await file.stat();
-      if (now.difference(stat.modified) < _protectWindow) continue;
+      if (now.difference(modified) < _protectWindow) continue;
 
       final fid = p.basenameWithoutExtension(file.path);
       if (fid == _protectedId) continue;

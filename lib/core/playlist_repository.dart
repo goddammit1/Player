@@ -4,12 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
-import '../sources/artwork_provider.dart';
-import '../sources/source_registry.dart';
-import 'app_database.dart';
-import 'artwork_helper.dart';
-import 'history_repository.dart';
 import '../models/track.dart';
+import 'artwork_helper.dart';
+import 'app_database.dart';
+import 'playlist_artwork_enricher.dart';
 import 'playlist_backup.dart';
 
 /// Persistence + state-store для пользовательских плейлистов.
@@ -17,6 +15,8 @@ import 'playlist_backup.dart';
 /// Хранилище — SQLite через [AppDatabase]. Публикует `Stream<List<Playlist>>`
 /// (через `_controller.stream`) — UI подписывается на него через
 /// Riverpod-провайдер. Запись на диск дебаунсится 300 мс.
+///
+/// Фоновое обогащение обложек вынесено в [PlaylistArtworkEnricher].
 class PlaylistRepository {
   PlaylistRepository._();
   static final PlaylistRepository instance = PlaylistRepository._();
@@ -24,18 +24,8 @@ class PlaylistRepository {
   static const _uuid = Uuid();
   static const Duration _persistDebounce = Duration(milliseconds: 300);
 
-  /// Максимум одновременных фоновых запросов обложек. Каждый трек внутри
-  /// [ArtworkProvider.findArtwork] даёт 2 параллельных HTTP-запроса
-  /// (Genius + iTunes), поэтому даже 3 слота = 6 запросов в один момент.
-  static const int _maxEnrichConcurrency = 3;
-
-  /// Сколько треков без обложек обогащается за один `_load()`. Предохраняет
-  /// от сетевого шторма на старте приложения при большой библиотеке.
-  static const int _maxEnrichPerLoad = 50;
-
-  /// Частота применения накопленного батча обложек: пачка найденных URL
-  /// применяется одним эмитом в стрим и одной записью в БД.
-  static const Duration _artworkFlushInterval = Duration(milliseconds: 150);
+  /// Обогащение обложек, сконфигурированное на этот репозиторий.
+  final PlaylistArtworkEnricher _enricher = PlaylistArtworkEnricher.instance;
 
   final StreamController<List<Playlist>> _controller =
       StreamController<List<Playlist>>.broadcast();
@@ -43,28 +33,15 @@ class PlaylistRepository {
   Future<void>? _initFuture;
   Timer? _persistTimer;
 
-  // ---- Фоновое обогащение обложек ----
-  final _Semaphore _enrichSemaphore = _Semaphore(_maxEnrichConcurrency);
-  final Set<Future<void>> _enrichmentInFlight = {};
-
-  /// Хвостовые задачи кросс-пропагации обложек в [HistoryRepository].
-  /// См. комментарий в HistoryRepository._crossArtworkPropagation.
-  final Set<Future<void>> _crossArtworkPropagation = {};
-
-  final List<({String globalId, String url})> _pendingArtwork = [];
-  Timer? _artworkFlushTimer;
-
-  /// Future всей волны [_refreshArtworkCandidates] (включая фазу сбора
-  /// кандидатов по TTL). Нужен тестовому хуку [flushEnrichmentForTesting],
-  /// чтобы дождаться ВСЕЙ волны, а не только уже запущенных in-flight
-  /// запросов (иначе гонка: reload() стартует кандидатов асинхронно,
-  /// а тест уже закрывает БД).
-  Future<void>? _refreshFuture;
-
-  /// Инкрементируется при сбросе обложек / сбросе состояния. In-flight
-  /// результаты с устаревшим значением не применяются — защита от гонки
-  /// «очистили кэш обложек, а прилетевший URL вернул обложку обратно».
-  int _artworkGeneration = 0;
+  /// Связывает enricher с состоянием этого репозитория через колбэки.
+  /// Идемпотентно; вызывается перед каждым вовлечением enricher.
+  void _wireEnricher() {
+    _enricher.readPlaylists = () => _list;
+    _enricher.applyPlaylists = (next) {
+      _list = next;
+      _notifyAndSchedulePersist();
+    };
+  }
 
   /// Поток плейлистов в текущем порядке (новые сверху).
   Stream<List<Playlist>> get stream => _controller.stream;
@@ -96,219 +73,9 @@ class PlaylistRepository {
 
     // Лениво дозагружаем/обновляем обложки для треков.
     // Запускаем в фоне, не блокируя UI.
-    unawaited(_refreshArtworkCandidates());
+    _wireEnricher();
+    unawaited(_enricher.refreshArtworkCandidates());
   }
-
-  /// Лениво дозагружает/обновляет обложки в плейлистах.
-  ///
-  /// Кандидаты на перезапрос:
-  /// - треки БЕЗ обложки (`artworkUrl == null` / пустой);
-  /// - треки с ПРОВАЙДЕРСКОЙ обложкой (Genius/iTunes, определяется через
-  ///   [ArtworkProvider.isProviderArtworkUrl]), у которой истёк TTL
-  ///   [ArtworkProvider.foundUrlTtl] — так при каждом старте приложения
-  ///   обложки, которые Genius/iTunes поменяли с прошлого раза, подхватываются
-  ///   автоматически, без ручной очистки кэша.
-  ///
-  /// Что НЕ перезапрашивается (остаётся как есть):
-  /// - обложки, которые дал сам источник (SoundCloud `sndcdn.com`,
-  ///   YouTube `i.ytimg.com`, локальные файлы `/...` и `file://...`);
-  /// - свежие провайдерские обложки (TTL не истёк) — чтобы не дёргать
-  ///   Genius/iTunes на каждый старт.
-  ///
-  /// При [force] == true (ручной сброс) перезапрашиваются ВСЕ провайдерские
-  /// обложки независимо от TTL (обычные «сброс обложек» в UI).
-  ///
-  /// Фоновое обогащение ограничено, чтобы старт приложения не превращался
-  /// в сетевой шторм:
-  /// - за один вызов обрабатывается не более [_maxEnrichPerLoad] треков;
-  /// - одновременно летит не более [_maxEnrichConcurrency] запросов;
-  /// - треки с пустыми artist/title пропускаются — по ним нет смысла искать.
-  ///
-  /// Найденные URL не применяются по одному: они копятся в [_pendingArtwork]
-  /// и применяются раз в [_artworkFlushInterval] одной пачкой — один emit
-  /// в стрим и одна запись в БД вместо N (N пересборок UI + N saveAllPlaylists).
-  Future<void> _refreshArtworkCandidates({bool force = false}) {
-    return _refreshFuture = _refreshArtworkCandidatesAsync(force: force);
-  }
-
-  Future<void> _refreshArtworkCandidatesAsync({required bool force}) async {
-    final candidates = <Track>[];
-    final seen = <String>{};
-
-    // 1. Быстрые кандидаты: треки без обложки (не требуют сети/TTL-проверки).
-    for (final p in _list) {
-      for (final t in p.tracks) {
-        if (t.artist.trim().isEmpty || t.title.trim().isEmpty) continue;
-        final isMissing = t.artworkUrl == null || t.artworkUrl!.isEmpty;
-        if (!isMissing) continue;
-        if (seen.add(t.globalId)) candidates.add(t);
-      }
-    }
-
-    // 2. Кандидаты «провайдерская, но устарела по TTL ИЛИ рассинхронизирована».
-    //    Собираем их асинхронно (проверка кэша читает SQLite без сети),
-    //    не блокируя UI — батчами через Future.wait.
-    if (!force) {
-      final staleChecks = <Future<void>>[];
-      for (final p in _list) {
-        for (final t in p.tracks) {
-          final url = t.artworkUrl;
-          if (url == null || url.isEmpty) continue;
-          if (!ArtworkProvider.isProviderArtworkUrl(url)) continue;
-          if (t.artist.trim().isEmpty || t.title.trim().isEmpty) continue;
-          if (!seen.add(t.globalId)) continue;
-          staleChecks.add(
-            ArtworkProvider.instance
-                .getFreshCachedArtworkUrl(t.artist, t.title)
-                .then((cached) {
-                  // Свежий кэш, совпадающий с хранимым URL — менять нечего.
-                  if (cached != null && cached == url) return;
-                  candidates.add(t);
-                }),
-          );
-        }
-      }
-      if (staleChecks.isNotEmpty) {
-        await Future.wait(staleChecks);
-      }
-    } else {
-      // force: перезапрашиваем ВСЕ провайдерские, TTL игнорируем.
-      for (final p in _list) {
-        for (final t in p.tracks) {
-          final url = t.artworkUrl;
-          if (url == null || url.isEmpty) continue;
-          if (!ArtworkProvider.isProviderArtworkUrl(url)) continue;
-          if (t.artist.trim().isEmpty || t.title.trim().isEmpty) continue;
-          if (seen.add(t.globalId)) candidates.add(t);
-        }
-      }
-    }
-
-    for (final track in candidates.take(_maxEnrichPerLoad)) {
-      final future = _fetchAndApplyArtworkForTrack(track);
-      _enrichmentInFlight.add(future);
-      unawaited(future.whenComplete(() => _enrichmentInFlight.remove(future)));
-    }
-  }
-
-  Future<void> _fetchAndApplyArtworkForTrack(Track track) async {
-    // Семафор ограничивает одновременные запросы: в плейлистах могут быть
-    // сотни треков без обложек, а каждый findArtwork даёт 2 параллельных
-    // HTTP-запроса (Genius + iTunes). Без лимита старт приложения = десятки
-    // одновременных запросов → rate-limits и тормоза сети/UI.
-    await _enrichSemaphore.acquire();
-    final generation = _artworkGeneration;
-    try {
-      // Сначала пробуем восстановить «родную» обложку из самого источника
-      // (например, SoundCloud по ID трека): для таких треков Genius/iTunes
-      // часто пуст, а без источника потерянный URL уже не вернуть.
-      String? url;
-      try {
-        url = await SourceRegistry.instance
-            .get(track.sourceId)
-            ?.resolveArtwork(track);
-      } catch (_) {
-        url = null;
-      }
-      if (url == null || url.isEmpty) {
-        url = await ArtworkProvider.instance.findArtwork(
-          track.artist,
-          track.title,
-          preferredSize: 600,
-        );
-      }
-      // Пока запрос летел, обложки могли сбросить (очистка кэша) или
-      // плейлисты перезагрузить — устаревший результат не применяем,
-      // иначе «сброс» откатился бы прилетевшим URL.
-      if (generation != _artworkGeneration) return;
-      if (url == null || url.isEmpty) return;
-      _queueArtworkUpdate(track.globalId, url);
-    } catch (_) {
-      // Индивидуальные ошибки провайдера не роняют весь enrichment.
-    } finally {
-      _enrichSemaphore.release();
-    }
-  }
-
-  /// Копит найденные обложки и применяет их одной пачкой через
-  /// [_artworkFlushInterval] — один emit в стрим и один persist на пачку.
-  void _queueArtworkUpdate(String globalId, String url) {
-    _pendingArtwork.add((globalId: globalId, url: url));
-    _artworkFlushTimer ??= Timer(_artworkFlushInterval, _flushArtworkBatch);
-  }
-
-  void _flushArtworkBatch() {
-    _artworkFlushTimer = null;
-    if (_pendingArtwork.isEmpty) return;
-    final batch = List.of(_pendingArtwork);
-    _pendingArtwork.clear();
-    _applyArtworkUpdates(batch);
-  }
-
-  /// Применяет пачку обновлений обложек одним проходом: один emit в стрим
-  /// и один дебаунс-персист. При дублях globalId внутри пачки побеждает
-  /// последний URL.
-  ///
-  /// Применённые URL дополнительно пробрасываются в [HistoryRepository],
-  /// чтобы один и тот же трек показывал одну и ту же обложку во всём
-  /// приложении (плейлисты ↔ история). Обновления идемпотентны, поэтому
-  /// встречный проброс из истории в плейлисты (см. HistoryRepository)
-  /// циклично не размножается: после первого применения URL совпадают.
-  void _applyArtworkUpdates(Iterable<({String globalId, String url})> updates) {
-    final byGlobalId = <String, String>{};
-    for (final u in updates) {
-      byGlobalId[u.globalId] = u.url;
-    }
-
-    var changed = false;
-    final newList = <Playlist>[];
-    for (final p in _list) {
-      var playlistChanged = false;
-      final newTracks = p.tracks.map((t) {
-        final url = byGlobalId[t.globalId];
-        if (url != null && t.artworkUrl != url) {
-          playlistChanged = true;
-          return t.copyWith(artworkUrl: url);
-        }
-        return t;
-      }).toList();
-      if (playlistChanged) changed = true;
-      newList.add(playlistChanged ? p.copyWith(tracks: newTracks) : p);
-    }
-    if (changed) {
-      _list = newList;
-      _notifyAndSchedulePersist();
-    }
-
-    // Кросс-пропагация в историю: даже если ни один плейлист не изменился,
-    // история может держать старый URL для того же globalId.
-    for (final u in updates) {
-      _trackCrossArtworkPropagation(
-        HistoryRepository.instance.updateTrackArtwork(u.globalId, u.url),
-      );
-    }
-  }
-
-  /// Учитывает future кросс-пропагации в [_crossArtworkPropagation], чтобы
-  /// тестовый хук [flushEnrichmentForTesting] дождался его завершения.
-  void _trackCrossArtworkPropagation(Future<void> future) {
-    _crossArtworkPropagation.add(future);
-    unawaited(future.whenComplete(() => _crossArtworkPropagation.remove(future)));
-  }
-
-  /// Копия трека без обложки. Нужна в [resetAllTrackArtworks]: обычный
-  /// `copyWith(artworkUrl: null)` не сбрасывает URL — copyWith игнорирует null.
-  static Track _withoutArtwork(Track t) => Track(
-    id: t.id,
-    sourceId: t.sourceId,
-    title: t.title,
-    artist: t.artist,
-    duration: t.duration,
-    artworkUrl: null,
-    qualityScore: t.qualityScore,
-    qualityLabel: t.qualityLabel,
-    extra: t.extra,
-  );
 
   void _notifyAndSchedulePersist() {
     _controller.add(List.unmodifiable(_list));
@@ -488,20 +255,24 @@ class PlaylistRepository {
     if (changed) _notifyAndSchedulePersist();
   }
 
-  Playlist? find(String id) {
+  /// Ищет плейлист по id.
+  Playlist? findById(String id) {
     for (final p in _list) {
       if (p.id == id) return p;
     }
     return null;
   }
 
-  /// Импортирует плейлисты из бэкапа с выбранной стратегией разрешения
-  /// коллизий по `id`. Возвращает статистику для UI.
+  /// Алиас для [findById] — обратная совместимость с устаревшим именем.
+  Playlist? find(String id) => findById(id);
+
+  /// Импортирует плейлисты из резервной копии с выбранной стратегией
+  /// разрешения коллизий по `id`. Возвращает статистику для UI.
   ///
   /// - [ImportStrategy.replace] — существующий плейлист с тем же `id`
   ///   полностью заменяется импортируемым.
   /// - [ImportStrategy.keepBoth] — импортируемому выдаётся новый `id`,
-  ///   так что оба плейлиста остаются (удобно, когда хочешь смержить
+  ///   так что оба плейлиста остаются (удобно, когда хочешь слить
   ///   две библиотеки).
   /// - [ImportStrategy.skip] — плейлист с конфликтующим `id`
   ///   пропускается, существующий остаётся нетронутым.
@@ -561,18 +332,36 @@ class PlaylistRepository {
     await _persistNow();
   }
 
+  /// Перечитывает данные из БД (нужный после импорта полного бэкапа).
+  Future<void> reload() async {
+    _initFuture = null;
+    await _load();
+  }
+
+  // ===== Фоновое обогащение обложек (делегируется [PlaylistArtworkEnricher]) =====
+
+  /// Обновляет [artworkUrl] у трека с указанным [globalId] во всех плейлистах,
+  /// где он встречается.
+  Future<void> updateTrackArtwork(String globalId, String artworkUrl) {
+    _wireEnricher();
+    return _enricher.updateTrackArtwork(globalId, artworkUrl);
+  }
+
+  /// Сбрасывает провайдерские/мёртвые кастомные обложки и перезапускает
+  /// фоновую дозагрузку.
+  void resetAllTrackArtworks() {
+    _wireEnricher();
+    _enricher.resetAllTrackArtworks();
+  }
+
   /// Сбрасывает внутреннее состояние (для тестов и аварийного восстановления).
   @visibleForTesting
   Future<void> resetForTesting() async {
     // Отменяем отложенную запись и батч обложек, чтобы таймеры не сработали
     // уже после завершения теста.
     _persistTimer?.cancel();
-    _artworkFlushTimer?.cancel();
-    _artworkFlushTimer = null;
-    _pendingArtwork.clear();
-    _crossArtworkPropagation.clear();
-    _refreshFuture = null;
-    _artworkGeneration++;
+    _wireEnricher();
+    _enricher.resetForTesting();
     _initFuture = null;
     _list = [];
     // ignore: invalid_use_of_visible_for_testing_member
@@ -580,122 +369,10 @@ class PlaylistRepository {
     _controller.add(List.unmodifiable(_list));
   }
 
-  /// Обновляет [artworkUrl] у трека с указанным [globalId] во всех плейлистах,
-  /// где он встречается. Вызывается после ленивой подгрузки обложки через
-  /// [ArtworkProvider], чтобы обложка попала в БД и отображалась в плейлистах.
-  Future<void> updateTrackArtwork(String globalId, String artworkUrl) async {
-    _applyArtworkUpdates([(globalId: globalId, url: artworkUrl)]);
-  }
-
-  /// Сбрасывает [artworkUrl] на null только у тех треков, чья обложка
-  /// была найдена самим ArtworkProvider (Genius/iTunes), и сразу
-  /// запускает фоновую дозагрузку обложек через [_refreshArtworkCandidates]
-  /// принудительно (force), чтобы плейлисты снова заполнились без ручного
-  /// воспроизведения каждого трека.
-  ///
-  /// Обложки, которые дал сам источник (SoundCloud `sndcdn.com`,
-  /// YouTube `i.ytimg.com`, локальные файлы `/...` и `file://...`),
-  /// НЕ сбрасываются: они стабильны, и после очистки дискового кэша
-  /// CachedNetworkImage скачает их заново по тому же URL. Также отменяет
-  /// накопленный батч и инвалидирует in-flight запросы, чтобы URL,
-  /// прилетевшие ДО сброса, не вернули обложки обратно; запросы, запущенные
-  /// самим сбросом (уже после инкремента [_artworkGeneration]), применяются
-  /// как обычно.
-  void resetAllTrackArtworks() {
-    _artworkGeneration++;
-    _artworkFlushTimer?.cancel();
-    _artworkFlushTimer = null;
-    _pendingArtwork.clear();
-
-    var anyChanged = false;
-    _list = _list.map((p) {
-      var playlistChanged = false;
-      final newTracks = p.tracks.map((t) {
-        final url = t.artworkUrl;
-        // Сбрасываем ссылку на кастомную обложку, файл которой уже удалён
-        // («Clear all cache» стёр custom_artworks/). Иначе в БД останется
-        // мёртвый локальный путь и фоновое обогащение его не перезапросит —
-        // трек останется без обложки. Живая кастомная обложка (файл на
-        // диске есть, напр. ветка «Clear artwork cache») сохраняется.
-        final isDeadCustom = url != null &&
-            url.contains('custom_artworks') &&
-            ArtworkHelper.getCustomArtworkSync(t.id) == null;
-        if (url != null &&
-            (ArtworkProvider.isProviderArtworkUrl(url) || isDeadCustom)) {
-          playlistChanged = true;
-          return _withoutArtwork(t);
-        }
-        return t;
-      }).toList();
-      if (playlistChanged) {
-        anyChanged = true;
-        return p.copyWith(tracks: newTracks);
-      }
-      return p;
-    }).toList();
-    if (anyChanged) _notifyAndSchedulePersist();
-
-    // Перезапускаем фоновую дозагрузку. После сброса обложек кандидаты —
-    // все треки (и сброшенные к null, и оставшиеся), а force=true
-    // перезапрашивает ВСЕ провайдерские обложки, не дожидаясь TTL.
-    // Старые in-flight запросы уже инвалидированы инкрементом
-    // _artworkGeneration выше, поэтому их результаты не применятся.
-    unawaited(_refreshArtworkCandidates(force: true));
-  }
-
-  /// Перечитывает данные из БД (нужно после импорта полного бэкапа).
-  Future<void> reload() async {
-    _initFuture = null;
-    await _load();
-  }
-
-  /// Тестовый хук: дожидается завершения ВСЕЙ волны обогащения обложек —
-  /// сначала фазы сбора кандидатов ([_refreshFuture]), затем всех in-flight
-  /// запросов — и применяет накопленный батч, не ожидая [_artworkFlushInterval].
+  /// Тестовый хук: дожидается завершения ВСЕЙ волны обогащения обложек.
   @visibleForTesting
-  Future<void> flushEnrichmentForTesting() async {
-    // Дожидаемся фазы сбора кандидатов (может включать TTL-проверки) и всех
-    // in-flight запросов волны обогащения.
-    await _refreshFuture;
-    while (_enrichmentInFlight.isNotEmpty) {
-      await Future.wait(List.of(_enrichmentInFlight));
-    }
-    _artworkFlushTimer?.cancel();
-    _artworkFlushTimer = null;
-    _flushArtworkBatch();
-    // Ждём КРОСС-пропагацию в HistoryRepository (см. комментарий в
-    // HistoryRepository.flushEnrichmentForTesting) — иначе tearDown закроет
-    // БД раньше, чем хвостовая задача прочитает/запишет её.
-    while (_crossArtworkPropagation.isNotEmpty) {
-      await Future.wait(List.of(_crossArtworkPropagation));
-    }
-  }
-}
-
-/// Простой семафор с фиксированным числом слотов — ограничивает число
-/// одновременных фоновых запросов обложек (см. [_maxEnrichConcurrency]).
-class _Semaphore {
-  _Semaphore(this._slots);
-
-  final int _slots;
-  int _used = 0;
-  final List<Completer<void>> _waiters = [];
-
-  Future<void> acquire() async {
-    if (_used < _slots) {
-      _used++;
-      return;
-    }
-    final completer = Completer<void>();
-    _waiters.add(completer);
-    await completer.future;
-  }
-
-  void release() {
-    if (_waiters.isNotEmpty) {
-      _waiters.removeAt(0).complete();
-    } else {
-      _used--;
-    }
+  Future<void> flushEnrichmentForTesting() {
+    _wireEnricher();
+    return _enricher.flushEnrichmentForTesting();
   }
 }

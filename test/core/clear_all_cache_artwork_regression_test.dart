@@ -111,7 +111,8 @@ void main() {
       await AppDatabase.instance.setCustomArtworkPath(trackId, customPath);
       ArtworkHelper.resetInit();
       await ArtworkHelper.init();
-      expect(ArtworkHelper.getCustomArtworkSync(trackId), customPath);
+      // Ленивая подгрузка по запросу (RAM-кэш после init() пуст).
+      expect(await ArtworkHelper.getCustomArtwork(trackId), customPath);
       await PlaylistRepository.instance.updateTrackArtwork(
         track.globalId,
         customPath,
@@ -203,7 +204,8 @@ void main() {
       await AppDatabase.instance.setCustomArtworkPath(trackId, customPath);
       ArtworkHelper.resetInit();
       await ArtworkHelper.init();
-      expect(ArtworkHelper.getCustomArtworkSync(trackId), customPath);
+      // Ленивая загрузка по запросу (getattr-кэш после init() пуст).
+      expect(await ArtworkHelper.getCustomArtwork(trackId), customPath);
       await PlaylistRepository.instance.updateTrackArtwork(
         track.globalId,
         customPath,
