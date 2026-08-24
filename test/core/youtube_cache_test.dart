@@ -280,10 +280,12 @@ void main() {
           .firstWhere((f) => f.path.endsWith('$trackId.jpg'))
           .path;
 
-      // RAM-кэш ArtworkHelper через реальный путь init() → БД.
+      // RAM-кэш ArtworkHelper — теперь ленивый: init() не читает БД.
+      // Запись подгружается по запросу через getCustomArtwork().
       await AppDatabase.instance.setCustomArtworkPath(trackId, customArtPath);
       ArtworkHelper.resetInit();
       await ArtworkHelper.init();
+      await ArtworkHelper.getCustomArtwork(trackId);
       expect(ArtworkHelper.getCustomArtworkSync(trackId), customArtPath);
 
       return (trackFile: trackFile, artFile: artFile, customFile: customFile);

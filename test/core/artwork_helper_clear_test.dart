@@ -76,7 +76,11 @@ void main() {
       await AppDatabase.instance.setCustomArtworkPath('t2', pathOnDisk('track2.jpg'));
       await ArtworkHelper.init();
 
-      // Кэш реально наполнен — getCustomArtworkSync отдаёт пути.
+      // RAM-кэш ленивый: init() записей не читает — подгружаем по запросу.
+      await ArtworkHelper.getCustomArtwork('t1');
+      await ArtworkHelper.getCustomArtwork('t2');
+
+      // Кэш наполнен по запросу — getCustomArtworkSync отдаёт пути.
       expect(ArtworkHelper.getCustomArtworkSync('t1'), pathOnDisk('track1.jpg'));
       expect(ArtworkHelper.getCustomArtworkSync('t2'), pathOnDisk('track2.jpg'));
 
@@ -103,7 +107,8 @@ void main() {
       await AppDatabase.instance.setCustomArtworkPath(
           't3', pathOnDisk('track3.jpg'));
       await ArtworkHelper.init();
-      expect(ArtworkHelper.getCustomArtworkSync('t3'), pathOnDisk('track3.jpg'));
+      // Ленивая подгрузка по запросу — промах в RAM-кэше тянет запись из БД.
+      expect(await ArtworkHelper.getCustomArtwork('t3'), pathOnDisk('track3.jpg'));
     });
 
     test('повторный вызов не кидает исключение', () async {

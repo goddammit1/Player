@@ -7,7 +7,9 @@ import 'package:player/core/artwork_helper.dart';
 ///
 /// Плагины (image_picker, path_provider) здесь не задействуются: кейсы
 /// подобраны так, чтобы код шёл по быстрому пути (trackId == null либо
-/// кастомная обложка не установлена — _customArtCache пуст).
+/// кастомная обложка не установлена — RAM-кэш пуст; при промахе
+/// getCustomArtworkSync тихо догрузит запись из БД, но файла не будет —
+/// вернётся null).
 void main() {
   group('ArtworkHelper.resolveEffectiveArtwork', () {
     test('trackId == null → возвращает fallbackUrl', () {

@@ -342,10 +342,10 @@ class HistoryRepository {
     final now = DateTime.now();
     final entry = HistoryEntry(track: track, playedAt: now);
 
-    // Сначала атомарная запись в БД (DELETE + INSERT в одной транзакции).
+    // Сначала атомарная запись в БД: DELETE + INSERT + TRIM выполняются в
+    // ОДНОЙ транзакции (один коммит вместо двух).
     try {
-      await AppDatabase.instance.addListenHistoryEntry(entry);
-      await AppDatabase.instance.trimListenHistory(_limit);
+      await AppDatabase.instance.addListenHistoryEntry(entry, limit: _limit);
     } catch (e, st) {
       debugPrint(
           '[HistoryRepository] Failed to persist history entry: $e\n$st');
