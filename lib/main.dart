@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,21 +9,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'core/app_database.dart';
+import 'core/artwork_helper.dart';
 import 'core/haptic_helper.dart';
 import 'core/history_repository.dart';
-import 'core/player_service.dart';
-import 'core/player_service_desktop.dart';
-import 'core/player_service_interface.dart';
+import 'core/platform/player_service_factory.dart';
 import 'core/playlist_backup.dart';
 import 'core/playlist_repository.dart';
 import 'core/providers.dart';
+import 'core/youtube_cache.dart';
 import 'sources/source_registry.dart';
+import 'ui/desktop/desktop_frame.dart' show DesktopFrame;
 import 'ui/desktop/desktop_shell.dart';
-import 'ui/desktop/desktop_player_bar.dart';
 import 'ui/pages/home_page.dart';
 import 'ui/widgets/desktop_layout.dart' show isDesktop;
-import 'core/youtube_cache.dart';
-import 'core/artwork_helper.dart';
 
 
 /// Палитра приложения. Pure-black темная тема, серые градации,
@@ -101,25 +98,11 @@ Future<void> main() async {
 
       SourceRegistry.instance.registerDefaults();
 
-      // === ИНИЦИАЛИЗАЦИЯ ПЛЕЕРА (платформозависимая) ===
-      // Android/iOS: AudioService + PlayerService (системные уведомления,
-      // lock-screen контролы, фоновая служба).
-      // Десктоп: DesktopPlayerService (чистый just_audio, без audio_service).
-      final PlayerServiceInterface playerService;
-      if (Platform.isAndroid || Platform.isIOS) {
-        playerService = await AudioService.init<PlayerService>(
-          builder: PlayerService.new,
-          config: const AudioServiceConfig(
-            androidNotificationChannelId: 'com.player.player.audio',
-            androidNotificationChannelName: 'Player',
-            androidNotificationOngoing: true,
-            androidStopForegroundOnPause: true,
-          ),
-        );
-      } else {
-        playerService = DesktopPlayerService();
-      }
-      // =========================================================
+      // === ИНИЦИАЛИЗАЦИЯ ПЛЕЕРА (платформозависимость вынесена) ===
+      // Выбор PlayerService (mobile: audio_service) vs DesktopPlayerService
+      // (desktop: just_audio) инкапсулирован в PlayerServiceFactory.
+      final playerService = await PlayerServiceFactory.create();
+      // =============================================================
 
       runApp(
         ProviderScope(
@@ -359,51 +342,11 @@ class PlayerApp extends ConsumerWidget {
       // Navigator.push из SearchPage). Поэтому она выносится на уровень
       // MaterialApp.builder, а не живёт внутри DesktopShell.
       builder: isDesktop
-          ? (context, child) => _DesktopFrame(child: child)
+          ? (context, child) => DesktopFrame(child: child)
           : null,
       home: isDesktop
           ? const _SessionAutoSave(child: DesktopShell())
           : const _SessionAutoSave(child: HomePage()),
-    );
-  }
-}
-
-/// Десктопная рамка: [Navigator] (child) сверху + [DesktopPlayerBar] снизу.
-/// Расположение поверх всех маршрутов гарантирует, что панель не скрывается
-/// при push Settings/SearchHistory из поиска.
-///
-/// ВАЖНО: builder' MaterialApp находится ВЫШЕ Navigator'а, поэтому у панели
-/// нет ни Material-предка (Slider без него падает «No Material widget found»),
-/// ни Overlay — а Slider во Flutter 3.4x сам использует OverlayPortal (value
-/// indicator) и без Overlay кидает «No Overlay widget found» на КАЖДОЙ
-/// пересборке (десятки ошибок в run_exe_log.txt), а вместо трека рисует
-/// гигантскую серую плашку (именно «залитый слайдер» из багрепорта).
-/// Поэтому панель оборачивается в Material + собственный Overlay.
-class _DesktopFrame extends ConsumerWidget {
-  const _DesktopFrame({required this.child});
-
-  final Widget? child;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = ref.watch(animatedPaletteProvider);
-    return Material(
-      color: colors.background,
-      child: Column(
-        children: [
-          Expanded(child: child ?? const SizedBox.shrink()),
-          SizedBox(
-            height: DesktopPlayerBar.height,
-            child: Overlay(
-              initialEntries: [
-                // DesktopPlayerBar сам читает провайдеры, поэтому закрытие
-                // entry не устаревает при смене палитры.
-                OverlayEntry(builder: (_) => DesktopPlayerBar()),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
