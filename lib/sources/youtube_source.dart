@@ -26,6 +26,20 @@ class YoutubeSource implements TrackSource {
   final Map<String, _CachedStreamInfo> _streamInfoCache = {};
   static const _cacheTtl = Duration(hours: 4);
 
+  /// Deduplicates concurrent `getManifest` calls for the SAME video id.
+  /// Race: "open track details + hit play" may invoke [_getStreamInfo]
+  /// twice in parallel — without this both fire their own `getManifest`,
+  /// doubling the slowest network call. The second caller simply awaits
+  /// the first one's result instead of starting a new manifest fetch.
+  final Map<String, Future<AudioOnlyStreamInfo>?> _streamInfoInflight = {};
+
+  /// Дисковый кэш аудио (Фаза 3: внедряется через конструктор, а не
+  /// статический [YoutubeCache.instance]).
+  final YoutubeCache cache;
+
+  YoutubeSource({YoutubeCache? cache})
+      : cache = cache ?? YoutubeCache.instance;
+
   @override
   String get id => 'youtube';
 
@@ -104,9 +118,9 @@ class YoutubeSource implements TrackSource {
   ///
   /// Опираемся только на данные из результатов поиска (без описания):
   ///   • прямые трансляции (`isLive`) — не треки;
-  ///   • слишком короткие (< 30 сек) — тизеры/реклама/shorts;
-  ///   • слишком длинные (> 20 мин) — подкасты, стримы, лекции;
-  ///   • 10-20 мин без official канала — скорее подкаст;
+  ///   • слишком короткие (< 30 сек) — тизеры/реклама/Short Mining;
+  ///   • слишком длинные (> 20 мин) — подкасты, лекции;
+  ///   • 10-20 мин без официального канала — скорее подкаст;
   ///   • немузыкальные стоп-слова в названии.
   /// Всё остальное считаем музыкой и пропускаем.
   bool _isLikelyNonMusic(Video v) {
@@ -134,7 +148,7 @@ class YoutubeSource implements TrackSource {
     return false;
   }
 
-  /// Проверяет, является ли видео YouTube Shorts
+  /// Проверяет, является ли видео YouTube Short
   bool _isShorts(Video v) {
     final d = v.duration;
     if (d == null || d > const Duration(seconds: 60)) return false;
@@ -150,7 +164,7 @@ class YoutubeSource implements TrackSource {
            a.contains(' - topic');
   }
 
-  /// Score «музыкальности» — чем выше, тем более вероятно качественный трек
+  /// Score «музыкальности» — чем выше, тем более вероятно хороший трек
   int _musicQualityScore(Video v) {
     int score = 0;
     final author = v.author.toLowerCase();
@@ -241,17 +255,38 @@ class YoutubeSource implements TrackSource {
       return cached.info;
     }
 
+    // Wave 2: if another request is already resolving the SAME video id,
+    // wait for its result instead of firing a parallel getManifest.
+    // e.g. "open track details" + "hit play" can both call _getStreamInfo
+    // concurrently for the same id — without this both fire their own
+    // getManifest, doubling the slowest network call.
+    final inflight = _streamInfoInflight[videoId];
+    if (inflight != null) return inflight;
+
+    final future = _fetchStreamInfo(videoId);
+    _streamInfoInflight[videoId] = future;
+    try {
+      return await future;
+    } finally {
+      _streamInfoInflight.remove(videoId);
+    }
+  }
+
+  Future<AudioOnlyStreamInfo> _fetchStreamInfo(String videoId) async {
     // Пробуем несколько стратегий по порядку. YouTube периодически
-    // блокирует отдельные client-ы, поэтому фолбэк критически важен.
+    // блокирует отдельные клиенты, поэтому фолбэк критически важен.
     // Сначала пробуем дефолт библиотеки (без указания клиентов),
-    // затем конкретные клиенты по одному.
+    // затем конкретные.
+    //
+    // Wave 2: лимитируем число стратегий практичным количеством (2–3).
+    // Пробегание всего списка из 6 клиентов = до 6 последовательных
+    // getManifest (каждый 3–8 с) на старт трека. Default + ios покрывают
+    // подавляющее большинство случаев; дальнейшие фолбэки — на случай
+    // блокировки этих двух.
     final strategies = <List<YoutubeApiClient>?>[
       null, // дефолт библиотеки
       [YoutubeApiClient.ios],
-      [YoutubeApiClient.mediaConnect],
       [YoutubeApiClient.androidVr],
-      [YoutubeApiClient.safari],
-      [YoutubeApiClient.tv],
     ];
 
     StreamManifest? manifest;
@@ -322,8 +357,7 @@ class YoutubeSource implements TrackSource {
     final container = info.container.name.toLowerCase().contains('webm')
         ? 'webm'
         : 'm4a';
-    final cacheFile =
-        await YoutubeCache.instance.fileForTrack(track, extension: container);
+    final cacheFile = await cache.fileForTrack(track, extension: container);
 
     return LockCachingAudioSource(
       Uri.parse(info.url.toString()),

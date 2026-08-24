@@ -44,13 +44,24 @@ class MuzmoSource implements TrackSource {
   /// Кэш get_new URL → реальный mp3. Живёт до перезапуска приложения.
   final Map<String, String> _type2Cache = {};
 
+  /// Wave 2: кэш CDN-резолва (redirect-URL → финальный URL). Резолв
+  /// [_resolveCdnUrl] делает отдельный HTTP-заход (Range bytes=0-0) ради
+  /// чтения Location; повторять его при resolveBitrate, раз createAudioSource
+  /// уже резолвил тот же URL, незачем. Ключ — исходный (не-резолвленный) URL.
+  final Map<String, String> _cdnResolveCache = {};
+
+  /// Дисковый кэш аудио (Фаза 3: внедряется через конструктор, а не
+  /// статический [YoutubeCache.instance]).
+  final YoutubeCache cache;
+
   @override
   String get id => 'muzmo';
 
   @override
   String get displayName => 'Muzmo';
 
-  MuzmoSource() {
+  MuzmoSource({YoutubeCache? cache})
+      : cache = cache ?? YoutubeCache.instance {
     _dio.interceptors.add(CookieManager(CookieJar()));
   }
 
@@ -378,6 +389,12 @@ class MuzmoSource implements TrackSource {
   // ---------------------------------------------------------------------
 
   Future<String> _resolveCdnUrl(String muzmoUrl) async {
+    // Wave 2: если createAudioSource уже резолвил этот URL, не повторяем
+    // CDN-заход — resolveBitrate берёт результат из кэша.
+    final cached = _cdnResolveCache[muzmoUrl];
+    if (cached != null && cached.isNotEmpty) return cached;
+
+    var resolved = muzmoUrl;
     try {
       final resp = await _dio.get<List<int>>(
         muzmoUrl,
@@ -391,21 +408,27 @@ class MuzmoSource implements TrackSource {
 
       final location = resp.headers.value('location');
       if (location != null && location.isNotEmpty) {
-        return location.startsWith('http') ? location : '$_baseUrl$location';
+        resolved = location.startsWith('http') ? location : '$_baseUrl$location';
       }
-    } catch (_) {}
-    return muzmoUrl;
+    } catch (_) {
+      return muzmoUrl;
+    }
+    _cdnResolveCache[muzmoUrl] = resolved;
+    return resolved;
   }
 
   @override
   Future<AudioSource> createAudioSource(Track track) async {
-    final offlineSource = await offline.createOfflineAudioSource(track);
+    final offlineSource = await offline.createOfflineAudioSource(
+      track,
+      cache: cache,
+    );
     if (offlineSource != null) return offlineSource;
 
     final url = await resolveStreamUrl(track);
     final directUrl = await _resolveCdnUrl(url);
 
-    final cacheFile = await YoutubeCache.instance.fileForTrack(
+    final cacheFile = await cache.fileForTrack(
       track,
       extension: 'mp3',
     );
@@ -613,8 +636,8 @@ class MuzmoSource implements TrackSource {
           if (url != null && url.isNotEmpty) {
             tracks[idx] = t.copyWith(artworkUrl: url);
             scheduleNotify();
-            // Прекэшируем картинку (200px — размер для списков),
-            // чтобы к моменту перерисовки UI она уже была в дисковом кэше.
+            // Прекэшируем изображение (200px — размер для списков),
+            // чтобы к моменту перерисовки UI оно уже было в дисковом кэше.
             unawaited(_precacheThumb(url));
           }
         } on TimeoutException {

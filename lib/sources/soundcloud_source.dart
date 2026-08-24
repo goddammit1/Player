@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
@@ -11,6 +10,7 @@ import '../core/youtube_cache.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
+import 'soundcloud_parser.dart';
 import 'track_source.dart';
 
 class SoundCloudSource implements TrackSource {
@@ -34,10 +34,30 @@ class SoundCloudSource implements TrackSource {
     ),
   );
 
+  /// Session-scoped client_id cache + retry bookkeeping.
   String? _clientId;
   Future<String?>? _clientIdFuture;
   int _clientIdFailedAttempts = 0;
   static const int _maxClientIdAttempts = 3;
+
+  /// Max number of JS bundles to scan for client_id on the SoundCloud
+  /// homepage. Scanning all of them is wasteful — the token almost always
+  /// lives in one of the first bundles. Configurable via [maxClientIdScripts].
+  static final int _maxClientIdScripts = 3;
+
+  /// Session-scoped cache of successfully resolved stream URLs.
+  /// Key: `${track.id}|${mediaUri}` — one entry per play source, so a
+  /// repeated `resolveStreamUrl` / `createAudioSource` for the same track
+  /// does NOT re-run the transcode cascade (which may issue several HTTP
+  /// requests). In-memory only: cleared on next source instance.
+  final Map<String, String> _streamResolveCache = {};
+
+  /// Дисковый кэш аудио (Фаза 3: внедряется через конструктор, а не
+  /// статический [YoutubeCache.instance]).
+  final YoutubeCache cache;
+
+  SoundCloudSource({YoutubeCache? cache})
+      : cache = cache ?? YoutubeCache.instance;
 
   @override
   String get id => 'soundcloud';
@@ -92,7 +112,11 @@ class SoundCloudSource implements TrackSource {
         caseSensitive: false,
       ).allMatches(html).map((m) => m.group(1)!).toList();
 
-      for (final url in scriptUrls.reversed) {
+      // Wave 2: ограничиваем перебор первыми K скриптами — client_id почти
+      // всегда живёт в одном из первых бандлов, остальные — лишние HTTP.
+      final candidates = scriptUrls.take(_maxClientIdScripts).toList();
+      for (final url in candidates.reversed) {
+        if (_clientId != null) break;
         final id = await _extractClientIdFromScript(url);
         if (id != null) {
           _clientId = id;
@@ -111,9 +135,6 @@ class SoundCloudSource implements TrackSource {
     }
   }
 
-  static final RegExp _clientIdRe =
-      RegExp(r'client_id\s*:\s*"([a-zA-Z0-9]{20,})"');
-
   Future<String?> _extractClientIdFromScript(String scriptUrl) async {
     try {
       final resp = await _dio.get<String>(
@@ -122,7 +143,7 @@ class SoundCloudSource implements TrackSource {
       );
       final js = resp.data;
       if (js == null || js.isEmpty) return null;
-      final m = _clientIdRe.firstMatch(js);
+      final m = SoundCloudParser.clientIdRe.firstMatch(js);
       return m?.group(1);
     } catch (_) {
       return null;
@@ -186,125 +207,13 @@ class SoundCloudSource implements TrackSource {
     return parseTracks(resp.data, limit);
   }
 
-  Map<String, dynamic>? _asMap(Object? data) {
-    if (data is Map<String, dynamic>) return data;
-    if (data is String && data.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(data);
-        if (decoded is Map<String, dynamic>) return decoded;
-      } catch (_) {}
-    }
-    return null;
-  }
+  Map<String, dynamic>? _asMap(Object? data) =>
+      SoundCloudParser.asMap(data);
 
-  List<Track> parseTracks(Object? data, int limit) {
-    final map = _asMap(data);
-    if (map == null) return const [];
+  List<Track> parseTracks(Object? data, int limit) =>
+      SoundCloudParser.parseTracks(id, data, limit);
 
-    final collection = (map['collection'] as List?) ?? const [];
-    final result = <Track>[];
-
-    for (final item in collection) {
-      if (item is! Map) continue;
-      final kind = item['kind'];
-      if (kind != null && kind != 'track') continue;
-
-      final media = item['media'];
-      final rawTranscodings = media is Map ? media['transcodings'] : null;
-      if (rawTranscodings is! List || rawTranscodings.isEmpty) continue;
-
-      // ИСПРАВЛЕНИЕ: Отфильтровываем зашифрованные транскодинги (cbc-encrypted-hls)
-      final transcodings = <Map<String, dynamic>>[];
-      for (final t in rawTranscodings) {
-        if (t is Map) {
-          final url = t['url'];
-          final format = t['format'];
-          final protocol = (format is Map ? format['protocol'] as String? : '') ?? '';
-
-          // Игнорируем DRM-зашифрованные стримы, которые ExoPlayer не может расшифровать
-          if (protocol.contains('encrypted')) continue;
-
-          if (url is String && url.isNotEmpty) {
-            transcodings.add(Map<String, dynamic>.from(t));
-          }
-        }
-      }
-
-      if (transcodings.isEmpty) continue;
-
-      final trackAuth = item['track_authorization'] as String?;
-      final idVal = item['id'];
-      if (idVal == null) continue;
-      final trackId = idVal.toString();
-
-      final title = (item['title'] as String?)?.trim() ?? '';
-      if (title.isEmpty) continue;
-
-      final user = item['user'];
-      final artist = (user is Map ? user['username'] as String? : null)
-              ?.trim() ??
-          'Unknown';
-
-      final durationMs = item['duration'];
-      final duration = durationMs is int
-          ? Duration(milliseconds: durationMs)
-          : (durationMs is num
-              ? Duration(milliseconds: durationMs.toInt())
-              : null);
-
-      final artworkUrl = _bestArtwork(item);
-      final presetKbps = _bitrateFromTranscoding(transcodings.first);
-
-      result.add(
-        Track(
-          id: trackId,
-          sourceId: id,
-          title: title,
-          artist: artist,
-          duration: duration,
-          artworkUrl: artworkUrl,
-          qualityScore: presetKbps,
-          qualityLabel: presetKbps != null ? '$presetKbps kbps' : null,
-          extra: {
-            'transcodings': transcodings,
-            if (trackAuth != null && trackAuth.isNotEmpty)
-              'trackAuthorization': trackAuth,
-          },
-        ),
-      );
-
-      if (result.length >= limit) break;
-    }
-
-    if (kDebugMode) debugPrint('[SoundCloud] Найдено треков (без DRM): ${result.length}');
-
-    return result;
-  }
-
-  int? _bitrateFromTranscoding(Map t) {
-    final preset = (t['preset'] as String? ?? '').toLowerCase();
-    final quality = (t['quality'] as String? ?? '').toLowerCase();
-    final format = t['format'];
-    final mime = format is Map
-        ? (format['mime_type'] as String? ?? '').toLowerCase()
-        : '';
-
-    if (quality == 'hq') return 256;
-    if (preset.startsWith('mp3') || mime.contains('mpeg')) return 128;
-    if (preset.startsWith('opus') || mime.contains('opus')) return 64;
-    if (preset.startsWith('aac') || mime.contains('mp4')) return 160;
-    return null;
-  }
-
-  String? _bestArtwork(Map item) {
-    String? raw = item['artwork_url'] as String?;
-    if (raw == null || raw.isEmpty) {
-      final user = item['user'];
-      raw = user is Map ? user['avatar_url'] as String? : null;
-    }
-    if (raw == null || raw.isEmpty) return null;
-    return raw.replaceAll('-large.', '-t500x500.');
-  }
+  String? _bestArtwork(Map item) => SoundCloudParser.bestArtwork(item);
 
   // ═══════════════════════════════════════════════════════════════════
   //  ОБОГАЩЕНИЕ ОБЛОЖКАМИ
@@ -489,6 +398,24 @@ class SoundCloudSource implements TrackSource {
       return protocol.contains('encrypted');
     });
 
+    // Wave 2: если в extra уже есть транскодинги, пробуем кэш успешного
+    // резолва ПО КЛЮЧУ {trackId, mediaUri} — повторный play/bitrate для
+    // того же трека и того же источника не запускает каскад заново.
+    if (transcodings.isNotEmpty) {
+      for (final t in transcodings) {
+        final tUrl = t['url'] as String?;
+        if (tUrl == null || tUrl.isEmpty) continue;
+        final cacheKey = _streamResolveCacheKey(track.id, tUrl);
+        final cached = _streamResolveCache[cacheKey];
+        if (cached != null && cached.isNotEmpty) {
+          if (kDebugMode) {
+            debugPrint('[SoundCloud] Успешный резолв взят из кэша (${cacheKey.substring(0, cacheKey.length > 60 ? 60 : cacheKey.length)}...)');
+          }
+          return cached;
+        }
+      }
+    }
+
     if (transcodings.isEmpty) {
       if (kDebugMode) debugPrint('[SoundCloud] Незашифрованные транскодинги отсутствуют в extra. Запрашиваем через API...');
       final resolvedData = await _fetchTranscodingsForTrack(track);
@@ -530,6 +457,8 @@ class SoundCloudSource implements TrackSource {
         if (kDebugMode) {
           debugPrint('[SoundCloud] УСПЕХ! Получен CDN URL: ${cdnUrl.substring(0, cdnUrl.length > 60 ? 60 : cdnUrl.length)}...');
         }
+        // Wave 2: кэшируем успешный резолв по {trackId, mediaUri}.
+        _streamResolveCache[_streamResolveCacheKey(track.id, tUrl)] = cdnUrl;
         return cdnUrl;
       } catch (e) {
         lastError = e;
@@ -542,6 +471,9 @@ class SoundCloudSource implements TrackSource {
     throw StateError(
         'SoundCloud: Ни один открытый транскодинг не сработал для "${track.artist} - ${track.title}". Ошибка: $lastError');
   }
+
+  String _streamResolveCacheKey(String trackId, String mediaUri) =>
+      '$trackId|$mediaUri';
 
   /// Восстанавливает «родную» обложку трека из SoundCloud по ID.
   ///
@@ -679,7 +611,8 @@ class SoundCloudSource implements TrackSource {
       debugPrint('[SoundCloud] === Запуск воспроизведения: "${track.artist} - ${track.title}" ===');
     }
 
-    final offlineSource = await offline.createOfflineAudioSource(track);
+    final offlineSource =
+        await offline.createOfflineAudioSource(track, cache: cache);
     if (offlineSource != null) {
       return offlineSource;
     }
@@ -710,7 +643,7 @@ class SoundCloudSource implements TrackSource {
         debugPrint('[SoundCloud] Создаем LockCachingAudioSource (MP3)');
       }
 
-      final cacheFile = await YoutubeCache.instance.fileForTrack(
+      final cacheFile = await cache.fileForTrack(
         track,
         extension: 'mp3',
       );
