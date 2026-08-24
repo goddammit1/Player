@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../core/app_database.dart';
+import 'artwork_title_utils.dart';
 
 class ArtworkProvider {
   ArtworkProvider._();
@@ -18,60 +19,8 @@ class ArtworkProvider {
   late final String _prefsPrefix =
       '${_prefsPrefixBase}_${_geniusToken.isEmpty ? 'noauth' : 'auth'}:';
 
-  // -----------------------------------------------------------------
-  //  Regex'ы для _cleanSearchTerm (удаляют всё содержимое скобок / feat)
-  // -----------------------------------------------------------------
-  static final _reParen = RegExp(r'\s*\([^)]*\)');
-  static final _reBracket = RegExp(r'\s*\[[^\]]*\]');
-  static final _reFeat = RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$', caseSensitive: false);
-  static final _reSuffix = RegExp(
-    r'\s+-\s+.*$',
-    caseSensitive: false,
-  );
-
-  // -----------------------------------------------------------------
-  //  Для _extractVersionHints: захват содержимого скобок
-  // -----------------------------------------------------------------
-  static final _reParenContent = RegExp(r'\(([^)]*)\)');
-  static final _reBracketContent = RegExp(r'\[([^\]]*)\]');
-  /// Слова/фразы, которые НЕ являются версией трека, а «шум» — их НЕ включаем
-  /// в versionHints (не передаём в поисковый запрос Genius/iTunes).
-  ///
-  /// ПРАВИЛО от пользователя: «всё, что в скобках после трека, — это хинт».
-  /// Поэтому шумовым считается ТОЛЬКО то, что заведомо НЕ влияет на обложку:
-  /// - feat/ft/Ft. — это про артистов: матчинг по артистам уже отдельно;
-  /// - prod. by / produced by — продюсер, не версия;
-  /// - official video/audio/lyric/music video/clip, lyric video, video, audio,
-  ///   визуализатор, клип, видеоклип — тип контента, не версия обложки;
-  /// - explicit/clean — рейтинг цензуры, не версия.
-  ///
-  /// Всё остальное (Remix, Radio Edit, Club Mix, Extended Mix, Original Mix,
-  /// Album Version, Cover, Live, Acoustic, Instrumental, OST, Intro/Outro,
-  /// Slowed + Reverb, ...) является ХИНТОМ и попадает в поисковый запрос.
-  /// Если Genius/iTunes с хинтами ничего не находят — есть retry «без
-  /// хинтов» (см. [_fetchGenius] / [_fetchItunes]).
-  ///
-  /// Регистро-независимый. Проверяется по WHOLE фразе (после trim).
-  static final _reNoiseTag = RegExp(
-    r'^(?:feat|ft)\b.*|'
-    r'^(?:prod(?:uced)?\.?\s+by|prod\.?)\b.*|'
-    r'^(?:official\s+(?:video|audio|lyric|music\s+video|clip)|'
-    r'lyric\s+video|visualizer|video|audio|клип|официальный\s+клип|'
-    r'премьера\s+клипа|видеоклип|лирик\s+видео|explicit|clean)$',
-    caseSensitive: false,
-  );
-
+  /// Убирает серийные пробелы — для [_key] (нормализация artist|title).
   static final _reSpaces = RegExp(r'\s+');
-  /// Убирает всё, кроме букв/цифр любого алфавита (включая кириллицу),
-  /// подчёркивания и пробелов.
-  ///
-  /// ВАЖНО: `\w` в Dart без флага `unicode: true` матчит только ASCII
-  /// `[A-Za-z0-9_]`, из-за чего `_normalize` вырезал кириллицу целиком:
-  /// `wantTitleNorm` для русских треков становился пустым, title-матчинг
-  /// отключался и Genius отдавал обложку любой страницы артиста (часто —
-  /// обложку альбома, в котором есть трек). Свойства `\p{L}`/`\p{N}`
-  /// работают только при `unicode: true`.
-  static final _reNonWord = RegExp(r'[^\p{L}\p{N}_\s]', unicode: true);
 
   final Dio _dio = Dio(
     BaseOptions(
@@ -210,12 +159,7 @@ class ArtworkProvider {
   /// `i.ytimg.com`, локальные файлы) стабильны: после очистки дискового
   /// кэша CachedNetworkImage просто скачает их заново по тому же URL,
   /// поэтому сбрасывать и перезапрашивать их не нужно.
-  static bool isProviderArtworkUrl(String url) {
-    if (url.isEmpty) return false;
-    final lower = url.toLowerCase();
-    if (lower.startsWith('/') || lower.startsWith('file://')) return false;
-    return lower.contains('genius.com') || lower.contains('mzstatic.com');
-  }
+  static bool isProviderArtworkUrl(String url) => ArtworkTitleUtils.isProviderUrl(url);
 
   /// Возвращает свежий (TTL не истёк) URL обложки для [artist]/[title] из кэша
   /// (in-memory или SQLite) БЕЗ обращения к сети.
@@ -297,7 +241,7 @@ class ArtworkProvider {
   static ({String cleanTitle, List<String> versionHints}) extractVersionHintsForTest(
     String title,
   ) {
-    return _extractVersionHints(title);
+    return ArtworkTitleUtils.extractVersionHints(title);
   }
 
   /// Извлекает «версионные хинты» из заголовка — слова, которые помогут
@@ -328,61 +272,16 @@ class ArtworkProvider {
   static ({String cleanTitle, List<String> versionHints}) _extractVersionHints(
     String title,
   ) {
-    final hints = <String>[];
-
-    // Собираем всё содержимое круглых и квадратных скобок
-    for (final re in [_reParenContent, _reBracketContent]) {
-      for (final m in re.allMatches(title)) {
-        final raw = (m.group(1) ?? '').trim();
-        if (raw.isEmpty) continue;
-        // Разбиваем по '|', '/' — бывает «(Club Mix | Extended Mix)»
-        for (final part in raw.split(RegExp(r'\s*[|/]\s*'))) {
-          final p = part.trim();
-          if (p.isEmpty) continue;
-          // Отбрасываем шум: feat, official video, prod. by и т.п.
-          if (_reNoiseTag.hasMatch(p)) continue;
-          hints.add(p);
-        }
-      }
-    }
-
-    // Захват суффикса после " - ", если он что-то добавляет.
-    // ВАЖНО: берём ВЕСЬ суффикс (не только узкий список слов), и тоже
-    // прогоняем через шум-фильтр — «Track - Remix» → 'Remix',
-    // «Track - Radio Edit» → [] (radio edit = шум).
-    {
-      final m = _reSuffix.firstMatch(title);
-      if (m != null) {
-        final suffix = m.group(0)?.trim() ?? '';
-        if (suffix.isNotEmpty) {
-          final withoutDash = suffix.replaceFirst(RegExp(r'^\s*-\s*'), '');
-          final trimmed = withoutDash.trim();
-          if (trimmed.isNotEmpty && !_reNoiseTag.hasMatch(trimmed)) {
-            hints.add(trimmed);
-          }
-        }
-      }
-    }
-
-    // Удаляем дубликаты с сохранением порядка
-    final seen = <String>{};
-    final unique = hints.where((h) => seen.add(h.toLowerCase())).toList();
-
-    // Очищенный заголовок
-    final cleanTitle = _cleanSearchTerm(title);
-
-    return (cleanTitle: cleanTitle, versionHints: unique);
+    return ArtworkTitleUtils.extractVersionHints(title);
   }
 
   /// Нормализует строку для сравнения: убирает non-word символы (в т.ч. *),
-  /// сохраняя буквы и цифры ЛЮБЫХ алфавитов (см. [_reNonWord]).
-  static String _normalize(String s) {
-    return s.toLowerCase().replaceAll(_reNonWord, '').replaceAll(_reSpaces, ' ').trim();
-  }
+  /// сохраняя буквы и цифры ЛЮБЫХ алфавитов.
+  static String _normalize(String s) => ArtworkTitleUtils.normalize(s);
 
   /// Тестовый хук: приватный [_normalize].
   @visibleForTesting
-  static String normalizeForTest(String s) => _normalize(s);
+  static String normalizeForTest(String s) => ArtworkTitleUtils.normalize(s);
 
   /// Матчит заголовок страницы Genius [apiTitle] с искомым нормализованным
   /// [wantTitleNorm] (заголовок трека + версионные хинты).
@@ -403,18 +302,11 @@ class ArtworkProvider {
     String wantTitleNorm, {
     required bool hasVersionHints,
   }) {
-    if (wantTitleNorm.isEmpty) return true;
-    final apiNorm = _normalize(apiTitle);
-    if (apiNorm == wantTitleNorm) return true;
-    if (wantTitleNorm.length > 3 && apiNorm.contains(wantTitleNorm)) {
-      return true;
-    }
-    if (!hasVersionHints &&
-        apiNorm.length > 3 &&
-        wantTitleNorm.contains(apiNorm)) {
-      return true;
-    }
-    return false;
+    return ArtworkTitleUtils.titleMatches(
+      apiTitle,
+      wantTitleNorm,
+      hasVersionHints: hasVersionHints,
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -561,8 +453,17 @@ class ArtworkProvider {
   }) async {
     // Genius и iTunes запускаем параллельно, но НЕ ждём оба через Future.wait:
     // если Genius уже вернул URL — сразу возвращаем, не дожидаясь iTunes.
-    // Это экономит 300–800 мс на трек (iTunes обычно отвечает позже).
-    final geniusFuture = _safeFetch(() => _fetchGenius(artist, title, preferredSize));
+    // Это экономит 300–900 мс на трек (iTunes обычно отвечает позже).
+    //
+    // Wave 2: если GENIUS_TOKEN не задан — Genius вообще не запускаем
+    // (раньше он стартовал параллельно и мгновенно завершался null'ом,
+    // а потом мы ждали iTunes, уже после этого ненужного запуска).
+    // `hasGeniusToken` смотрит только на статический конфиг; переопределение
+    // fetcher'а в тестах проверяется внутри _fetchGenius.
+    final bool geniusEnabled = _geniusToken.isNotEmpty || geniusFetcherOverride != null;
+    final geniusFuture = geniusEnabled
+        ? _safeFetch(() => _fetchGenius(artist, title, preferredSize))
+        : Future<String?>.value(null);
     final itunesFuture = _safeFetch(() => _fetchItunes(artist, title, preferredSize));
 
     // Ждём Genius первым.
@@ -767,9 +668,7 @@ class ArtworkProvider {
   }
 
   /// Проверяет, содержит ли строка кириллические символы.
-  static bool _hasCyrillic(String s) {
-    return RegExp(r'[а-яё]', caseSensitive: false).hasMatch(s);
-  }
+  static bool _hasCyrillic(String s) => ArtworkTitleUtils.hasCyrillic(s);
 
   /// Обрабатывает хиты Genius (основной или fallback) и возвращает URL обложки.
   Future<String?> _processGeniusHits(
@@ -905,15 +804,7 @@ class ArtworkProvider {
     return null;
   }
 
-  static String _cleanSearchTerm(String term) {
-    var cleaned = term
-        .replaceAll(_reParen, '')
-        .replaceAll(_reBracket, '')
-        .replaceAll(_reFeat, '')
-        .replaceAll(_reSuffix, '')
-        .trim();
-    return cleaned.isEmpty ? term.trim() : cleaned;
-  }
+  static String _cleanSearchTerm(String term) => ArtworkTitleUtils.cleanSearchTerm(term);
 
   String _geniusSquareUrl(String rawUrl, {required int size}) {
     final base = rawUrl.split('?').first;

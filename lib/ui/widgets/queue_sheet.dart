@@ -6,32 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../core/providers.dart';
+import '../../sources/conversion.dart';
 import '../widgets/track_settings_sheet.dart';
-import '../../models/track.dart';
 import '../../core/player_service_interface.dart';
 import 'artwork.dart';
 import 'desktop_layout.dart';
 import '../../core/artwork_helper.dart';
 
-extension MediaItemToTrack on MediaItem {
-  Track toTrack() {
-    final extra = extras ?? {};
-    final sourceId = (extra['sourceId'] as String?) ??
-        (extra['source_id'] as String?) ??
-        'local';
-    return Track(
-      id: id,
-      sourceId: sourceId,
-      title: title,
-      artist: artist ?? '',
-      duration: duration,
-      artworkUrl: artUri?.toString(),
-      qualityScore: extra['quality_score'] as int?,
-      qualityLabel: extra['quality_label'] as String?,
-      extra: extra,
-    );
-  }
-}
 
 String _formatDuration(Duration? d) {
   if (d == null) return '--:--';
@@ -387,7 +368,7 @@ class _Header extends StatelessWidget {
                           if (item == null) return;
                           showTrackSettingsSheet(
                             context,
-                            track: item.toTrack(),
+                            track: mediaItemToTrack(item),
                             currentMediaItem: item,
                           );
                         },
@@ -766,7 +747,7 @@ class _QueueTile extends StatelessWidget {
         onLongPress: () {
           showTrackSettingsSheet(
             context,
-            track: media.toTrack(),
+            track: mediaItemToTrack(media),
             currentMediaItem: media,
           );
         },

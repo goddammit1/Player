@@ -1,3 +1,4 @@
+import '../core/youtube_cache.dart';
 import 'muzmo_source.dart';
 import 'soundcloud_source.dart';
 import 'track_source.dart';
@@ -19,16 +20,20 @@ class SourceRegistry {
   final Set<String> _disabledForSearch = {};
 
   /// Зарегистрировать все известные источники.
-  void registerDefaults() {
+  ///
+  /// Фаза 3 (DI): кэш аудио внедряется в источники через [cache].
+  /// Если параметр не передан, источники сами используют
+  /// [YoutubeCache.instance] (обратная совместимость).
+  void registerDefaults({YoutubeCache? cache}) {
     // YouTube временно отключён для поиска: библиотека
     // youtube_explode_dart сломана (YouTube требует PoToken).
     // Источник остаётся зарегистрированным, чтобы плейлисты с
     // youtube-треками не крашились при попытке resolve.
-    register(YoutubeSource());
+    register(YoutubeSource(cache: cache));
     _disabledForSearch.add('youtube');
 
-    register(MuzmoSource());
-    register(SoundCloudSource());
+    register(MuzmoSource(cache: cache));
+    register(SoundCloudSource(cache: cache));
   }
 
   void register(TrackSource source) {
