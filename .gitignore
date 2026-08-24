@@ -61,6 +61,7 @@ app.*.map.json
 
 # Local secrets (dart-define), see env.json.example
 /env.json
+/cookies.txt
 
 # local junk
 .onlysq/
