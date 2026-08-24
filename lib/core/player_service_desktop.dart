@@ -82,6 +82,14 @@ class DesktopPlayerService implements PlayerServiceInterface {
   int _consecutiveSkips = 0;
   static const _maxConsecutiveSkips = 5;
 
+  // ===== Session persistence (debounce) =====
+  // Дебаунс частых мутаций очереди/плеера (add/remove/reorder/shuffle/play)
+  // в одно сохранение; принудительный flush при dispose()/pause()/
+  // saveSession() — перед закрытием приложения состояние не теряется.
+  static const _sessionSaveDebounce = Duration(milliseconds: 300);
+  Timer? _sessionSaveTimer;
+  bool _sessionDirty = false;
+
   @override Stream<Duration> get positionStream => _player.positionStream;
   @override Stream<Duration?> get durationStream => _player.durationStream;
   @override Stream<bool> get playingStream => _player.playingStream;
@@ -117,6 +125,8 @@ class DesktopPlayerService implements PlayerServiceInterface {
     _positionSub?.cancel();
     _sleepTimer?.cancel();
     _prefetchTimer?.cancel();
+    // Flush отложенного debounce перед закрытием каналов и субъектов.
+    unawaited(_flushSessionNow());
     _sleepTimerMode.close();
     _sleepTimerEndTime.close();
     _mediaItemSubject.close();
@@ -240,7 +250,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
       _currentIndexSubject.add(-1);
       _pendingHistoryTrack = null;
       await _player.stop();
-      await _saveSession();
+      _scheduleSessionSave();
       return;
     }
     _currentIndex = startIndex.clamp(0, _queue.length - 1);
@@ -248,7 +258,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
     await _playIndex(_currentIndex);
   }
   @override Future<void> playIndex(int i) => _playIndex(i);
-  @override Future<void> addToQueue(Track t) async { _queue.add(t); await _saveSession(); }
+  @override Future<void> addToQueue(Track t) async { _queue.add(t); _scheduleSessionSave(); }
   @override Future<void> insertToQueue(Track t) async {
     final p = _currentIndex + 1;
     if (p <= _queue.length) {
@@ -256,7 +266,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
     } else {
       _queue.add(t);
     }
-    await _saveSession();
+    _scheduleSessionSave();
   }
   @override Future<void> removeFromQueue(int i) async {
     if (i < 0 || i >= _queue.length) return;
@@ -267,11 +277,11 @@ class DesktopPlayerService implements PlayerServiceInterface {
       _currentIndex = _currentIndex.clamp(0, _queue.length - 1);
     }
     _currentIndexSubject.add(_currentIndex);
-    await _saveSession();
+    _scheduleSessionSave();
   }
   Future<void> clearQueue() async {
     await _player.stop(); _queue.clear(); _currentIndex = -1;
-    _currentIndexSubject.add(_currentIndex); await _saveSession();
+    _currentIndexSubject.add(_currentIndex); _scheduleSessionSave();
   }
   @override Future<void> reorderQueueItem(int o, int n) async {
     if (o < 0 || o >= _queue.length || n < 0 || n >= _queue.length || o == n) return;
@@ -283,7 +293,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
     } else if (o > _currentIndex && n <= _currentIndex) {
       _currentIndex++;
     }
-    _currentIndexSubject.add(_currentIndex); await _saveSession();
+    _currentIndexSubject.add(_currentIndex); _scheduleSessionSave();
   }
   @override Future<void> shuffleQueue() async {
     if (_queue.length < 2) return;
@@ -291,7 +301,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
     final rng = Random();
     for (var i = _queue.length - 1; i > 0; i--) { final j = rng.nextInt(i + 1); final t = _queue[i]; _queue[i] = _queue[j]; _queue[j] = t; }
     if (cur != null) { final idx = _queue.indexOf(cur); if (idx > 0) { _queue.removeAt(idx); _queue.insert(0, cur); } _currentIndex = 0; _currentIndexSubject.add(_currentIndex); }
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   // ===== Loop =====
@@ -327,7 +337,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
       return;
     }
     _emitPlaybackState();
-    await _saveSession();
+    await _flushSessionNow();
   }
   @override Future<void> pause() async {
     try {
@@ -336,7 +346,8 @@ class DesktopPlayerService implements PlayerServiceInterface {
       _log('pause: $e\n$st');
     }
     _emitPlaybackState();
-    await _saveSession();
+    // Немедленный flush с актуальной позицией.
+    await _flushSessionNow();
   }
   @override Future<void> seek(Duration p) async { try { await _player.seek(p); } catch (e) { _log('seek: $e'); } }
   @override Future<void> skipToNext() async {
@@ -377,7 +388,7 @@ class DesktopPlayerService implements PlayerServiceInterface {
       if (gen != _loadGeneration) return;
       _isLoading = false; _consecutiveSkips = 0;
       _pendingHistoryTrack = track;
-      await _player.play(); await _saveSession();
+      await _player.play(); _scheduleSessionSave();
       // На Windows платформа может быть деактивирована — play() не
       // активирует воспроизведение (no-op _IdleAudioPlayer). Принудительно
       // перезагружаем трек, чтобы гарантировать реальный звук, а не
@@ -508,10 +519,29 @@ class DesktopPlayerService implements PlayerServiceInterface {
   }
 
   // ===== Session =====
-  @override
-  Future<void> saveSession() async => _saveSession();
+  /// Планирует сохранение сессии с debounce (частые мутации очереди
+  /// coalesce в одно сохранение). Позиция снимается в момент планирования,
+  /// чтобы flush не потерял свежий seek/play.
+  void _scheduleSessionSave() {
+    if (_sessionDirty && _sessionSaveTimer != null) {
+      return; // Таймер уже висит — он сам снимет свежую позицию.
+    }
+    _sessionDirty = true;
+    _sessionSaveTimer?.cancel();
+    _sessionSaveTimer = Timer(_sessionSaveDebounce, () {
+      _sessionSaveTimer = null;
+      unawaited(_flushSessionNow());
+    });
+  }
 
-  Future<void> _saveSession() async {
+  /// Немедленный flush: dispose()/pause()/saveSession() — состояние уходит
+  /// в БД до того, как приложение закроется или переключится.
+  Future<void> _flushSessionNow() async {
+    _sessionSaveTimer?.cancel();
+    _sessionSaveTimer = null;
+    final dirty = _sessionDirty;
+    _sessionDirty = false;
+    if (!dirty) return;
     if (_queue.isEmpty) return;
     try {
       final queueRows = _queue.map((t) => t.toMap()).toList();
@@ -524,6 +554,11 @@ class DesktopPlayerService implements PlayerServiceInterface {
       _log('save session: $e');
     }
   }
+
+  /// Публичный доступ — немедленный flush (вызывается из UI при закрытии
+  /// окна/сворачивании/завершении).
+  @override
+  Future<void> saveSession() => _flushSessionNow();
 
   Future<void> _restoreSession() async {
     try {

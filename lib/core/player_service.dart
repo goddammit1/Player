@@ -1,7 +1,6 @@
 // lib/core/player_service.dart
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
@@ -17,6 +16,7 @@ import 'history_repository.dart';
 import 'playlist_repository.dart';
 import 'youtube_cache.dart';
 import 'artwork_helper.dart';
+import 'player_conversions.dart';
 import 'player_service_interface.dart';
 
 // print -> adb logcat (tag: flutter)
@@ -80,6 +80,17 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
   Track? _pendingHistoryTrack;
   static const Duration _historyThreshold = Duration(seconds: 1);
+
+  // ===== SESSION PERSISTENCE (debounce) =====
+  // Короткий debounce: частые мутации очереди/плеера (play, next, add)
+  // coalesce в одно сохранение вместо серии последовательных полных
+  // сериализаций очереди. Принудительный flush — при pause(), stop(),
+  // onTaskRemoved() и при вызове публичного saveSession() (например, из
+  // UI при сворачивании приложения).
+  static const Duration _sessionSaveDebounce = Duration(milliseconds: 300);
+  Timer? _sessionSaveTimer;
+  bool _sessionDirty = false;
+  int? _pendingPositionMs;
 
   // ===== SLEEP TIMER =====
   final BehaviorSubject<SleepTimerMode> _sleepTimerMode =
@@ -324,7 +335,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
     _currentIndexSubject.add(_currentIndex);
     queue.add(_queue.map(_toMediaItem).toList());
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   @override
@@ -343,7 +354,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
     _currentIndexSubject.add(_currentIndex);
     queue.add(_queue.map(_toMediaItem).toList());
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   @override
@@ -356,7 +367,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       await _playIndex(startIndex);
       // _playIndex already saves session internally
     } else {
-      await _saveSession();
+      _scheduleSessionSave();
     }
   }
 
@@ -364,7 +375,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
   Future<void> addToQueue(Track track) async {
     _queue.add(track);
     queue.add([...queue.value, _toMediaItem(track)]);
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   @override
@@ -378,7 +389,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     }
 
     queue.add(_queue.map(_toMediaItem).toList());
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   Future<void> _playIndex(int index, {bool isRetry = false}) async {
@@ -429,7 +440,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       await _player.play();
 
       unawaited(_reapplyBoost());
-      await _saveSession();
+      _scheduleSessionSave();
       _warmArtwork(_currentIndex);
       _schedulePrefetchNext(myGen);
     } catch (e, st) {
@@ -520,7 +531,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     }
 
     await _player.play();
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   void _warmArtwork(int index) {
@@ -651,31 +662,40 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
   @override
   Future<void> pause() async {
     await _player.pause();
-    await _saveSession();
+    // Мгновенный flush с актуальной позицией — после паузы debounce не нужен.
+    await _flushSessionNow();
   }
 
   // ===== SESSION PERSISTENCE =====
 
-  /// Сериализует [track] в Map, совместимый с `AppDatabase._trackFromRow`.
-  static Map<String, dynamic> _trackToRow(Track track) {
-    return {
-      'track_id': track.id,
-      'source_id': track.sourceId,
-      'title': track.title,
-      'artist': track.artist,
-      'duration_ms': track.duration?.inMilliseconds,
-      'artwork_url': track.artworkUrl,
-      'quality_score': track.qualityScore,
-      'quality_label': track.qualityLabel,
-      'track_global_id': track.globalId,
-      'extra_json': jsonEncode(AppDatabase.extraPrimitives(track.extra)),
-    };
+  /// Планирует сохранение сессии с debounce:
+  /// быстрые последовательные вызовы (add/remove/reorder/play/next)
+  /// объединяются в одно сохранение через [_sessionSaveDebounce].
+  /// Последняя позиция запоминается, чтобы flush не потерял свежий seek/play.
+  void _scheduleSessionSave() {
+    if (_sessionDirty && _sessionSaveTimer != null) {
+      return; // Таймер уже висит и сбросит позицию сам.
+    }
+    _pendingPositionMs = _player.position.inMilliseconds;
+    _sessionDirty = true;
+    _sessionSaveTimer?.cancel();
+    _sessionSaveTimer = Timer(_sessionSaveDebounce, () {
+      _sessionSaveTimer = null;
+      _flushSessionNow();
+    });
   }
 
-  Future<void> _saveSession({int? positionMs}) async {
+  /// Немедленный flush (без дебаунса): pause/stop/onTaskRemoved/saveSession —
+  /// сюда попадает актуальная позиция на момент вызова.
+  Future<void> _flushSessionNow() async {
+    _sessionSaveTimer?.cancel();
+    _sessionSaveTimer = null;
+    final dirty = _sessionDirty;
+    _sessionDirty = false;
+    if (!dirty) return;
     try {
-      final pos = positionMs ?? _player.position.inMilliseconds;
-      final queueRows = _queue.map(_trackToRow).toList();
+      final pos = _pendingPositionMs ?? _player.position.inMilliseconds;
+      final queueRows = _queue.map(PlayerConversions.trackToRow).toList();
       await AppDatabase.instance.savePlaybackSession(
         queueRows: queueRows,
         currentIndex: _currentIndex,
@@ -683,12 +703,15 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       );
     } catch (_) {
       // Не даём ошибке БД уронить плеер.
+    } finally {
+      _pendingPositionMs = null;
     }
   }
 
   /// Публичный доступ для сохранения сессии из UI (например, при сворачивании).
+  /// Выполняется принудительный flush — сессия не теряется при сворачивании.
   @override
-  Future<void> saveSession() => _saveSession();
+  Future<void> saveSession() => _flushSessionNow();
 
   Future<void> _restoreSession() async {
     try {
@@ -739,11 +762,13 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
   @override
   Future<void> onTaskRemoved() async {
     _log('onTaskRemoved — saving session');
-    await _saveSession();
+    // Немедленный flush: процесс может быть убит сразу после onTaskRemoved,
+    // debounce-таймер не успеет сработать.
+    await _flushSessionNow();
     // Не вызываем _player.stop()/_player.dispose() — на момент
-    // onTaskRemoved главный изолят уже может быть мёртв, Platform
+    // onTaskRemoved основной изолят уже может быть мёртв, Platform
     // Channel для just_audio/sqflite недоступен, и dispose крашит
-    // процесс до того как БД синкнется на диск.
+    // процесс до того, как БД синкнется на диск.
     await super.onTaskRemoved();
   }
 
@@ -798,7 +823,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
     _currentIndexSubject.add(_currentIndex);
     queue.add(_queue.map(_toMediaItem).toList());
-    await _saveSession();
+    _scheduleSessionSave();
   }
 
   @override
@@ -823,9 +848,9 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       _currentIndex = 0;
       _currentIndexSubject.add(_currentIndex);
     }
-    queue.add(_queue.map(_toMediaItem).toList());
-    await _saveSession();
-  }
+     queue.add(_queue.map(_toMediaItem).toList());
+     _scheduleSessionSave();
+   }
 
   @override
   Future<void> setLoopMode(LoopMode mode) async {
@@ -858,27 +883,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
   // ===== Helpers =====
 
-  MediaItem _toMediaItem(Track t) {
-    // Проверяем, есть ли сохранённая кастомная обложка для трека
-    final customArt = ArtworkHelper.getCustomArtworkSync(t.id);
-    final artUri = customArt != null
-        ? Uri.file(customArt)
-        : (t.artworkUrl != null ? Uri.parse(t.artworkUrl!) : null);
-
-    return MediaItem(
-      id: t.globalId,
-      title: t.title,
-      artist: t.artist,
-      duration: t.duration,
-      artUri: artUri,
-      extras: {
-        'sourceId': t.sourceId,
-        'trackId': t.id,
-        'originalArtworkUrl': t.artworkUrl,
-        'qualityLabel': t.qualityLabel,
-      },
-    );
-  }
+  MediaItem _toMediaItem(Track t) => PlayerConversions.toMediaItem(t);
 
   /// Сбрасывает кастомную обложку трека на оригинальную (или пустую)
   @override
