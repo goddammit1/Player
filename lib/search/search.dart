@@ -1,0 +1,308 @@
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../models/track.dart';
+import '../sources/muzmo_source.dart';
+import '../sources/soundcloud_source.dart';
+import '../sources/source_registry.dart';
+
+/// Виртуальный id «искать во всех источниках сразу». Не зарегистрирован в
+/// [SourceRegistry] — обрабатывается в [SearchController] отдельно.
+const String kAllSourcesId = 'all';
+
+/// Стейт текущего поиска.
+///
+/// [sourceId] хранится прямо в стейте (а не в приватном поле контроллера),
+/// чтобы UI через `ref.watch(searchProvider)` перерисовывал активный фильтр
+/// даже когда поисковый запрос пуст и реального перепоиска не происходит.
+class SearchState {
+  final String query;
+  final List<Track> results;
+  final bool loading;
+  final String? error;
+  final String sourceId;
+
+  const SearchState({
+    this.query = '',
+    this.results = const [],
+    this.loading = false,
+    this.error,
+    this.sourceId = kAllSourcesId,
+  });
+
+  SearchState copyWith({
+    String? query,
+    List<Track>? results,
+    bool? loading,
+    String? error,
+    String? sourceId,
+  }) => SearchState(
+    query: query ?? this.query,
+    results: results ?? this.results,
+    loading: loading ?? this.loading,
+    error: error,
+    sourceId: sourceId ?? this.sourceId,
+  );
+}
+
+class SearchController extends StateNotifier<SearchState> {
+  SearchController() : super(const SearchState());
+
+  /// Монотонный счётчик поколений поиска. Каждый новый запрос/смена
+  /// источника инкрементирует его, чтобы stale-колбэки от старых futures
+  /// не могли изменить актуальный state.
+  int _searchGeneration = 0;
+
+  /// Текущий выбранный источник (или [kAllSourcesId]).
+  String get sourceId => state.sourceId;
+
+  void setSourceId(String id) {
+    if (state.sourceId == id) return;
+    // Обновляем стейт сразу — это перерисует активный фильтр в UI даже
+    // при пустом запросе (раньше менялось приватное поле, и watch не
+    // срабатывал, из-за чего фильтры «не переключались» до ввода текста).
+    state = state.copyWith(sourceId: id);
+    // Если был активный запрос — перепоиск в новом источнике, чтобы
+    // пользователь сразу видел релевантные результаты.
+    if (state.query.trim().isNotEmpty) {
+      search(state.query);
+    }
+  }
+
+  Future<void> search(String query, {String? sourceId}) async {
+    if (query.trim().isEmpty) {
+      // Сбрасываем результаты, но сохраняем выбранный фильтр.
+      state = SearchState(sourceId: state.sourceId);
+      return;
+    }
+    final useSource = sourceId ?? state.sourceId;
+    final generation = ++_searchGeneration;
+    state = state.copyWith(query: query, loading: true, error: null);
+    final myQuery = query;
+
+    // Хелпер: актуален ли ещё этот поиск (пользователь не сменил запрос
+    // или источник за время сетевого запроса).
+    bool isStale() =>
+        _searchGeneration != generation ||
+        state.query != myQuery ||
+        state.sourceId != useSource;
+
+    try {
+      if (useSource == kAllSourcesId) {
+        await _searchAll(myQuery, generation, isStale);
+      } else {
+        await _searchOne(useSource, myQuery, generation, isStale);
+      }
+    } catch (e) {
+      if (isStale()) return;
+      state = state.copyWith(loading: false, error: e.toString());
+    }
+  }
+
+  /// Поиск в одном конкретном источнике.
+  Future<void> _searchOne(
+    String sourceId,
+    String query,
+    int generation,
+    bool Function() isStale,
+  ) async {
+    final source = SourceRegistry.instance.require(sourceId);
+    final results = await source.search(query);
+    if (isStale()) return;
+    state = state.copyWith(results: results, loading: false);
+    // Передаём треки из state.results (а не сырые результаты), чтобы
+    // при повторном поиске enrich видел уже известные artworkUrl и
+    // пропускал треки с обложками, не гоняя лишние сетевые запросы.
+    _enrichArtworksFromState(source, query, generation);
+  }
+
+  /// Таймаут на один источник в режиме «all».
+  /// Оптимальный баланс: достаточно быстро для хорошего UX,
+  /// но и достаточно, чтобы медленный, но рабочий источник успел ответить.
+  static const _sourceTimeout = Duration(seconds: 5);
+
+  /// Поиск во всех зарегистрированных источниках сразу.
+  ///
+  /// Результаты показываются сразу по мере поступления — как только хотя
+  /// бы один источник ответил, UI получает первую порцию. Медленные или
+  /// недоступные источники (например, SoundCloud без прокси) тихо
+  /// пропускаются по таймауту [_sourceTimeout].
+  ///
+  /// Финальная выдача объединяется round-robin: по одному треку из
+  /// каждого источника по кругу — так список не забит одним источником.
+  Future<void> _searchAll(
+    String query,
+    int generation,
+    bool Function() isStale,
+  ) async {
+    final sources = SourceRegistry.instance.searchable;
+    if (sources.isEmpty) {
+      if (!isStale()) {
+        state = state.copyWith(results: const [], loading: false);
+      }
+      return;
+    }
+
+    // Запускаем поиск в каждом источнике параллельно.
+    // Каждый источник обёрнут в таймаут — если не ответил за 5 сек,
+    // возвращается пустой список (тихо, без ошибки в UI).
+    final futures = sources.map((s) async {
+      try {
+        return await s.search(query).timeout(_sourceTimeout);
+      } catch (_) {
+        return <Track>[];
+      }
+    }).toList();
+
+    // Слушаем результаты по мере готовности через Stream.
+    // Каждый future оборачиваем в пару (index, result), чтобы знать
+    // какой источник ответил.
+    final resultStream = Stream.fromFutures(
+      List.generate(futures.length, (i) async {
+        final list = await futures[i];
+        return (i, list);
+      }),
+    );
+
+    final completed = List<bool>.filled(futures.length, false);
+    final results = List<List<Track>>.filled(futures.length, const []);
+
+    // Первый ответивший показываем сразу — сбрасываем loading.
+    var firstResultShown = false;
+
+    await for (final (index, list) in resultStream) {
+      if (isStale()) return;
+
+      completed[index] = true;
+      results[index] = list;
+
+      // Round-robin слияние уже полученных результатов.
+      final merged = SearchController.interleave(
+        List.generate(
+          results.length,
+          (i) => completed[i] ? results[i] : const [],
+        ),
+      );
+
+      // ВАЖНО: слияние строится из исходных (необогащённых) списков.
+      // Если обогащение обложками какого-то источника уже успело
+      // пропатчить state.results (например, обложки взялись из кэша
+      // мгновенно при повторном поиске), нельзя терять эти обложки —
+      // переносим уже известные artworkUrl в новый merged-список.
+      final knownArt = <String, String>{
+        for (final t in state.results)
+          if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty)
+            t.globalId: t.artworkUrl!,
+      };
+      final mergedWithArt = [
+        for (final t in merged)
+          if ((t.artworkUrl == null || t.artworkUrl!.isEmpty) &&
+              knownArt.containsKey(t.globalId))
+            t.copyWith(artworkUrl: knownArt[t.globalId])
+          else
+            t,
+      ];
+
+      if (!firstResultShown) {
+        firstResultShown = true;
+        // Первый источник ответил — показываем результаты и убираем
+        // индикатор загрузки. Остальные придут позже и доклеятся.
+        state = state.copyWith(results: mergedWithArt, loading: false);
+      } else {
+        // Последующие источники доклеиваются к уже показанным.
+        state = state.copyWith(results: mergedWithArt);
+      }
+
+      // Запускаем обогащение обложками ПОСЛЕ установки state.results,
+      // чтобы enrich видел текущие artworkUrl (в т.ч. из кэша knownArt)
+      // и повторно не гонял сеть для треков с уже известными обложками.
+      _enrichArtworksFromState(sources[index], query, generation);
+    }
+
+    // Все источники либо ответили, либо упали по таймауту.
+    // Если ни один не ответил до сих пор (все упали мгновенно) —
+    // сбрасываем loading и показываем пустой список.
+    if (!firstResultShown && !isStale()) {
+      state = state.copyWith(results: const [], loading: false);
+    }
+  }
+
+  /// Round-robin слияние нескольких списков в один.
+  static List<Track> interleave(List<List<Track>> lists) {
+    final merged = <Track>[];
+    var i = 0;
+    var added = true;
+    while (added) {
+      added = false;
+      for (final list in lists) {
+        if (i < list.length) {
+          merged.add(list[i]);
+          added = true;
+        }
+      }
+      i++;
+    }
+    return merged;
+  }
+
+  /// Запускает фоновое обогащение обложками для треков источников,
+  /// которые это поддерживают (Muzmo, SoundCloud). Для остальных —
+  /// no-op.
+  ///
+  /// ВАЖНО: треки берутся из **state.results** (а не из сырого ответа
+  /// источника), чтобы при повторном поиске enrich видел уже известные
+  /// artworkUrl и пропускал треки с обложками, не гоняя лишние сетевые
+  /// запросы. Это же защищает от гонки, когда _searchAll перезаписывает
+  /// state.results свежим merged-списком — обогащение применяется к
+  /// актуальному состоянию UI.
+  void _enrichArtworksFromState(
+    dynamic source,
+    String query,
+    int generation,
+  ) {
+    final sourceId = source.id;
+    final sourceTracksInState = state.results
+        .where((t) => t.sourceId == sourceId)
+        .toList();
+    if (sourceTracksInState.isEmpty) return;
+
+    if (source is MuzmoSource) {
+      source.enrichArtworksInBackground(
+        sourceTracksInState,
+        _patchResults(query, generation),
+      );
+    } else if (source is SoundCloudSource) {
+      source.enrichArtworksInBackground(
+        sourceTracksInState,
+        _patchResults(query, generation),
+      );
+    }
+  }
+
+  /// Возвращает колбэк, который вклеивает обновлённые треки обратно в
+  /// общий список результатов по globalId, игнорируя устаревший поиск.
+  ///
+  /// [generation] — поколение поиска, при смене которого патч
+  /// отбрасывается. Это защищает от ситуации, когда пользователь быстро
+  /// сменил фильтр, но query остался прежним.
+  void Function(List<Track>) _patchResults(String query, int generation) {
+    return (updated) {
+      // Игнорируем колбэки от устаревшего поиска.
+      if (_searchGeneration != generation || state.query != query) return;
+      // Вклеиваем обновлённые треки обратно в общий список по globalId,
+      // сохраняя исходный порядок (важно для режима «Все»).
+      final byId = {for (final t in updated) t.globalId: t};
+      final patched = [
+        for (final t in state.results) byId[t.globalId] ?? t,
+      ];
+      state = state.copyWith(results: patched);
+    };
+  }
+}
+
+final searchProvider = StateNotifierProvider<SearchController, SearchState>((
+  ref,
+) {
+  return SearchController();
+});
