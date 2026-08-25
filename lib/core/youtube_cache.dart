@@ -8,7 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/track.dart';
 import '../sources/artwork_provider.dart';
-import 'app_database.dart';
+import 'database/app_database.dart';
 import 'artwork_helper.dart';
 
 /// Дисковый кэш приложения.

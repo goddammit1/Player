@@ -4,11 +4,11 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../models/playlist.dart';
-import 'app_database.dart';
-import 'artwork_helper.dart';
-import 'history_repository.dart';
-import 'playlist_repository.dart';
+import '../../models/playlist.dart';
+import '../database/app_database.dart';
+import '../artwork_helper.dart';
+import '../repositories/history_repository.dart';
+import '../repositories/playlist_repository.dart';
 
 /// Максимальная поддерживаемая версия формата бэкапа.
 const int _maxSupportedVersion = 1;

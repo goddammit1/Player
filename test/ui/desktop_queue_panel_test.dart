@@ -1,17 +1,17 @@
-// Regression-тест правой колонки «Queue/Track» desktop-интерфейса
+﻿// Regression-С‚РµСЃС‚ РїСЂР°РІРѕР№ РєРѕР»РѕРЅРєРё В«Queue/TrackВ» desktop-РёРЅС‚РµСЂС„РµР№СЃР°
 // (lib/ui/desktop/queue_panel.dart).
 //
-// Проверяются:
-//   1. Рендер панели без исключений в headless-окне (ListView/Scrollbar/
-//      Artwork не требуют Overlay — в отличие от Slider в плеер-баре).
-//   2. Пустая очередь: вкладка «Queue» показывает «Queue empty»,
-//      вкладка «Track» — «No track».
-//   3. Непустая очередь: активный трек подсвечен индикатором «играет»
-//      (Icons.graphic_eq_rounded), длительность отформатирована.
-//   4. Тап по вкладке «Track» переключает тело панели на «No track»
-//      (источник данных у desktop-плеера один — trackQueue).
+// РџСЂРѕРІРµСЂСЏСЋС‚СЃСЏ:
+//   1. Р РµРЅРґРµСЂ РїР°РЅРµР»Рё Р±РµР· РёСЃРєР»СЋС‡РµРЅРёР№ РІ headless-РѕРєРЅРµ (ListView/Scrollbar/
+//      Artwork РЅРµ С‚СЂРµР±СѓСЋС‚ Overlay вЂ” РІ РѕС‚Р»РёС‡РёРµ РѕС‚ Slider РІ РїР»РµРµСЂ-Р±Р°СЂРµ).
+//   2. РџСѓСЃС‚Р°СЏ РѕС‡РµСЂРµРґСЊ: РІРєР»Р°РґРєР° В«QueueВ» РїРѕРєР°Р·С‹РІР°РµС‚ В«Queue emptyВ»,
+//      РІРєР»Р°РґРєР° В«TrackВ» вЂ” В«No trackВ».
+//   3. РќРµРїСѓСЃС‚Р°СЏ РѕС‡РµСЂРµРґСЊ: Р°РєС‚РёРІРЅС‹Р№ С‚СЂРµРє РїРѕРґСЃРІРµС‡РµРЅ РёРЅРґРёРєР°С‚РѕСЂРѕРј В«РёРіСЂР°РµС‚В»
+//      (Icons.graphic_eq_rounded), РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ РѕС‚С„РѕСЂРјР°С‚РёСЂРѕРІР°РЅР°.
+//   4. РўР°Рї РїРѕ РІРєР»Р°РґРєРµ В«TrackВ» РїРµСЂРµРєР»СЋС‡Р°РµС‚ С‚РµР»Рѕ РїР°РЅРµР»Рё РЅР° В«No trackВ»
+//      (РёСЃС‚РѕС‡РЅРёРє РґР°РЅРЅС‹С… Сѓ desktop-РїР»РµРµСЂР° РѕРґРёРЅ вЂ” trackQueue).
 //
-// Сеть не дёргаем: плеер — _FakePlayer с фиксированной trackQueue.
+// РЎРµС‚СЊ РЅРµ РґС‘СЂРіР°РµРј: РїР»РµРµСЂ вЂ” _FakePlayer СЃ С„РёРєСЃРёСЂРѕРІР°РЅРЅРѕР№ trackQueue.
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
@@ -26,9 +26,9 @@ import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
 import 'package:player/ui/desktop/queue_panel.dart';
 
-import 'setup/test_harness.dart';
+import '../setup/test_harness.dart';
 
-/// Fake-плеер: предоставляет очередь [Track] для QueuePanel.
+/// Fake-РїР»РµРµСЂ: РїСЂРµРґРѕСЃС‚Р°РІР»СЏРµС‚ РѕС‡РµСЂРµРґСЊ [Track] РґР»СЏ QueuePanel.
 class _FakePlayer implements PlayerServiceInterface {
   _FakePlayer({required this.queue});
 
@@ -212,10 +212,10 @@ void main() {
       (tester) async {
     await pumpPanel(tester, _FakePlayer(queue: const []));
 
-    // Пустой рендер не должен бросать (ListView/Scrollbar без элементов).
+    // РџСѓСЃС‚РѕР№ СЂРµРЅРґРµСЂ РЅРµ РґРѕР»Р¶РµРЅ Р±СЂРѕСЃР°С‚СЊ (ListView/Scrollbar Р±РµР· СЌР»РµРјРµРЅС‚РѕРІ).
     expect(tester.takeException(), isNull);
 
-    // Вкладка по умолчанию — «Queue» → заглушка «Queue empty».
+    // Р’РєР»Р°РґРєР° РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ вЂ” В«QueueВ» в†’ Р·Р°РіР»СѓС€РєР° В«Queue emptyВ».
     expect(find.text('Queue empty'), findsOneWidget);
     expect(find.text('No track'), findsNothing);
   });
@@ -242,10 +242,10 @@ void main() {
 
     expect(tester.takeException(), isNull);
 
-    // Активный (индекс 0) трек подсвечен индикатором «играет».
+    // РђРєС‚РёРІРЅС‹Р№ (РёРЅРґРµРєСЃ 0) С‚СЂРµРє РїРѕРґСЃРІРµС‡РµРЅ РёРЅРґРёРєР°С‚РѕСЂРѕРј В«РёРіСЂР°РµС‚В».
     expect(find.byIcon(Icons.graphic_eq_rounded), findsOneWidget);
 
-    // Оба заголовка и исполнители видны.
+    // РћР±Р° Р·Р°РіРѕР»РѕРІРєР° Рё РёСЃРїРѕР»РЅРёС‚РµР»Рё РІРёРґРЅС‹.
     expect(find.text('Active Track'), findsOneWidget);
     expect(find.text('Artist A'), findsOneWidget);
     expect(find.text('Queued Track'), findsOneWidget);
@@ -266,11 +266,11 @@ void main() {
     );
     await pumpPanel(tester, player);
 
-    // Переключаемся на вкладку «Track».
+    // РџРµСЂРµРєР»СЋС‡Р°РµРјСЃСЏ РЅР° РІРєР»Р°РґРєСѓ В«TrackВ».
     await tester.tap(find.text('Track'));
     await tester.pumpAndSettle();
 
-    // Данные у desktop-плеера один — та же trackQueue. Пустых заглушек нет.
+    // Р”Р°РЅРЅС‹Рµ Сѓ desktop-РїР»РµРµСЂР° РѕРґРёРЅ вЂ” С‚Р° Р¶Рµ trackQueue. РџСѓСЃС‚С‹С… Р·Р°РіР»СѓС€РµРє РЅРµС‚.
     expect(find.text('Only Track'), findsOneWidget);
     expect(find.text('No track'), findsNothing);
     expect(tester.takeException(), isNull);

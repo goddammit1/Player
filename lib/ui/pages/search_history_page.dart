@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import 'search_page.dart';
 
 class SearchHistoryPage extends ConsumerStatefulWidget {

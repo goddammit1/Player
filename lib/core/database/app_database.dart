@@ -6,17 +6,17 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
-import '../models/playlist.dart';
-import '../models/track.dart';
-import 'database/backup_dao.dart';
-import 'database/database_schema.dart';
-import 'database/listen_history_dao.dart';
-import 'database/playback_dao.dart';
-import 'database/playlist_dao.dart';
-import 'database/search_history_dao.dart';
-import 'database/settings_dao.dart';
-import 'database/track_row_codec.dart';
-import 'history_repository.dart';
+import '../../models/playlist.dart';
+import '../../models/track.dart';
+import 'backup_dao.dart';
+import 'database_schema.dart';
+import 'listen_history_dao.dart';
+import 'playback_dao.dart';
+import 'playlist_dao.dart';
+import 'search_history_dao.dart';
+import 'settings_dao.dart';
+import 'track_row_codec.dart';
+import '../repositories/history_repository.dart';
 
 /// Единая база данных приложения (SQLite).
 ///

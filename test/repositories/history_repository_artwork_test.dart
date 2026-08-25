@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:player/core/history_repository.dart';
-import 'package:player/core/playlist_repository.dart';
+import 'package:player/core/repositories/history_repository.dart';
+import 'package:player/core/repositories/playlist_repository.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/source_registry.dart';

@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../models/track.dart';
-import '../sources/artwork_provider.dart';
-import '../sources/source_registry.dart';
-import 'app_database.dart';
-import 'artwork_helper.dart';
+import '../../models/track.dart';
+import '../../sources/artwork_provider.dart';
+import '../../sources/source_registry.dart';
+import '../database/app_database.dart';
+import '../artwork_helper.dart';
 import 'playlist_repository.dart';
 
 /// Одна запись истории прослушивания: трек + момент воспроизведения.

@@ -15,7 +15,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../player_service.dart';
-import '../player_service_desktop.dart';
+import 'player_service_desktop.dart';
 import '../player_service_interface.dart';
 
 /// Платформо-зависимая фабрика плеер-сервисов.

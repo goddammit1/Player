@@ -8,8 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
-import '../../../core/global_theme_provider.dart';
-import '../../../core/haptic_helper.dart';
+import '../../../core/providers/global_theme_provider.dart';
+import '../../../core/platform/haptic_helper.dart';
 import '../../../core/player_service_interface.dart';
 import '../../../models/track.dart';
 import '../../widgets/queue_sheet.dart';

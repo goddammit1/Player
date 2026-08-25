@@ -5,8 +5,8 @@ import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../../models/track.dart';
 import 'artwork.dart';
-import 'desktop_layout.dart';
-import '../../core/haptic_helper.dart';
+import '../desktop/desktop_layout.dart';
+import '../../core/platform/haptic_helper.dart';
 
 Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
   // Защита от двойного открытия sheet'а при быстром тапе.

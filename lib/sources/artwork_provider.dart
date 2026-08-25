@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
-import '../core/app_database.dart';
+import '../core/database/app_database.dart';
 import 'artwork_title_utils.dart';
 
 class ArtworkProvider {

@@ -6,7 +6,7 @@
 import 'package:marquee/marquee.dart';
 import 'package:flutter/material.dart';
 
-import '../../../core/global_theme_provider.dart';
+import '../../../core/providers/global_theme_provider.dart';
 
 class PlayerTitleScroller extends StatelessWidget {
   const PlayerTitleScroller({super.key, required this.text, required this.colors});

@@ -4,9 +4,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/haptic_helper.dart';
+import '../../core/platform/haptic_helper.dart';
 import '../../core/providers.dart';
-import 'desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 
 Future<void> showSleepTimerSheet(BuildContext context) {
   if (ModalRoute.of(context)?.isCurrent != true) return Future.value();

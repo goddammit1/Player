@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:player/core/app_database.dart';
-import 'package:player/core/history_repository.dart';
+import 'package:player/core/database/app_database.dart';
+import 'package:player/core/repositories/history_repository.dart';
 import 'package:player/models/track.dart';
 import 'package:player/models/playlist.dart';
 import 'package:sqflite/sqflite.dart';

@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'package:player/core/app_database.dart';
+import 'package:player/core/database/app_database.dart';
 
 class TestHarness {
   TestHarness._();

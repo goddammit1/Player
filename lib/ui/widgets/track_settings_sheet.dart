@@ -15,7 +15,7 @@ import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
-import 'desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import '../../core/youtube_cache.dart';

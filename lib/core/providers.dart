@@ -4,15 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/playlist.dart';
-import 'app_database.dart';
-import 'history_repository.dart';
+import 'database/app_database.dart';
+import 'repositories/history_repository.dart';
 import 'player_service_interface.dart';
-import 'playlist_repository.dart';
+import 'repositories/playlist_repository.dart';
 export '../search/search.dart';
 export '../search/search_settings.dart';
-export 'appearance_provider.dart';
-export 'dynamic_colors.dart';
-export 'global_theme_provider.dart';
+export 'providers/appearance_provider.dart';
+export 'providers/dynamic_colors.dart';
+export 'providers/global_theme_provider.dart';
 
 /// PlayerService инициализируется в main.dart и пробрасывается сюда через
 /// override. См. main.dart -> ProviderScope(overrides: [...]).

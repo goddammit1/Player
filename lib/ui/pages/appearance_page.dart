@@ -11,7 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
 import '../widgets/back_button.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 
 class AppearancePage extends ConsumerWidget {

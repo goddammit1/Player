@@ -10,12 +10,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/history_repository.dart';
-import '../../core/playlist_backup.dart';
-import '../../core/playlist_repository.dart';
+import '../../core/repositories/history_repository.dart';
+import '../../core/backup/playlist_backup.dart';
+import '../../core/repositories/playlist_repository.dart';
 import '../../core/providers.dart';
 import '../widgets/back_button.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
 

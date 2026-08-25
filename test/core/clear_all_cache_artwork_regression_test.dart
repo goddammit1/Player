@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
-import 'package:player/core/app_database.dart';
+import 'package:player/core/database/app_database.dart';
 import 'package:player/core/artwork_helper.dart';
-import 'package:player/core/history_repository.dart';
-import 'package:player/core/playlist_repository.dart';
+import 'package:player/core/repositories/history_repository.dart';
+import 'package:player/core/repositories/playlist_repository.dart';
 import 'package:player/core/youtube_cache.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';

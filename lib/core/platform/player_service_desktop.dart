@@ -1,4 +1,4 @@
-// lib/core/player_service_desktop.dart
+// lib/core/platform/player_service_desktop.dart
 // Desktop player — Windows / macOS / Linux. Pure just_audio, no audio_service.
 
 import 'dart:async';
@@ -9,14 +9,14 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
-import '../models/track.dart';
-import '../sources/source_registry.dart';
-import 'app_database.dart';
-import 'history_repository.dart';
-import 'playlist_repository.dart';
-import 'youtube_cache.dart';
-import 'player_service.dart' show SleepTimerMode;
-import 'player_service_interface.dart';
+import '../../models/track.dart';
+import '../../sources/source_registry.dart';
+import '../database/app_database.dart';
+import '../repositories/history_repository.dart';
+import '../repositories/playlist_repository.dart';
+import '../youtube_cache.dart';
+import '../player_service.dart' show SleepTimerMode;
+import '../player_service_interface.dart';
 
 void _log(String msg) => debugPrint('[DesktopPlayer] $msg');
 

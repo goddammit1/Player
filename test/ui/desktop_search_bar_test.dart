@@ -1,19 +1,19 @@
-// Regression-тест десктопного поиска.
+﻿// Regression-С‚РµСЃС‚ РґРµСЃРєС‚РѕРїРЅРѕРіРѕ РїРѕРёСЃРєР°.
 //
-// История: в Windows-версии верхняя строка была кнопкой-заглушкой,
-// которая открывала страницу поиска со второй (настоящей) строкой ввода.
-// Теперь верхняя строка — ЕДИНАЯ строка поиска (DesktopSearchBar/TextField):
-// ввод + Enter запускают поиск по источникам и показывают результаты в
-// контентной области окна (SearchPage без собственной строки ввода).
+// РСЃС‚РѕСЂРёСЏ: РІ Windows-РІРµСЂСЃРёРё РІРµСЂС…РЅСЏСЏ СЃС‚СЂРѕРєР° Р±С‹Р»Р° РєРЅРѕРїРєРѕР№-Р·Р°РіР»СѓС€РєРѕР№,
+// РєРѕС‚РѕСЂР°СЏ РѕС‚РєСЂС‹РІР°Р»Р° СЃС‚СЂР°РЅРёС†Сѓ РїРѕРёСЃРєР° СЃРѕ РІС‚РѕСЂРѕР№ (РЅР°СЃС‚РѕСЏС‰РµР№) СЃС‚СЂРѕРєРѕР№ РІРІРѕРґР°.
+// РўРµРїРµСЂСЊ РІРµСЂС…РЅСЏСЏ СЃС‚СЂРѕРєР° вЂ” Р•Р”РРќРђРЇ СЃС‚СЂРѕРєР° РїРѕРёСЃРєР° (DesktopSearchBar/TextField):
+// РІРІРѕРґ + Enter Р·Р°РїСѓСЃРєР°СЋС‚ РїРѕРёСЃРє РїРѕ РёСЃС‚РѕС‡РЅРёРєР°Рј Рё РїРѕРєР°Р·С‹РІР°СЋС‚ СЂРµР·СѓР»СЊС‚Р°С‚С‹ РІ
+// РєРѕРЅС‚РµРЅС‚РЅРѕР№ РѕР±Р»Р°СЃС‚Рё РѕРєРЅР° (SearchPage Р±РµР· СЃРѕР±СЃС‚РІРµРЅРЅРѕР№ СЃС‚СЂРѕРєРё РІРІРѕРґР°).
 //
-// Тест рендерит настоящий DesktopShell и проверяет весь сценарий:
-//   1) в верхней панели есть TextField (а не «кнопка Search»);
-//   2) после Enter-поиска контентная область показывает SearchPage
-//      без строки ввода внутри страницы (showInPageSearchBar: false);
-//   3) найденный трек отображается в результатах;
-//   4) очистка возвращает контент к разделу плейлистов.
+// РўРµСЃС‚ СЂРµРЅРґРµСЂРёС‚ РЅР°СЃС‚РѕСЏС‰РёР№ DesktopShell Рё РїСЂРѕРІРµСЂСЏРµС‚ РІРµСЃСЊ СЃС†РµРЅР°СЂРёР№:
+//   1) РІ РІРµСЂС…РЅРµР№ РїР°РЅРµР»Рё РµСЃС‚СЊ TextField (Р° РЅРµ В«РєРЅРѕРїРєР° SearchВ»);
+//   2) РїРѕСЃР»Рµ Enter-РїРѕРёСЃРєР° РєРѕРЅС‚РµРЅС‚РЅР°СЏ РѕР±Р»Р°СЃС‚СЊ РїРѕРєР°Р·С‹РІР°РµС‚ SearchPage
+//      Р±РµР· СЃС‚СЂРѕРєРё РІРІРѕРґР° РІРЅСѓС‚СЂРё СЃС‚СЂР°РЅРёС†С‹ (showInPageSearchBar: false);
+//   3) РЅР°Р№РґРµРЅРЅС‹Р№ С‚СЂРµРє РѕС‚РѕР±СЂР°Р¶Р°РµС‚СЃСЏ РІ СЂРµР·СѓР»СЊС‚Р°С‚Р°С…;
+//   4) РѕС‡РёСЃС‚РєР° РІРѕР·РІСЂР°С‰Р°РµС‚ РєРѕРЅС‚РµРЅС‚ Рє СЂР°Р·РґРµР»Сѓ РїР»РµР№Р»РёСЃС‚РѕРІ.
 //
-// Сеть не дёргаем: в SourceRegistry регистрируется один _FakeSource.
+// РЎРµС‚СЊ РЅРµ РґС‘СЂРіР°РµРј: РІ SourceRegistry СЂРµРіРёСЃС‚СЂРёСЂСѓРµС‚СЃСЏ РѕРґРёРЅ _FakeSource.
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
@@ -31,9 +31,9 @@ import 'package:player/sources/track_source.dart';
 import 'package:player/ui/desktop/desktop_shell.dart';
 import 'package:player/ui/pages/search_page.dart';
 
-import 'setup/test_harness.dart';
+import '../setup/test_harness.dart';
 
-/// Fake-плеер: только чтобы playerServiceProvider был валиден в ProviderScope.
+/// Fake-РїР»РµРµСЂ: С‚РѕР»СЊРєРѕ С‡С‚РѕР±С‹ playerServiceProvider Р±С‹Р» РІР°Р»РёРґРµРЅ РІ ProviderScope.
 class _FakePlayer implements PlayerServiceInterface {
   @override
   bool get isLoading => false;
@@ -179,7 +179,7 @@ class _FakePlayer implements PlayerServiceInterface {
   List<Track> get trackQueue => const [];
 }
 
-/// Fake-источник поиска (без сети).
+/// Fake-РёСЃС‚РѕС‡РЅРёРє РїРѕРёСЃРєР° (Р±РµР· СЃРµС‚Рё).
 class _FakeSource extends TrackSource {
   _FakeSource({required this.id, this.displayName = ''});
 
@@ -218,7 +218,7 @@ void main() {
       'top bar is a real search field (not a navigational Search button) that '
       'updates the provider and shows results in the content area '
       'without an in-page search bar', (tester) async {
-    // Один зарегистрированный источник — поиск завершается быстро.
+    // РћРґРёРЅ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅРЅС‹Р№ РёСЃС‚РѕС‡РЅРёРє вЂ” РїРѕРёСЃРє Р·Р°РІРµСЂС€Р°РµС‚СЃСЏ Р±С‹СЃС‚СЂРѕ.
     final source = _FakeSource(id: 'fake_a', displayName: 'Fake A')
       ..result = [
         Track(
@@ -232,27 +232,27 @@ void main() {
     addTearDown(() async => await SourceRegistry.instance.disposeAll());
 
     await tester.pumpWidget(buildApp());
-    // Не используем pumpAndSettle: в IndexedStack живут все разделы сразу
-    // (в т.ч. SettingsPage с вечными анимациями), поэтому ждём явные кадры.
+    // РќРµ РёСЃРїРѕР»СЊР·СѓРµРј pumpAndSettle: РІ IndexedStack Р¶РёРІСѓС‚ РІСЃРµ СЂР°Р·РґРµР»С‹ СЃСЂР°Р·Сѓ
+    // (РІ С‚.С‡. SettingsPage СЃ РІРµС‡РЅС‹РјРё Р°РЅРёРјР°С†РёСЏРјРё), РїРѕСЌС‚РѕРјСѓ Р¶РґС‘Рј СЏРІРЅС‹Рµ РєР°РґСЂС‹.
     await tester.pump();
 
-    // 1) Верхняя панель содержит настоящее поле ввода поиска.
+    // 1) Р’РµСЂС…РЅСЏСЏ РїР°РЅРµР»СЊ СЃРѕРґРµСЂР¶РёС‚ РЅР°СЃС‚РѕСЏС‰РµРµ РїРѕР»Рµ РІРІРѕРґР° РїРѕРёСЃРєР°.
     expect(find.byType(TextField), findsOneWidget);
 
-    // 2) Изначально (пустой запрос) контент показывает плейлисты,
-    //    SearchPage отсутствует.
+    // 2) РР·РЅР°С‡Р°Р»СЊРЅРѕ (РїСѓСЃС‚РѕР№ Р·Р°РїСЂРѕСЃ) РєРѕРЅС‚РµРЅС‚ РїРѕРєР°Р·С‹РІР°РµС‚ РїР»РµР№Р»РёСЃС‚С‹,
+    //    SearchPage РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚.
     expect(find.byType(SearchPage), findsNothing);
 
-    // 3) Вводим запрос и жмём Enter.
+    // 3) Р’РІРѕРґРёРј Р·Р°РїСЂРѕСЃ Рё Р¶РјС‘Рј Enter.
     await tester.enterText(find.byType(TextField), 'test');
     await tester.testTextInput.receiveAction(TextInputAction.search);
-    // Даём асинхронному поиску завершиться (fake-источник отвечает мгновенно)
-    // и доиграть короткой анимации bar (350 мс у SearchPage).
+    // Р”Р°С‘Рј Р°СЃРёРЅС…СЂРѕРЅРЅРѕРјСѓ РїРѕРёСЃРєСѓ Р·Р°РІРµСЂС€РёС‚СЊСЃСЏ (fake-РёСЃС‚РѕС‡РЅРёРє РѕС‚РІРµС‡Р°РµС‚ РјРіРЅРѕРІРµРЅРЅРѕ)
+    // Рё РґРѕРёРіСЂР°С‚СЊ РєРѕСЂРѕС‚РєРѕР№ Р°РЅРёРјР°С†РёРё bar (350 РјСЃ Сѓ SearchPage).
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 450));
 
-    // Запрос записан в searchProvider; найденный трек показан в контентной
-    // области.
+    // Р—Р°РїСЂРѕСЃ Р·Р°РїРёСЃР°РЅ РІ searchProvider; РЅР°Р№РґРµРЅРЅС‹Р№ С‚СЂРµРє РїРѕРєР°Р·Р°РЅ РІ РєРѕРЅС‚РµРЅС‚РЅРѕР№
+    // РѕР±Р»Р°СЃС‚Рё.
     expect(find.byType(SearchPage), findsOneWidget);
     expect(
       find.descendant(
@@ -260,11 +260,11 @@ void main() {
         matching: find.byType(TextField),
       ),
       findsNothing,
-      reason: 'На десктопе SearchPage НЕ должен содержать свою строку ввода',
+      reason: 'РќР° РґРµСЃРєС‚РѕРїРµ SearchPage РќР• РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ СЃРІРѕСЋ СЃС‚СЂРѕРєСѓ РІРІРѕРґР°',
     );
     expect(find.text('Found Song One'), findsOneWidget);
 
-    // 4) Очистка возвращает контент к разделу плейлистов.
+    // 4) РћС‡РёСЃС‚РєР° РІРѕР·РІСЂР°С‰Р°РµС‚ РєРѕРЅС‚РµРЅС‚ Рє СЂР°Р·РґРµР»Сѓ РїР»РµР№Р»РёСЃС‚РѕРІ.
     await tester.tap(find.byTooltip('Clear'));
     await tester.pump();
     expect(find.byType(SearchPage), findsNothing);

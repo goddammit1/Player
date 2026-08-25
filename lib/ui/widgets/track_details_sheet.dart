@@ -5,7 +5,7 @@ import '../../core/providers.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
-import 'desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 
 Future<void> showTrackDetailsSheet(BuildContext context, Track track) {
   return showDesktopModalSheet<void>(

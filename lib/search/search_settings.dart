@@ -15,7 +15,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../core/app_database.dart';
+import '../core/database/app_database.dart';
 
 /// Режим отображения результатов поиска.
 enum SearchViewMode { grid, list }

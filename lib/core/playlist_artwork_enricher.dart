@@ -5,7 +5,7 @@ import '../models/track.dart';
 import '../sources/artwork_provider.dart';
 import '../sources/source_registry.dart';
 import 'artwork_helper.dart';
-import 'history_repository.dart';
+import 'repositories/history_repository.dart';
 
 /// Фоновое обогащение обложек плейлистов — выделено из [PlaylistRepository],
 /// чтобы репозиторий оставался чистым хранилищем/мутатором.
