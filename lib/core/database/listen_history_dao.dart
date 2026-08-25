@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:sqflite/sqflite.dart';
 
-import '../history_repository.dart';
+import '../repositories/history_repository.dart';
 import 'track_row_codec.dart';
 
 /// DAO истории прослушивания: операции над таблицей `listen_history`.

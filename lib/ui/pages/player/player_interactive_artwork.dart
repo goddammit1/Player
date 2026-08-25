@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/artwork_helper.dart';
-import '../../../core/haptic_helper.dart';
+import '../../../core/platform/haptic_helper.dart';
 import '../../../core/player_service_interface.dart';
 import '../../widgets/artwork.dart';
 

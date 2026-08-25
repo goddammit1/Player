@@ -7,8 +7,8 @@ import 'package:audio_service/audio_service.dart' show PlaybackState, AudioProce
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/haptic_helper.dart';
-import '../../../core/global_theme_provider.dart';
+import '../../../core/platform/haptic_helper.dart';
+import '../../../core/providers/global_theme_provider.dart';
 import '../../../core/player_service_interface.dart';
 
 class PlayerControls extends ConsumerStatefulWidget {

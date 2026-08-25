@@ -6,7 +6,7 @@ import 'package:rxdart/rxdart.dart';
 import '../../core/providers.dart';
 import '../pages/player_page.dart';
 import 'artwork.dart';
-import 'desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../../core/artwork_helper.dart';
 
 class NowPlayingOverlay extends ConsumerStatefulWidget {

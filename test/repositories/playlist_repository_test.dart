@@ -1,22 +1,22 @@
-import 'dart:io';
+﻿import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:player/core/app_database.dart';
+import 'package:player/core/database/app_database.dart';
 import 'package:player/core/artwork_helper.dart';
-import 'package:player/core/history_repository.dart';
-import 'package:player/core/playlist_backup.dart';
-import 'package:player/core/playlist_repository.dart';
+import 'package:player/core/repositories/history_repository.dart';
+import 'package:player/core/backup/playlist_backup.dart';
+import 'package:player/core/repositories/playlist_repository.dart';
 import 'package:player/models/playlist.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/source_registry.dart';
 import 'package:player/sources/track_source.dart';
 
-import 'setup/test_harness.dart';
+import '../setup/test_harness.dart';
 
-/// Фейковый источник SoundCloud, который умеет восстанавливать обложку
-/// по ID трека (как настоящий SoundCloudSource через GET /tracks/{id}).
+/// Р¤РµР№РєРѕРІС‹Р№ РёСЃС‚РѕС‡РЅРёРє SoundCloud, РєРѕС‚РѕСЂС‹Р№ СѓРјРµРµС‚ РІРѕСЃСЃС‚Р°РЅР°РІР»РёРІР°С‚СЊ РѕР±Р»РѕР¶РєСѓ
+/// РїРѕ ID С‚СЂРµРєР° (РєР°Рє РЅР°СЃС‚РѕСЏС‰РёР№ SoundCloudSource С‡РµСЂРµР· GET /tracks/{id}).
 class _ArtworkRestoreFakeSource extends TrackSource {
   @override
   String get id => 'soundcloud';
@@ -298,8 +298,8 @@ void main() {
             artworkUrl: 'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
           ),
         );
-        // Трек 5: «мёртвая» ссылка на кастомную обложку — файл удалён
-        // («Clear all cache»), в RAM-кэше ArtworkHelper её тоже нет.
+        // РўСЂРµРє 5: В«РјС‘СЂС‚РІР°СЏВ» СЃСЃС‹Р»РєР° РЅР° РєР°СЃС‚РѕРјРЅСѓСЋ РѕР±Р»РѕР¶РєСѓ вЂ” С„Р°Р№Р» СѓРґР°Р»С‘РЅ
+        // (В«Clear all cacheВ»), РІ RAM-РєСЌС€Рµ ArtworkHelper РµС‘ С‚РѕР¶Рµ РЅРµС‚.
         PlaylistRepository.instance.addTrack(
           p.id,
           const Track(
@@ -310,8 +310,8 @@ void main() {
             artworkUrl: '/data/user/0/player/custom_artworks/5.jpg',
           ),
         );
-        // Трек 6: «живая» кастомная обложка — файл на диске существует,
-        // её путь лежит в RAM-кэше ArtworkHelper (как после pickAndSaveArtwork).
+        // РўСЂРµРє 6: В«Р¶РёРІР°СЏВ» РєР°СЃС‚РѕРјРЅР°СЏ РѕР±Р»РѕР¶РєР° вЂ” С„Р°Р№Р» РЅР° РґРёСЃРєРµ СЃСѓС‰РµСЃС‚РІСѓРµС‚,
+        // РµС‘ РїСѓС‚СЊ Р»РµР¶РёС‚ РІ RAM-РєСЌС€Рµ ArtworkHelper (РєР°Рє РїРѕСЃР»Рµ pickAndSaveArtwork).
         PlaylistRepository.instance.addTrack(
           p.id,
           const Track(
@@ -323,17 +323,17 @@ void main() {
           ),
         );
 
-        // Сидим mem-cache ДО сброса: запущенный сбросом enrichment вернёт
-        // findArtwork мгновенно, без реальных запросов в сеть. Пустая строка —
-        // отрицательный кэш: трек останется без обложки.
+        // РЎРёРґРёРј mem-cache Р”Рћ СЃР±СЂРѕСЃР°: Р·Р°РїСѓС‰РµРЅРЅС‹Р№ СЃР±СЂРѕСЃРѕРј enrichment РІРµСЂРЅС‘С‚
+        // findArtwork РјРіРЅРѕРІРµРЅРЅРѕ, Р±РµР· СЂРµР°Р»СЊРЅС‹С… Р·Р°РїСЂРѕСЃРѕРІ РІ СЃРµС‚СЊ. РџСѓСЃС‚Р°СЏ СЃС‚СЂРѕРєР° вЂ”
+        // РѕС‚СЂРёС†Р°С‚РµР»СЊРЅС‹Р№ РєСЌС€: С‚СЂРµРє РѕСЃС‚Р°РЅРµС‚СЃСЏ Р±РµР· РѕР±Р»РѕР¶РєРё.
         ArtworkProvider.instance.cacheArtworkForTesting(
           'A',
           'Genius',
           'https://images.genius.com/genius-new.jpg',
         );
-        // Треки 2 и 3 (Local/File) тоже станут кандидатами после сброса
-        // мёртвых кастомных путей — сидим кэш, чтобы перезапрос завершился
-        // мгновенно и заменил битый локальный путь на оригинальный URL.
+        // РўСЂРµРєРё 2 Рё 3 (Local/File) С‚РѕР¶Рµ СЃС‚Р°РЅСѓС‚ РєР°РЅРґРёРґР°С‚Р°РјРё РїРѕСЃР»Рµ СЃР±СЂРѕСЃР°
+        // РјС‘СЂС‚РІС‹С… РєР°СЃС‚РѕРјРЅС‹С… РїСѓС‚РµР№ вЂ” СЃРёРґРёРј РєСЌС€, С‡С‚РѕР±С‹ РїРµСЂРµР·Р°РїСЂРѕСЃ Р·Р°РІРµСЂС€РёР»СЃСЏ
+        // РјРіРЅРѕРІРµРЅРЅРѕ Рё Р·Р°РјРµРЅРёР» Р±РёС‚С‹Р№ Р»РѕРєР°Р»СЊРЅС‹Р№ РїСѓС‚СЊ РЅР° РѕСЂРёРіРёРЅР°Р»СЊРЅС‹Р№ URL.
         ArtworkProvider.instance.cacheArtworkForTesting(
           'B',
           'Local',
@@ -351,9 +351,9 @@ void main() {
         );
         ArtworkProvider.instance.cacheArtworkForTesting('F', 'LiveCustom', '');
 
-        // «Живая» кастомная обложка: реальный файл в docsDir + запись в БД +
-        // init() — ровно как pickAndSaveArtwork. Тогда getCustomArtworkSync
-        // вернёт путь, и resetAllTrackArtworks не должен её сбрасывать.
+        // В«Р–РёРІР°СЏВ» РєР°СЃС‚РѕРјРЅР°СЏ РѕР±Р»РѕР¶РєР°: СЂРµР°Р»СЊРЅС‹Р№ С„Р°Р№Р» РІ docsDir + Р·Р°РїРёСЃСЊ РІ Р‘Р” +
+        // init() вЂ” СЂРѕРІРЅРѕ РєР°Рє pickAndSaveArtwork. РўРѕРіРґР° getCustomArtworkSync
+        // РІРµСЂРЅС‘С‚ РїСѓС‚СЊ, Рё resetAllTrackArtworks РЅРµ РґРѕР»Р¶РµРЅ РµС‘ СЃР±СЂР°СЃС‹РІР°С‚СЊ.
         ArtworkHelper.resetInit();
         final docsDir = Directory.systemTemp.createTempSync('custom_art_docs_');
         addTearDown(() {
@@ -366,8 +366,8 @@ void main() {
         ArtworkHelper.setDocsDirForTesting(docsDir);
         final liveDir = Directory('${docsDir.path}/custom_artworks');
         liveDir.createSync(recursive: true);
-        // Путь «как его видит init()»: берём из listSync (на Windows он
-        // содержит нативный разделитель, а p.join/File.path — нет).
+        // РџСѓС‚СЊ В«РєР°Рє РµРіРѕ РІРёРґРёС‚ init()В»: Р±РµСЂС‘Рј РёР· listSync (РЅР° Windows РѕРЅ
+        // СЃРѕРґРµСЂР¶РёС‚ РЅР°С‚РёРІРЅС‹Р№ СЂР°Р·РґРµР»РёС‚РµР»СЊ, Р° p.join/File.path вЂ” РЅРµС‚).
         final liveFile = File('${liveDir.path}/6.jpg');
         await liveFile.writeAsString('img');
         final livePath = liveDir
@@ -377,15 +377,15 @@ void main() {
             .path;
         await AppDatabase.instance.setCustomArtworkPath('6', livePath);
         await ArtworkHelper.init();
-        // Ленивая подгрузка по запросу — init() RAM-кэш не наполняет.
+        // Р›РµРЅРёРІР°СЏ РїРѕРґРіСЂСѓР·РєР° РїРѕ Р·Р°РїСЂРѕСЃСѓ вЂ” init() RAM-РєСЌС€ РЅРµ РЅР°РїРѕР»РЅСЏРµС‚.
         await ArtworkHelper.getCustomArtwork('6');
         expect(ArtworkHelper.getCustomArtworkSync('6'), livePath);
 
         PlaylistRepository.instance.resetAllTrackArtworks();
 
-        // Сброс обнуляет провайдерские (Genius/iTunes) URL и «мёртвые»
-        // ссылки на удалённые кастомные обложки; «живая» кастомная обложка
-        // и родная обложка источника (sndcdn) сохраняются.
+        // РЎР±СЂРѕСЃ РѕР±РЅСѓР»СЏРµС‚ РїСЂРѕРІР°Р№РґРµСЂСЃРєРёРµ (Genius/iTunes) URL Рё В«РјС‘СЂС‚РІС‹РµВ»
+        // СЃСЃС‹Р»РєРё РЅР° СѓРґР°Р»С‘РЅРЅС‹Рµ РєР°СЃС‚РѕРјРЅС‹Рµ РѕР±Р»РѕР¶РєРё; В«Р¶РёРІР°СЏВ» РєР°СЃС‚РѕРјРЅР°СЏ РѕР±Р»РѕР¶РєР°
+        // Рё СЂРѕРґРЅР°СЏ РѕР±Р»РѕР¶РєР° РёСЃС‚РѕС‡РЅРёРєР° (sndcdn) СЃРѕС…СЂР°РЅСЏСЋС‚СЃСЏ.
         var tracks = PlaylistRepository.instance.current.first.tracks;
         expect(tracks[0].artworkUrl, isNull);
         expect(tracks[1].artworkUrl, isNull);
@@ -400,9 +400,9 @@ void main() {
           '/data/user/0/player/custom_artworks/6.jpg',
         );
 
-        // Сброс сам запустил фоновую дозагрузку: Genius перезапрошен,
-        // «мёртвый» кастомный путь перезапрошен и заменён на оригинальную
-        // обложку (restored), sndcdn и живой кастом не тронуты.
+        // РЎР±СЂРѕСЃ СЃР°Рј Р·Р°РїСѓСЃС‚РёР» С„РѕРЅРѕРІСѓСЋ РґРѕР·Р°РіСЂСѓР·РєСѓ: Genius РїРµСЂРµР·Р°РїСЂРѕС€РµРЅ,
+        // В«РјС‘СЂС‚РІС‹Р№В» РєР°СЃС‚РѕРјРЅС‹Р№ РїСѓС‚СЊ РїРµСЂРµР·Р°РїСЂРѕС€РµРЅ Рё Р·Р°РјРµРЅС‘РЅ РЅР° РѕСЂРёРіРёРЅР°Р»СЊРЅСѓСЋ
+        // РѕР±Р»РѕР¶РєСѓ (restored), sndcdn Рё Р¶РёРІРѕР№ РєР°СЃС‚РѕРј РЅРµ С‚СЂРѕРЅСѓС‚С‹.
         await PlaylistRepository.instance.flushEnrichmentForTesting();
 
         tracks = PlaylistRepository.instance.current.first.tracks;
@@ -516,7 +516,7 @@ void main() {
       PlaylistRepository.instance.addTrack(p.id, t2);
       await PlaylistRepository.instance.flush();
 
-      // Сид in-memory кэша ArtworkProvider — findArtwork вернёт их без сети.
+      // РЎРёРґ in-memory РєСЌС€Р° ArtworkProvider вЂ” findArtwork РІРµСЂРЅС‘С‚ РёС… Р±РµР· СЃРµС‚Рё.
       ArtworkProvider.instance.cacheArtworkForTesting(
         'Artist',
         'Song One',
@@ -530,20 +530,20 @@ void main() {
 
       await PlaylistRepository.instance.reload();
 
-      // Подписка после reload: единственный emit, который прилетит, — батч.
+      // РџРѕРґРїРёСЃРєР° РїРѕСЃР»Рµ reload: РµРґРёРЅСЃС‚РІРµРЅРЅС‹Р№ emit, РєРѕС‚РѕСЂС‹Р№ РїСЂРёР»РµС‚РёС‚, вЂ” Р±Р°С‚С‡.
       final emits = <List<Playlist>>[];
       final sub = PlaylistRepository.instance.stream.listen(emits.add);
 
       await PlaylistRepository.instance.flushEnrichmentForTesting();
 
-      // Broadcast-контроллер создан с sync: false — события доставляются
-      // слушателю асинхронно. Даём доставке дойти до проверки.
+      // Broadcast-РєРѕРЅС‚СЂРѕР»Р»РµСЂ СЃРѕР·РґР°РЅ СЃ sync: false вЂ” СЃРѕР±С‹С‚РёСЏ РґРѕСЃС‚Р°РІР»СЏСЋС‚СЃСЏ
+      // СЃР»СѓС€Р°С‚РµР»СЋ Р°СЃРёРЅС…СЂРѕРЅРЅРѕ. Р”Р°С‘Рј РґРѕСЃС‚Р°РІРєРµ РґРѕР№С‚Рё РґРѕ РїСЂРѕРІРµСЂРєРё.
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
       expect(
         emits.length,
         1,
-        reason: 'вся пачка обложек применяется одним эмитом',
+        reason: 'РІСЃСЏ РїР°С‡РєР° РѕР±Р»РѕР¶РµРє РїСЂРёРјРµРЅСЏРµС‚СЃСЏ РѕРґРЅРёРј СЌРјРёС‚РѕРј',
       );
       final tracks = PlaylistRepository.instance.current.first.tracks;
       expect(tracks[0].artworkUrl, 'http://example.com/one.jpg');
@@ -582,7 +582,7 @@ void main() {
       expect(
         tracks[0].artworkUrl,
         isNull,
-        reason: 'пустой artist пропускается',
+        reason: 'РїСѓСЃС‚РѕР№ artist РїСЂРѕРїСѓСЃРєР°РµС‚СЃСЏ',
       );
       expect(tracks[1].artworkUrl, 'http://example.com/two.jpg');
     });
@@ -603,20 +603,20 @@ void main() {
           ),
         );
 
-        // Сид in-memory кэша ArtworkProvider ДО сброса — findArtwork вернёт
-        // URL мгновенно, без сети.
+        // РЎРёРґ in-memory РєСЌС€Р° ArtworkProvider Р”Рћ СЃР±СЂРѕСЃР° вЂ” findArtwork РІРµСЂРЅС‘С‚
+        // URL РјРіРЅРѕРІРµРЅРЅРѕ, Р±РµР· СЃРµС‚Рё.
         ArtworkProvider.instance.cacheArtworkForTesting(
           'Artist',
           'Song Reset',
           'https://images.genius.com/new.jpg',
         );
 
-        // Сброс обнуляет провайдерский URL и сам запускает фоновую дозагрузку.
+        // РЎР±СЂРѕСЃ РѕР±РЅСѓР»СЏРµС‚ РїСЂРѕРІР°Р№РґРµСЂСЃРєРёР№ URL Рё СЃР°Рј Р·Р°РїСѓСЃРєР°РµС‚ С„РѕРЅРѕРІСѓСЋ РґРѕР·Р°РіСЂСѓР·РєСѓ.
         PlaylistRepository.instance.resetAllTrackArtworks();
         expect(
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
           isNull,
-          reason: 'провайдерский URL обнулён сразу после сброса',
+          reason: 'РїСЂРѕРІР°Р№РґРµСЂСЃРєРёР№ URL РѕР±РЅСѓР»С‘РЅ СЃСЂР°Р·Сѓ РїРѕСЃР»Рµ СЃР±СЂРѕСЃР°',
         );
 
         await PlaylistRepository.instance.flushEnrichmentForTesting();
@@ -625,7 +625,7 @@ void main() {
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
           'https://images.genius.com/new.jpg',
           reason:
-              'обложка перезапрошена после сброса без ручного воспроизведения',
+              'РѕР±Р»РѕР¶РєР° РїРµСЂРµР·Р°РїСЂРѕС€РµРЅР° РїРѕСЃР»Рµ СЃР±СЂРѕСЃР° Р±РµР· СЂСѓС‡РЅРѕРіРѕ РІРѕСЃРїСЂРѕРёР·РІРµРґРµРЅРёСЏ',
         );
       },
     );
@@ -661,7 +661,7 @@ void main() {
       expect(
         withArt,
         50,
-        reason: 'за один load обогащается не более 50 треков',
+        reason: 'Р·Р° РѕРґРёРЅ load РѕР±РѕРіР°С‰Р°РµС‚СЃСЏ РЅРµ Р±РѕР»РµРµ 50 С‚СЂРµРєРѕРІ',
       );
     });
     test('resetAllTrackArtworks keeps soundcloud source artwork', () async {
@@ -678,18 +678,18 @@ void main() {
         ),
       );
 
-      // Даже если Genius/iTunes ничего не знают про трек, сброс не должен
-      // стирать «родную» обложку SoundCloud — она стабильна и после
-      // очистки дискового кэша перекачается по тому же URL.
+      // Р”Р°Р¶Рµ РµСЃР»Рё Genius/iTunes РЅРёС‡РµРіРѕ РЅРµ Р·РЅР°СЋС‚ РїСЂРѕ С‚СЂРµРє, СЃР±СЂРѕСЃ РЅРµ РґРѕР»Р¶РµРЅ
+      // СЃС‚РёСЂР°С‚СЊ В«СЂРѕРґРЅСѓСЋВ» РѕР±Р»РѕР¶РєСѓ SoundCloud вЂ” РѕРЅР° СЃС‚Р°Р±РёР»СЊРЅР° Рё РїРѕСЃР»Рµ
+      // РѕС‡РёСЃС‚РєРё РґРёСЃРєРѕРІРѕРіРѕ РєСЌС€Р° РїРµСЂРµРєР°С‡Р°РµС‚СЃСЏ РїРѕ С‚РѕРјСѓ Р¶Рµ URL.
       PlaylistRepository.instance.resetAllTrackArtworks();
 
       expect(
         PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
         'https://i1.sndcdn.com/artworks-0001-t500x500.jpg',
-        reason: 'обложка источника (sndcdn.com) не сбрасывается',
+        reason: 'РѕР±Р»РѕР¶РєР° РёСЃС‚РѕС‡РЅРёРєР° (sndcdn.com) РЅРµ СЃР±СЂР°СЃС‹РІР°РµС‚СЃСЏ',
       );
 
-      // Enrichment тоже не должен трогать трек с уже заполненным URL.
+      // Enrichment С‚РѕР¶Рµ РЅРµ РґРѕР»Р¶РµРЅ С‚СЂРѕРіР°С‚СЊ С‚СЂРµРє СЃ СѓР¶Рµ Р·Р°РїРѕР»РЅРµРЅРЅС‹Рј URL.
       await PlaylistRepository.instance.flushEnrichmentForTesting();
       expect(
         PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
@@ -705,9 +705,9 @@ void main() {
 
         await PlaylistRepository.instance.ensureLoaded();
         final p = PlaylistRepository.instance.create('Test');
-        // artworkUrl потерян — его стёрла очистка кэша обложек в старой
-        // версии и сохранила null в БД. Genius/iTunes такую обложку не знают,
-        // поэтому восстановить её может только сам источник по ID трека.
+        // artworkUrl РїРѕС‚РµСЂСЏРЅ вЂ” РµРіРѕ СЃС‚С‘СЂР»Р° РѕС‡РёСЃС‚РєР° РєСЌС€Р° РѕР±Р»РѕР¶РµРє РІ СЃС‚Р°СЂРѕР№
+        // РІРµСЂСЃРёРё Рё СЃРѕС…СЂР°РЅРёР»Р° null РІ Р‘Р”. Genius/iTunes С‚Р°РєСѓСЋ РѕР±Р»РѕР¶РєСѓ РЅРµ Р·РЅР°СЋС‚,
+        // РїРѕСЌС‚РѕРјСѓ РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ РµС‘ РјРѕР¶РµС‚ С‚РѕР»СЊРєРѕ СЃР°Рј РёСЃС‚РѕС‡РЅРёРє РїРѕ ID С‚СЂРµРєР°.
         PlaylistRepository.instance.addTrack(
           p.id,
           const Track(
@@ -718,7 +718,7 @@ void main() {
           ),
         );
         await PlaylistRepository.instance.flush();
-        // reload запускает волну обогащения для треков без обложек.
+        // reload Р·Р°РїСѓСЃРєР°РµС‚ РІРѕР»РЅСѓ РѕР±РѕРіР°С‰РµРЅРёСЏ РґР»СЏ С‚СЂРµРєРѕРІ Р±РµР· РѕР±Р»РѕР¶РµРє.
         await PlaylistRepository.instance.reload();
 
         await PlaylistRepository.instance.flushEnrichmentForTesting();
@@ -727,19 +727,19 @@ void main() {
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
           'https://i1.sndcdn.com/artworks-restored-t500x500.jpg',
           reason:
-              'обложка восстановлена из источника (SoundCloud), '
-              'а не из Genius/iTunes',
+              'РѕР±Р»РѕР¶РєР° РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅР° РёР· РёСЃС‚РѕС‡РЅРёРєР° (SoundCloud), '
+              'Р° РЅРµ РёР· Genius/iTunes',
         );
       },
     );
 
     test(
-      'refreshArtworkCandidates автоматически обновляет просроченный TTL-URL '
-      'провайдерской обложки при reload (без ручной очистки кэша)',
+      'refreshArtworkCandidates Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РѕР±РЅРѕРІР»СЏРµС‚ РїСЂРѕСЃСЂРѕС‡РµРЅРЅС‹Р№ TTL-URL '
+      'РїСЂРѕРІР°Р№РґРµСЂСЃРєРѕР№ РѕР±Р»РѕР¶РєРё РїСЂРё reload (Р±РµР· СЂСѓС‡РЅРѕР№ РѕС‡РёСЃС‚РєРё РєСЌС€Р°)',
       () async {
         await PlaylistRepository.instance.ensureLoaded();
         final p = PlaylistRepository.instance.create('Test');
-        // Трек с ПРОВАЙДЕРСКОЙ обложкой (Genius), у которой «протух» TTL.
+        // РўСЂРµРє СЃ РџР РћР’РђР™Р”Р•Р РЎРљРћР™ РѕР±Р»РѕР¶РєРѕР№ (Genius), Сѓ РєРѕС‚РѕСЂРѕР№ В«РїСЂРѕС‚СѓС…В» TTL.
         PlaylistRepository.instance.addTrack(
           p.id,
           const Track(
@@ -752,7 +752,7 @@ void main() {
         );
         await PlaylistRepository.instance.flush();
 
-        // В кэше ArtworkProvider лежит ТОТ ЖЕ URL, но с просроченным TTL.
+        // Р’ РєСЌС€Рµ ArtworkProvider Р»РµР¶РёС‚ РўРћРў Р–Р• URL, РЅРѕ СЃ РїСЂРѕСЃСЂРѕС‡РµРЅРЅС‹Рј TTL.
         final old = DateTime.now().subtract(
           ArtworkProvider.foundUrlTtl + const Duration(days: 1),
         );
@@ -763,14 +763,14 @@ void main() {
           old,
         );
 
-        // Genius теперь вернёт НОВУЮ обложку.
+        // Genius С‚РµРїРµСЂСЊ РІРµСЂРЅС‘С‚ РќРћР’РЈР® РѕР±Р»РѕР¶РєСѓ.
         ArtworkProvider.instance.geniusFetcherOverride = (_, _, _) async =>
             'https://images.genius.com/new_600x600.png';
         ArtworkProvider.instance.itunesFetcherOverride = (_, _, _) async =>
             null;
 
-        // reload() запускает _refreshArtworkCandidates без force →
-        // просроченный провайдерский URL перезапрашивается автоматически.
+        // reload() Р·Р°РїСѓСЃРєР°РµС‚ _refreshArtworkCandidates Р±РµР· force в†’
+        // РїСЂРѕСЃСЂРѕС‡РµРЅРЅС‹Р№ РїСЂРѕРІР°Р№РґРµСЂСЃРєРёР№ URL РїРµСЂРµР·Р°РїСЂР°С€РёРІР°РµС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё.
         await PlaylistRepository.instance.reload();
         await PlaylistRepository.instance.flushEnrichmentForTesting();
 
@@ -778,14 +778,14 @@ void main() {
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
           'https://images.genius.com/new_600x600.png',
           reason:
-              'после истечения TTL обложка Genius перезапрошена и обновлена '
-              'в плейлисте автоматически',
+              'РїРѕСЃР»Рµ РёСЃС‚РµС‡РµРЅРёСЏ TTL РѕР±Р»РѕР¶РєР° Genius РїРµСЂРµР·Р°РїСЂРѕС€РµРЅР° Рё РѕР±РЅРѕРІР»РµРЅР° '
+              'РІ РїР»РµР№Р»РёСЃС‚Рµ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё',
         );
       },
     );
 
     test(
-      'refreshArtworkCandidates НЕ дёргает сеть для свежих провайдерских URL',
+      'refreshArtworkCandidates РќР• РґС‘СЂРіР°РµС‚ СЃРµС‚СЊ РґР»СЏ СЃРІРµР¶РёС… РїСЂРѕРІР°Р№РґРµСЂСЃРєРёС… URL',
       () async {
         await PlaylistRepository.instance.ensureLoaded();
         final p = PlaylistRepository.instance.create('Test');
@@ -801,7 +801,7 @@ void main() {
         );
         await PlaylistRepository.instance.flush();
 
-        // Свежая запись в кэше — TTL не истёк.
+        // РЎРІРµР¶Р°СЏ Р·Р°РїРёСЃСЊ РІ РєСЌС€Рµ вЂ” TTL РЅРµ РёСЃС‚С‘Рє.
         await ArtworkProvider.instance.cacheArtworkToDbForTesting(
           'FreshArtist',
           'FreshSong',
@@ -810,7 +810,7 @@ void main() {
         );
         await PlaylistRepository.instance.flush();
 
-        // Сеть не должна вызываться.
+        // РЎРµС‚СЊ РЅРµ РґРѕР»Р¶РЅР° РІС‹Р·С‹РІР°С‚СЊСЃСЏ.
         ArtworkProvider.instance.geniusFetcherOverride = (_, _, _) async {
           throw StateError('network must not be called for fresh URL');
         };
@@ -824,12 +824,12 @@ void main() {
         expect(
           PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
           'https://images.genius.com/fresh_600x600.png',
-          reason: 'свежий провайдерский URL не перезапрашивается',
+          reason: 'СЃРІРµР¶РёР№ РїСЂРѕРІР°Р№РґРµСЂСЃРєРёР№ URL РЅРµ РїРµСЂРµР·Р°РїСЂР°С€РёРІР°РµС‚СЃСЏ',
         );
       },
     );
 
-    test('найденный плейлистом URL пропагируется в историю', () async {
+    test('РЅР°Р№РґРµРЅРЅС‹Р№ РїР»РµР№Р»РёСЃС‚РѕРј URL РїСЂРѕРїР°РіРёСЂСѓРµС‚СЃСЏ РІ РёСЃС‚РѕСЂРёСЋ', () async {
       await PlaylistRepository.instance.ensureLoaded();
       final p = PlaylistRepository.instance.create('Test');
       const shared = Track(
@@ -839,7 +839,7 @@ void main() {
         artist: 'CrossArtist',
       );
       PlaylistRepository.instance.addTrack(p.id, shared);
-      // Та же запись (по globalId) есть и в истории.
+      // РўР° Р¶Рµ Р·Р°РїРёСЃСЊ (РїРѕ globalId) РµСЃС‚СЊ Рё РІ РёСЃС‚РѕСЂРёРё.
       await HistoryRepository.instance.add(shared);
       await PlaylistRepository.instance.flush();
 
@@ -855,7 +855,7 @@ void main() {
       expect(
         PlaylistRepository.instance.current.first.tracks.first.artworkUrl,
         'https://images.genius.com/cross.jpg',
-        reason: 'плейлист получил обложку через обогащение',
+        reason: 'РїР»РµР№Р»РёСЃС‚ РїРѕР»СѓС‡РёР» РѕР±Р»РѕР¶РєСѓ С‡РµСЂРµР· РѕР±РѕРіР°С‰РµРЅРёРµ',
       );
       expect(
         HistoryRepository.instance
@@ -865,8 +865,8 @@ void main() {
             .artworkUrl,
         'https://images.genius.com/cross.jpg',
         reason:
-            'обложка, найденная плейлистом, применилась и к истории — '
-            'в приложении везде одна и та же актуальная обложка',
+            'РѕР±Р»РѕР¶РєР°, РЅР°Р№РґРµРЅРЅР°СЏ РїР»РµР№Р»РёСЃС‚РѕРј, РїСЂРёРјРµРЅРёР»Р°СЃСЊ Рё Рє РёСЃС‚РѕСЂРёРё вЂ” '
+            'РІ РїСЂРёР»РѕР¶РµРЅРёРё РІРµР·РґРµ РѕРґРЅР° Рё С‚Р° Р¶Рµ Р°РєС‚СѓР°Р»СЊРЅР°СЏ РѕР±Р»РѕР¶РєР°',
       );
     });
   });

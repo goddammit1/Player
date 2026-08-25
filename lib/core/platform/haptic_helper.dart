@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:vibration/vibration.dart';
 
-import 'providers.dart';
+import '../providers.dart';
 
 // ============================================================
 //  Универсальный HapticHelper

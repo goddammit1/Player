@@ -3,18 +3,18 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/playlist_backup.dart';
+import '../../core/backup/playlist_backup.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import '../widgets/artwork.dart';
 import '../../core/artwork_helper.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';
-import '../../core/haptic_helper.dart';
+import '../../core/platform/haptic_helper.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CONSTANTS

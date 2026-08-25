@@ -1,4 +1,4 @@
-// lib/ui/widgets/desktop_layout.dart
+// lib/ui/desktop/desktop_layout.dart
 //
 // Вспомогательные утилиты для минимальной адаптации UI под десктоп
 // (Windows/Linux/macOS). ВСЕ ветки гейтятся через [isDesktop], поэтому

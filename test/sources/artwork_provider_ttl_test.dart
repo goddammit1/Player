@@ -15,7 +15,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:player/core/app_database.dart';
+import 'package:player/core/database/app_database.dart';
 import 'package:player/sources/artwork_provider.dart';
 
 import '../setup/test_harness.dart';

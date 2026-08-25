@@ -6,7 +6,7 @@
 // SearchHistoryDao (история поиска) и SettingsDao (key-value настройки).
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:player/core/app_database.dart';
+import 'package:player/core/database/app_database.dart';
 import 'package:player/core/database/search_history_dao.dart';
 import 'package:player/core/database/settings_dao.dart';
 

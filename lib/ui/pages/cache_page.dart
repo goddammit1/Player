@@ -4,12 +4,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/history_repository.dart';
+import '../../core/repositories/history_repository.dart';
 import '../../core/providers.dart';
-import '../../core/playlist_repository.dart';
+import '../../core/repositories/playlist_repository.dart';
 import '../../core/youtube_cache.dart';
 import '../../sources/artwork_provider.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 
 /// Страница управления кэшем.
 ///

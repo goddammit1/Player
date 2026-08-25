@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/history_repository.dart';
+import '../../core/repositories/history_repository.dart';
 import '../../core/providers.dart';
 import '../widgets/artwork.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';

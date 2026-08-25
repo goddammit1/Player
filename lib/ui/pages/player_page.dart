@@ -9,7 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/artwork_helper.dart';
 import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../widgets/queue_sheet.dart';
 
 import 'player/player_bottom_actions.dart';

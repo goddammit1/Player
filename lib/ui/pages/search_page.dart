@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
-import '../widgets/desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import 'search/search_bar_widgets.dart';
 import 'search/search_track_tiles.dart';

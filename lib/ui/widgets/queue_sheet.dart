@@ -1,6 +1,6 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
-import 'package:player/core/haptic_helper.dart';
+import 'package:player/core/platform/haptic_helper.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
@@ -10,7 +10,7 @@ import '../../sources/conversion.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../../core/player_service_interface.dart';
 import 'artwork.dart';
-import 'desktop_layout.dart';
+import '../desktop/desktop_layout.dart';
 import '../../core/artwork_helper.dart';
 
 

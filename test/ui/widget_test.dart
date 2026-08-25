@@ -1,5 +1,5 @@
-// Smoke-тест: проверяет, что главные провайдеры инициализируются
-// без ошибок. Полноценные widget-тесты добавляются по мере покрытия UI.
+﻿// Smoke-С‚РµСЃС‚: РїСЂРѕРІРµСЂСЏРµС‚, С‡С‚Рѕ РіР»Р°РІРЅС‹Рµ РїСЂРѕРІР°Р№РґРµСЂС‹ РёРЅРёС†РёР°Р»РёР·РёСЂСѓСЋС‚СЃСЏ
+// Р±РµР· РѕС€РёР±РѕРє. РџРѕР»РЅРѕС†РµРЅРЅС‹Рµ widget-С‚РµСЃС‚С‹ РґРѕР±Р°РІР»СЏСЋС‚СЃСЏ РїРѕ РјРµСЂРµ РїРѕРєСЂС‹С‚РёСЏ UI.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/sources/source_registry.dart';
 
-import 'setup/test_harness.dart';
+import '../setup/test_harness.dart';
 
 void main() {
   TestHarness.ensureInitialized();
@@ -19,7 +19,7 @@ void main() {
     final container = ProviderContainer();
     addTearDown(container.dispose);
 
-    // Провайдеры должны создаваться без исключений.
+    // РџСЂРѕРІР°Р№РґРµСЂС‹ РґРѕР»Р¶РЅС‹ СЃРѕР·РґР°РІР°С‚СЊСЃСЏ Р±РµР· РёСЃРєР»СЋС‡РµРЅРёР№.
     expect(() => container.read(searchProvider), returnsNormally);
     expect(() => container.read(searchHistoryProvider), returnsNormally);
   });

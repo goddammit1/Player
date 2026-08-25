@@ -8,7 +8,7 @@ import 'package:palette_generator/palette_generator.dart';
 
 import 'appearance_provider.dart';
 import 'dynamic_colors.dart';
-import 'providers.dart' show playerServiceProvider;
+import '../providers.dart' show playerServiceProvider;
 
 // ── Media item stream ──────────────────────────────────────────────────────
 

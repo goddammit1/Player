@@ -8,20 +8,20 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'core/app_database.dart';
+import 'core/database/app_database.dart';
 import 'core/artwork_helper.dart';
-import 'core/haptic_helper.dart';
-import 'core/history_repository.dart';
+import 'core/platform/haptic_helper.dart';
+import 'core/repositories/history_repository.dart';
 import 'core/platform/player_service_factory.dart';
-import 'core/playlist_backup.dart';
-import 'core/playlist_repository.dart';
+import 'core/backup/playlist_backup.dart';
+import 'core/repositories/playlist_repository.dart';
 import 'core/providers.dart';
 import 'core/youtube_cache.dart';
 import 'sources/source_registry.dart';
 import 'ui/desktop/desktop_frame.dart' show DesktopFrame;
 import 'ui/desktop/desktop_shell.dart';
 import 'ui/pages/home_page.dart';
-import 'ui/widgets/desktop_layout.dart' show isDesktop;
+import 'ui/desktop/desktop_layout.dart' show isDesktop;
 
 
 /// Палитра приложения. Pure-black темная тема, серые градации,

@@ -11,9 +11,9 @@ import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListe
 import '../models/track.dart';
 import '../sources/source_registry.dart';
 import '../sources/artwork_provider.dart';
-import 'app_database.dart';
-import 'history_repository.dart';
-import 'playlist_repository.dart';
+import 'database/app_database.dart';
+import 'repositories/history_repository.dart';
+import 'repositories/playlist_repository.dart';
 import 'youtube_cache.dart';
 import 'artwork_helper.dart';
 import 'player_conversions.dart';

@@ -7,12 +7,12 @@
 // - [Hoverable] — анимированная реакция на hover (для будущих карточек,
 //   кнопок и элементов списков).
 //
-// Цвета берутся из AppColors.fixed (lib/core/global_theme_provider.dart),
+// Цвета берутся из AppColors.fixed (lib/core/providers/global_theme_provider.dart),
 // чтобы панели оставались консистентными с остальным UI.
 
 import 'package:flutter/material.dart';
 
-import '../../../core/global_theme_provider.dart';
+import '../../../core/providers/global_theme_provider.dart';
 import 'dimens.dart';
 
 /// «Плавающая» скруглённая панель: цветная подложка с border-radius,
