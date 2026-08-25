@@ -5,6 +5,16 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [2.4.1] - 2026-08-25
+
+### Fixed
+
+- SoundCloud-источник: извлечение `client_id` теперь перебирает все JS-бандлы
+  главной страницы SoundCloud (защитный потолок 20), а не первые 3. Реальный
+  токен жил в 11-м бандле, тогда как первые (`tags.js`, `59-*`, `57-*`) его
+  не содержали, поэтому источник был сломан. Лимит из 3 снят в
+  `SoundCloudSource._maxClientIdScripts`.
+
 ## [2.4.0] - 2026-08-24
 
 ### Added

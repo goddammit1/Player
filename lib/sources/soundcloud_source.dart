@@ -40,10 +40,13 @@ class SoundCloudSource implements TrackSource {
   int _clientIdFailedAttempts = 0;
   static const int _maxClientIdAttempts = 3;
 
-  /// Max number of JS bundles to scan for client_id on the SoundCloud
-  /// homepage. Scanning all of them is wasteful — the token almost always
-  /// lives in one of the first bundles. Configurable via [maxClientIdScripts].
-  static final int _maxClientIdScripts = 3;
+  /// Защитный потолок числа JS-бандлов главной страницы SoundCloud,
+  /// сканируемых в поисках client_id. Жёсткий лимит из 3 ломает источник:
+  /// реальный токен жил в 11-м бандле, тогда как первые (tags.js, 59-*,
+  /// 57-*) его не содержали. Значение 20 гарантированно покрывает все
+  /// бандлы, которые отдаёт главная страница (сейчас их 11), и служит
+  /// страховкой от неожиданного роста их числа.
+  static const int _maxClientIdScripts = 20;
 
   /// Session-scoped cache of successfully resolved stream URLs.
   /// Key: `${track.id}|${mediaUri}` — one entry per play source, so a
@@ -112,8 +115,11 @@ class SoundCloudSource implements TrackSource {
         caseSensitive: false,
       ).allMatches(html).map((m) => m.group(1)!).toList();
 
-      // Wave 2: ограничиваем перебор первыми K скриптами — client_id почти
-      // всегда живёт в одном из первых бандлов, остальные — лишние HTTP.
+      // Перебираем все скрипты до первого точного совпадения regexp
+      // clientIdRe. Токен ищется по литералу `client_id:"..."` и НЕ
+      // срабатывает на геттерах вида n(4).get("client_id"), поэтому простой
+      // перебор подряд быстрее и надёжнее, чем гадание, в каком бандле он
+      // лежит. _maxClientIdScripts — лишь защитный потолок сверху.
       final candidates = scriptUrls.take(_maxClientIdScripts).toList();
       for (final url in candidates.reversed) {
         if (_clientId != null) break;
@@ -127,7 +133,13 @@ class SoundCloudSource implements TrackSource {
         }
       }
 
-      if (kDebugMode) debugPrint('[SoundCloud] Ошибка: Не удалось найти client_id в JS-бандлах');
+      if (kDebugMode) {
+        debugPrint(
+          '[SoundCloud] Ошибка: client_id не найден. '
+          'Отсканировано скриптов: ${scriptUrls.length} '
+          '(первых ${candidates.length} из них), токен не обнаружен.',
+        );
+      }
       return null;
     } catch (e) {
       if (kDebugMode) debugPrint('[SoundCloud] Исключение при получении client_id: $e');
