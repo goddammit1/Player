@@ -11,6 +11,7 @@ import 'repositories/playlist_repository.dart';
 export '../search/search.dart';
 export '../search/search_settings.dart';
 export 'providers/appearance_provider.dart';
+export 'providers/playlist_sort_mode.dart';
 export 'providers/dynamic_colors.dart';
 export 'providers/global_theme_provider.dart';
 

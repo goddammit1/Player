@@ -7,9 +7,11 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:player/core/database/app_database.dart';
+import 'package:player/core/database/playlist_dao.dart';
 import 'package:player/core/database/search_history_dao.dart';
 import 'package:player/core/database/settings_dao.dart';
-
+import 'package:player/models/playlist.dart';
+import 'package:player/models/track.dart';
 import '../setup/test_harness.dart';
 
 void main() {
@@ -109,6 +111,51 @@ void main() {
       expect(await SettingsDao.instance.getSetting(db, 'theme'), 'dark');
       expect(await SettingsDao.instance.getSetting(
           db, 'artwork_v3_artist_title'), isNull);
+    });
+  });
+
+  group('PlaylistDao - manual (saved) track order', () {
+    const t1 = Track(id: 'a', sourceId: 'youtube', title: 'Alpha', artist: 'A');
+    const t2 = Track(id: 'b', sourceId: 'youtube', title: 'Beta', artist: 'B');
+    const t3 = Track(id: 'c', sourceId: 'youtube', title: 'Gamma', artist: 'C');
+
+    test('saveAllPlaylists persists track order and loadPlaylists restores it',
+        () async {
+      final db = await AppDatabase.instance.database;
+
+      final p = Playlist(
+        id: 'pl1',
+        name: 'Manual Order',
+        tracks: const [t1, t2, t3],
+        createdAt: DateTime(2024, 1, 1),
+      );
+      await PlaylistDao.instance.saveAllPlaylists(db, [p]);
+
+      final loaded = await PlaylistDao.instance.loadPlaylists(db);
+      expect(loaded.single.tracks.map((t) => t.id).toList(), ['a', 'b', 'c']);
+    });
+
+    test('reordering the list then re-saving changes the loaded order',
+        () async {
+      final db = await AppDatabase.instance.database;
+      final p = Playlist(
+        id: 'pl2',
+        name: 'Reorder',
+        tracks: const [t1, t2, t3],
+        createdAt: DateTime(2024, 1, 1),
+      );
+      await PlaylistDao.instance.saveAllPlaylists(db, [p]);
+
+      // Имитируем перестановку, как делает PlaylistRepository.reorderTracks:
+      // треки «переезжают» — последний становится первым.
+      final reordered = p.copyWith(tracks: const [t3, t1, t2]);
+      await PlaylistDao.instance.saveAllPlaylists(db, [reordered]);
+
+      final loaded = await PlaylistDao.instance.loadPlaylists(db);
+      expect(
+        loaded.single.tracks.map((t) => t.id).toList(),
+        ['c', 'a', 'b'],
+      );
     });
   });
 }
