@@ -152,7 +152,14 @@ class _SearchPageState extends ConsumerState<SearchPage>
                       const SliverToBoxAdapter(child: SizedBox(height: 16)),
 
                     // === FILTERS (no animation) ===
-                    if (state.results.isNotEmpty || state.loading)
+                    // Панель фильтров видна всегда, пока есть активный запрос
+                    // (даже если по выбранному источнику 0 результатов) или
+                    // идёт загрузка. Раньше условие завязывалось только на
+                    // `results.isNotEmpty`, и при пустых результатах фильтры
+                    // исчезали — вернуться к «все источники» было невозможно.
+                    if (state.results.isNotEmpty ||
+                        state.loading ||
+                        state.query.trim().isNotEmpty)
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.only(bottom: 16, top: 4),
