@@ -195,6 +195,39 @@ void main() {
     });
   });
 
+  group('PlaylistRepository - manual order persistence', () {
+    test('reorderTracks order survives flush + reload (DB roundtrip)',
+        () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final p = PlaylistRepository.instance.create('Manual');
+      const t1 = Track(
+        id: '1', sourceId: 'youtube', title: 'Alpha', artist: 'A');
+      const t2 = Track(
+        id: '2', sourceId: 'youtube', title: 'Beta', artist: 'B');
+      const t3 = Track(
+        id: '3', sourceId: 'youtube', title: 'Gamma', artist: 'C');
+      PlaylistRepository.instance.addTrack(p.id, t1);
+      PlaylistRepository.instance.addTrack(p.id, t2);
+      PlaylistRepository.instance.addTrack(p.id, t3);
+
+      // Переставляем: последний трек переезжает в начало (0 → 3).
+      PlaylistRepository.instance.reorderTracks(p.id, 2, 0);
+      expect(
+        PlaylistRepository.instance.current.first.tracks.map((t) => t.id),
+        ['3', '1', '2'],
+      );
+
+      // Флаш на диск, сбрасываем память и перечитываем с диска.
+      await PlaylistRepository.instance.flush();
+      await PlaylistRepository.instance.reload();
+
+      expect(
+        PlaylistRepository.instance.current.first.tracks.map((t) => t.id),
+        ['3', '1', '2'],
+      );
+    });
+  });
+
   group('PlaylistBackup', () {
     test('encode/decode roundtrip', () {
       const track = Track(

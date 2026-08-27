@@ -82,16 +82,11 @@ final _isPlayingProvider = StreamProvider<bool>((ref) {
 // ═══════════════════════════════════════════════════════════════════════════
 //  SORT MODE
 // ═══════════════════════════════════════════════════════════════════════════
-
-enum _SortMode {
-  date('By date'),
-  title('By title'),
-  artist('By artist'),
-  manual('Manual');
-
-  final String label;
-  const _SortMode(this.label);
-}
+//
+// Режим сортировки вынесен в публичный enum [PlaylistSortMode]
+// (см. core/providers/playlist_sort_mode.dart). Он персистится в БД,
+// поэтому выбор переживает перезапуск. `manual` — самостоятельный режим:
+// он сохраняет порядок треков как в БД и не подвержен инверсии.
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  PLAYLIST PAGE
@@ -121,7 +116,6 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   final GlobalKey _filterKey = GlobalKey();
   String _query = '';
 
-  _SortMode _sortMode = _SortMode.date;
   bool _sortReversed = false;
   bool _isMenuOpen = false;
   bool _isShuffling = false;
@@ -164,7 +158,7 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   }
   // ---- Фильтрация и сортировка ----
 
-  List<Track> _filterAndSort(List<Track> tracks) {
+  List<Track> _filterAndSort(List<Track> tracks, PlaylistSortMode sortMode) {
     var result = [...tracks];
 
     if (_query.trim().isNotEmpty) {
@@ -175,23 +169,30 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
       }).toList();
     }
 
-    switch (_sortMode) {
-      case _SortMode.date:
-      case _SortMode.manual:
+    switch (sortMode) {
+      case PlaylistSortMode.date:
+      case PlaylistSortMode.manual:
+        // «По дате» и «ручной» оставляют порядок, сохранённый в БД
+        // (sort_order при добавлении/перестановке) — без дополнительной
+        // сортировки.
         break;
-      case _SortMode.title:
+      case PlaylistSortMode.title:
         result.sort(
           (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
         );
         break;
-      case _SortMode.artist:
+      case PlaylistSortMode.artist:
         result.sort(
           (a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()),
         );
         break;
     }
 
-    if (_sortReversed) result = result.reversed.toList();
+    // Инверсию применяем ко всем режимам, кроме ручного: переворачивать
+    // сохранённый вручную порядок было бы неожиданным для пользователя.
+    if (_sortReversed && sortMode != PlaylistSortMode.manual) {
+      result = result.reversed.toList();
+    }
     return result;
   }
 
@@ -456,6 +457,8 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
 
   void _showSortPicker() {
     final colors = ref.read(currentPaletteProvider);
+    final notifier = ref.read(playlistSortModeProvider.notifier);
+    final current = ref.read(playlistSortModeProvider);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: colors.elevated,
@@ -485,8 +488,8 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                     ),
                   ),
                 ),
-                ..._SortMode.values.map((mode) {
-                  final isSelected = _sortMode == mode;
+                ...PlaylistSortMode.values.map((mode) {
+                  final isSelected = current == mode;
                   return ListTile(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 20),
                     leading: isSelected
@@ -509,7 +512,8 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                     onTap: () {
                       HapticHelper.light(ref: ref);
                       Navigator.of(ctx).pop();
-                      setState(() => _sortMode = mode);
+                      // Переключаем выбор через провайдер — режим сохранится в БД.
+                      notifier.setMode(mode);
                     },
                   );
                 }),
@@ -572,8 +576,12 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     final p = playlist;
     final player = ref.watch(playerServiceProvider);
 
+    // Режим сортировки хранится в БД (см. playlistSortModeProvider) —
+    // watch подхватывает и выбор пользователя, и значение после перезапуска.
+    final sortMode = ref.watch(playlistSortModeProvider);
+
     // Сначала фильтруем и сортируем (чтобы порядок совпадал с экраном)
-    final displayedTracks = _filterAndSort(p.tracks);
+    final displayedTracks = _filterAndSort(p.tracks, sortMode);
 
     // Получаем ТОЛЬКО доступные треки ИЗ ОТОБРАЖАЕМОГО (отсортированного) списка
     final playableDisplayedTracks = displayedTracks
@@ -967,7 +975,7 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                                           MainAxisAlignment.center,
                                       children: [
                                         Text(
-                                          _sortMode.label,
+                                          sortMode.label,
                                           style: TextStyle(
                                             color: colors.textPrimary,
                                             fontSize: 16,
