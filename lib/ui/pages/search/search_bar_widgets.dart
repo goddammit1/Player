@@ -210,6 +210,7 @@ class SearchFilterChips extends StatelessWidget {
         for (var i = 0; i < entries.length; i++) ...[
           if (i > 0) const SizedBox(width: 12),
           _SearchFilterIconButton(
+            key: ValueKey<String>('search-filter-${entries[i].id}'),
             icon: _iconFor(entries[i].id as String),
             selected: entries[i].id == currentSourceId,
             onTap: () => onSelected(entries[i].id as String),
@@ -234,6 +235,7 @@ class SearchFilterChips extends StatelessWidget {
 
 class _SearchFilterIconButton extends StatelessWidget {
   const _SearchFilterIconButton({
+    super.key,
     required this.icon,
     required this.selected,
     required this.onTap,

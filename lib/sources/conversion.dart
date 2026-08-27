@@ -21,7 +21,12 @@ Track mediaItemToTrack(MediaItem item) {
       (extra['source_id'] as String?) ??
       'local';
   return Track(
-    id: item.id,
+    // Чистый id трека в источнике. `item.id` у MediaItem — это полный
+    // globalId (`sourceId:trackId`), поэтому предпочитаем extras['trackId'].
+    // Иначе cacheId для очереди строился бы из лишнего префикса источника
+    // (`muzmo_muzmo:<id>` вместо `muzmo_<id>`) и кэш бы не совпадал с тем,
+    // что показывает большое меню трека.
+    id: extra['trackId'] as String? ?? item.id,
     sourceId: sourceId,
     title: item.title,
     artist: item.artist ?? '',

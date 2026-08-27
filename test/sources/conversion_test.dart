@@ -7,7 +7,9 @@
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:player/models/track.dart';
 import 'package:player/sources/conversion.dart';
+import 'package:player/core/youtube_cache.dart';
 
 void main() {
   group('mediaItemToTrack', () {
@@ -86,6 +88,64 @@ void main() {
         extras: {'sourceId': 'youtube'},
       ));
       expect(t.artworkUrl, contains('img.example.com'));
+    });
+
+    // Регрессионный тест рассинхронизации состояния кэша.
+    // id у MediaItem — полный globalId (`sourceId:trackId`), а чистый id
+    // живёт в extras['trackId'] (см. PlayerConversions.toMediaItem).
+    // mediaItemToTrack должен брать чистый id из extras, иначе cacheId,
+    // построенный для трека из очереди, не совпадёт с тем, что строит
+    // большое меню плеера — и трек «в очереди» никогда не выглядит
+    // закэшированным, хотя в большом плеере он «Cached».
+    test('prefers clean trackId from extras over global id', () {
+      final t = mediaItemToTrack(MediaItem(
+        id: 'muzmo:ABC123',
+        title: 'T',
+        artist: 'A',
+        extras: {'sourceId': 'muzmo', 'trackId': 'ABC123'},
+      ));
+      expect(t.id, 'ABC123');
+      expect(t.globalId, 'muzmo:ABC123');
+    });
+
+    test('falls back to item.id when trackId missing', () {
+      final t = mediaItemToTrack(MediaItem(
+        id: 'muzmo:ABC123',
+        title: 'T',
+        artist: 'A',
+        extras: {'sourceId': 'muzmo'},
+      ));
+      expect(t.id, 'muzmo:ABC123');
+    });
+
+    test('cacheId from queue matches cacheId from big player for same track',
+        () {
+      // Большой плеер (player_bottom_actions) строит Track с чистым id.
+      const bigPlayerTrack = Track(
+        id: 'ABC123',
+        sourceId: 'muzmo',
+        title: 'T',
+        artist: 'A',
+      );
+      // Очередь строит Track через mediaItemToTrack(MediaItem из очереди).
+      final queueTrack = mediaItemToTrack(MediaItem(
+        id: 'muzmo:ABC123',
+        title: 'T',
+        artist: 'A',
+        extras: {'sourceId': 'muzmo', 'trackId': 'ABC123'},
+      ));
+
+      final bigPlayerCacheId = YoutubeCache.cacheIdFor(
+        sourceId: bigPlayerTrack.sourceId,
+        trackId: bigPlayerTrack.id,
+      );
+      final queueCacheId = YoutubeCache.cacheIdFor(
+        sourceId: queueTrack.sourceId,
+        trackId: queueTrack.id,
+      );
+
+      expect(queueTrack.globalId, bigPlayerTrack.globalId);
+      expect(queueCacheId, bigPlayerCacheId);
     });
   });
 }
