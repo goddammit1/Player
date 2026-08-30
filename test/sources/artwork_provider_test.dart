@@ -303,4 +303,332 @@ void main() {
       );
     });
   });
+
+  // ------------------------------------------------------------------
+  //  §7.1. Классификация скобок: версия vs часть названия
+  // ------------------------------------------------------------------
+  group('extractVersionHints / классификация скобок', () {
+    test('(Sic) — весь заголовок в скобках → titleParts', () {
+      final r = ArtworkProvider.extractVersionHintsForTest('(Sic)');
+      expect(r.cleanTitle, '(Sic)'); // cleanSearchTerm fallback на исходник
+      expect(r.versionHints, isEmpty);
+      expect(r.titleParts, ['Sic']);
+    });
+
+    test("(Don't Fear) The Reaper → titleParts", () {
+      final r = ArtworkProvider.extractVersionHintsForTest(
+        "(Don't Fear) The Reaper",
+      );
+      expect(r.cleanTitle, 'The Reaper');
+      expect(r.versionHints, isEmpty);
+      expect(r.titleParts, ["Don't Fear"]);
+    });
+
+    test('(Reach Up for The) Sunrise → titleParts', () {
+      final r = ArtworkProvider.extractVersionHintsForTest(
+        '(Reach Up for The) Sunrise',
+      );
+      expect(r.cleanTitle, 'Sunrise');
+      expect(r.titleParts, ['Reach Up for The']);
+    });
+
+    test('Believer (Remix) → версия, НЕ название (регрессия)', () {
+      final r = ArtworkProvider.extractVersionHintsForTest('Believer (Remix)');
+      expect(r.cleanTitle, 'Believer');
+      expect(r.versionHints, ['Remix']);
+      expect(r.titleParts, isEmpty);
+    });
+
+    test('Song (2001 Remaster) → год + keyword = версия', () {
+      final r = ArtworkProvider.extractVersionHintsForTest(
+        'Song (2001 Remaster)',
+      );
+      expect(r.versionHints, ['2001 Remaster']);
+      expect(r.titleParts, isEmpty);
+    });
+
+    test('Song (Official Video) → шум', () {
+      final r = ArtworkProvider.extractVersionHintsForTest(
+        'Song (Official Video)',
+      );
+      expect(r.cleanTitle, 'Song');
+      expect(r.versionHints, isEmpty);
+      expect(r.titleParts, isEmpty);
+    });
+
+    test('Song [Live] (Acoustic) → обе версии в hints', () {
+      final r = ArtworkProvider.extractVersionHintsForTest(
+        'Song [Live] (Acoustic)',
+      );
+      // Порядок зависит от порядка regex (круглые скобки первыми) —
+      // проверяем множество, а не последовательность.
+      expect(r.versionHints.toSet(), {'Live', 'Acoustic'});
+      expect(r.titleParts, isEmpty);
+    });
+
+    test('(Sic) (Remix) → часть названия + версия', () {
+      final r = ArtworkProvider.extractVersionHintsForTest('(Sic) (Remix)');
+      expect(r.titleParts, ['Sic']);
+      expect(r.versionHints, ['Remix']);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  //  §7.2. buildGeniusQueryVariants
+  // ------------------------------------------------------------------
+  group('buildGeniusQueryVariants', () {
+    test('slipknot (sic) → slipknot sic, без дублей и пустых', () {
+      // cleanTitle='' — весь тайтл был в скобках (effectiveCleanTitle
+      // в _fetchGenius после удаления скобок пуст).
+      final variants = ArtworkProvider.buildGeniusQueryVariantsForTest(
+        artists: ['slipknot'],
+        originalTitle: '(Sic)',
+        cleanTitle: '',
+        versionHints: [],
+        titleParts: ['Sic'],
+      );
+      // Варианты №2 и №3 дедуплицируются к «slipknot Sic».
+      expect(variants, ['slipknot Sic']);
+      expect(
+        variants.any((v) => v.trim() == 'slipknot'),
+        isFalse,
+        reason: 'нет варианта только из артиста',
+      );
+      expect(variants.first.toLowerCase(), contains('sic'));
+      expect(variants.first, isNot(contains('(')));
+    });
+
+    test("(Don't Fear) The Reaper → вариант с don't fear", () {
+      final variants = ArtworkProvider.buildGeniusQueryVariantsForTest(
+        artists: ['blue öyster cult'],
+        originalTitle: "(Don't Fear) The Reaper",
+        cleanTitle: 'The Reaper',
+        versionHints: [],
+        titleParts: ["Don't Fear"],
+      );
+      expect(variants.first.toLowerCase(), contains('the reaper'));
+      expect(
+        variants.any(
+          (v) => v.toLowerCase().contains("don't fear the reaper"),
+        ),
+        isTrue,
+      );
+    });
+
+    test('Song (Remix) → вариант с remix первым, вариант без remix есть', () {
+      final variants = ArtworkProvider.buildGeniusQueryVariantsForTest(
+        artists: ['artist'],
+        originalTitle: 'Song (Remix)',
+        cleanTitle: 'Song',
+        versionHints: ['Remix'],
+        titleParts: [],
+      );
+      expect(variants.first, 'artist Song Remix');
+      expect(variants, contains('artist Song'));
+    });
+
+    test('дедупликация: идентичные варианты схлопываются', () {
+      final variants = ArtworkProvider.buildGeniusQueryVariantsForTest(
+        artists: ['a'],
+        originalTitle: 'Song',
+        cleanTitle: 'Song',
+        versionHints: [],
+        titleParts: [],
+      );
+      expect(variants, ['a Song']);
+    });
+
+    test('лимит: не более 4 уникальных вариантов', () {
+      final variants = ArtworkProvider.buildGeniusQueryVariantsForTest(
+        artists: ['a'],
+        originalTitle: '(Part) Song [Live]',
+        cleanTitle: 'Song',
+        versionHints: ['Live'],
+        titleParts: ['Part'],
+      );
+      expect(variants.length, lessThanOrEqualTo(4));
+    });
+  });
+
+  // ------------------------------------------------------------------
+  //  §7.3. titleMatches с cleanTitleEmpty
+  // ------------------------------------------------------------------
+  group('titleMatches (cleanTitleEmpty)', () {
+    test('(Sic) vs sic → true', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          '(Sic)',
+          'sic',
+          hasVersionHints: true,
+          cleanTitleEmpty: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('Sic vs sic → true (exact)', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Sic',
+          'sic',
+          hasVersionHints: true,
+          cleanTitleEmpty: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('(Sic) [Live] vs sic → true', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          '(Sic) [Live]',
+          'sic',
+          hasVersionHints: true,
+          cleanTitleEmpty: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('регрессия: Believer vs believer remix, cleanTitleEmpty=false → false',
+        () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer',
+          'believer remix',
+          hasVersionHints: true,
+          cleanTitleEmpty: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('регрессия: Believer (Remix) [feat. X] → true (как сейчас)', () {
+      expect(
+        ArtworkProvider.titleMatches(
+          'Believer (Remix) [feat. X]',
+          'believer remix',
+          hasVersionHints: true,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  // ------------------------------------------------------------------
+  //  §7.4. Интеграция _fetchGenius: порядок retry, дедуп, 401-стоп
+  // ------------------------------------------------------------------
+  group('_fetchGenius (интеграция, офлайн)', () {
+    late ArtworkProvider provider;
+
+    Map<String, dynamic> geniusHit({
+      required String title,
+      required String artistName,
+      String art = 'https://images.genius.com/art.png',
+    }) {
+      return {
+        'result': {
+          'title': title,
+          'primary_artist': {'name': artistName},
+          'song_art_image_url': art,
+        },
+      };
+    }
+
+    Map<String, dynamic> geniusResponse(List<Map<String, dynamic>> hits) {
+      return {
+        'response': {'hits': hits},
+      };
+    }
+
+    setUp(() {
+      provider = ArtworkProvider.instance;
+      provider.clearMemCache();
+      provider.itunesFetcherOverride =
+          (artist, title, preferredSize) async => '';
+    });
+
+    tearDown(() {
+      provider.geniusSearchOverride = null;
+      provider.geniusFetcherOverride = null;
+      provider.itunesFetcherOverride = null;
+      provider.clearMemCache();
+    });
+
+    test('(Sic): запрос "slipknot sic" матчит страницу "(Sic)"', () async {
+      final calls = <String>[];
+      provider.geniusSearchOverride = (q) async {
+        calls.add(q);
+        return (
+          200,
+          geniusResponse([
+            geniusHit(title: '(Sic)', artistName: 'Slipknot'),
+          ]),
+        );
+      };
+
+      final url = await provider.findArtwork('Slipknot', '(Sic)');
+      expect(url, isNotNull);
+      expect(url, contains('images.genius.com'));
+      expect(calls, isNotEmpty);
+      // Содержимое скобок-названия попало в запрос без скобок
+      expect(calls.first.toLowerCase(), contains('sic'));
+      expect(calls.first, isNot(contains('(')));
+    });
+
+    test('retry: первый вариант 0 hits → второй даёт результат', () async {
+      final calls = <String>[];
+      provider.geniusSearchOverride = (q) async {
+        calls.add(q);
+        // Первый вариант (с hints) — пусто, второй (без hints) — hits
+        // со страницей ВЕРСИИ (strict-матчинг отклоняет страницу оригинала
+        // «Song» для «Song (Remix)» — это by design, см. §4.1 плана).
+        if (q.contains('Remix')) {
+          return (200, geniusResponse(const []));
+        }
+        return (
+          200,
+          geniusResponse([
+            geniusHit(title: 'Song (Remix)', artistName: 'Artist'),
+          ]),
+        );
+      };
+
+      final url = await provider.findArtwork('Artist', 'Song (Remix)');
+      expect(url, isNotNull);
+      expect(calls.length, greaterThanOrEqualTo(2));
+      // Порядок: с хинтами первым.
+      expect(calls.first.toLowerCase(), contains('remix'));
+    });
+
+    test('дедупликация: одинаковый q не порождает повторный вызов', () async {
+      final calls = <String>[];
+      provider.geniusSearchOverride = (q) async {
+        calls.add(q);
+        return (
+          200,
+          geniusResponse([
+            geniusHit(title: 'Song', artistName: 'Artist'),
+          ]),
+        );
+      };
+
+      await provider.findArtwork('Artist', 'Song');
+      // Один вариант «artist Song» → ровно один HTTP-вызов (артист в lower,
+      // тайтл сохраняет регистр cleanTitle).
+      expect(calls, ['artist Song']);
+    });
+
+    test('401 → стоп: повторных вызовов нет, возвращается null', () async {
+      final calls = <String>[];
+      provider.geniusSearchOverride = (q) async {
+        calls.add(q);
+        return (401, null);
+      };
+
+      final url = await provider.findArtwork('Artist', 'Song (Remix)');
+      expect(url, isNull);
+      expect(calls.length, 1, reason: 'после 401 retry не выполняется');
+    });
+  });
 }

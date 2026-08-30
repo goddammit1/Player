@@ -51,6 +51,14 @@ class ArtworkProvider {
   Future<String?> Function(String artist, String title, int preferredSize)?
       geniusFetcherOverride;
 
+  /// Низкоуровневый хук: подменяет сам HTTP-вызов Genius search API
+  /// (получает готовый `q`, возвращает (status, data)). Позволяет
+  /// тестировать цикл вариантов запроса, дедупликацию и стоп при 401/403
+  /// без реальной сети. Если задан — `_geniusToken` не проверяется.
+  @visibleForTesting
+  Future<(int status, Map<String, dynamic>? data)> Function(String q)?
+      geniusSearchOverride;
+
   @visibleForTesting
   Future<String?> Function(String artist, String title, int preferredSize)?
       itunesFetcherOverride;
@@ -238,10 +246,30 @@ class ArtworkProvider {
 
   /// Прокси для юнит-тестов — вызывает приватный [_extractVersionHints].
   @visibleForTesting
-  static ({String cleanTitle, List<String> versionHints}) extractVersionHintsForTest(
+  static ({String cleanTitle, List<String> versionHints, List<String> titleParts})
+      extractVersionHintsForTest(
     String title,
   ) {
     return ArtworkTitleUtils.extractVersionHints(title);
+  }
+
+  /// Прокси для юнит-тестов — вызывает
+  /// [ArtworkTitleUtils.buildGeniusQueryVariants].
+  @visibleForTesting
+  static List<String> buildGeniusQueryVariantsForTest({
+    required List<String> artists,
+    required String originalTitle,
+    required String cleanTitle,
+    required List<String> versionHints,
+    required List<String> titleParts,
+  }) {
+    return ArtworkTitleUtils.buildGeniusQueryVariants(
+      artists: artists,
+      originalTitle: originalTitle,
+      cleanTitle: cleanTitle,
+      versionHints: versionHints,
+      titleParts: titleParts,
+    );
   }
 
   /// Извлекает «версионные хинты» из заголовка — слова, которые помогут
@@ -269,7 +297,8 @@ class ArtworkProvider {
   /// - 'Song (Slowed + Reverb)'           → ('Song', ['Slowed + Reverb'])
   /// - 'Track - Remix'                    → ('Track', ['Remix'])
   /// - 'Обычная песня'                    → ('Обычная песня', [])
-  static ({String cleanTitle, List<String> versionHints}) _extractVersionHints(
+  static ({String cleanTitle, List<String> versionHints, List<String> titleParts})
+      _extractVersionHints(
     String title,
   ) {
     return ArtworkTitleUtils.extractVersionHints(title);
@@ -301,11 +330,13 @@ class ArtworkProvider {
     String apiTitle,
     String wantTitleNorm, {
     required bool hasVersionHints,
+    bool cleanTitleEmpty = false,
   }) {
     return ArtworkTitleUtils.titleMatches(
       apiTitle,
       wantTitleNorm,
       hasVersionHints: hasVersionHints,
+      cleanTitleEmpty: cleanTitleEmpty,
     );
   }
 
@@ -460,7 +491,9 @@ class ArtworkProvider {
     // а потом мы ждали iTunes, уже после этого ненужного запуска).
     // `hasGeniusToken` смотрит только на статический конфиг; переопределение
     // fetcher'а в тестах проверяется внутри _fetchGenius.
-    final bool geniusEnabled = _geniusToken.isNotEmpty || geniusFetcherOverride != null;
+    final bool geniusEnabled = _geniusToken.isNotEmpty ||
+        geniusFetcherOverride != null ||
+        geniusSearchOverride != null;
     final geniusFuture = geniusEnabled
         ? _safeFetch(() => _fetchGenius(artist, title, preferredSize))
         : Future<String?>.value(null);
@@ -558,15 +591,44 @@ class ArtworkProvider {
     final override = geniusFetcherOverride;
     if (override != null) return override(artist, title, preferredSize);
 
-    if (_geniusToken.isEmpty) return null;
+    final searchOverride = geniusSearchOverride;
+    if (_geniusToken.isEmpty && searchOverride == null) return null;
 
     final artists = _splitArtists(artist);
-    final (:cleanTitle, :versionHints) = _extractVersionHints(title);
+    final (:cleanTitle, :versionHints, :titleParts) =
+        _extractVersionHints(title);
 
-    // wantTitleNorm включает хинты — чтобы exactMatch сработал для ремикса
-    final wantTitleNorm = _normalize(
-      versionHints.isNotEmpty ? '$cleanTitle ${versionHints.join(' ')}' : cleanTitle,
-    );
+    // «Истинно очищенный» заголовок: cleanSearchTerm имеет fallback на
+    // исходник, когда после удаления скобок остаётся пусто («(Sic)» →
+    // '(Sic)'). Для логики скобок-названий нужен РЕАЛЬНЫЙ cleanTitle без
+    // этого fallback — вычисляем его напрямую удалением скобок/feat/суффикса.
+    final rawClean = title
+        .replaceAll(RegExp(r'\s*\([^)]*\)'), '')
+        .replaceAll(RegExp(r'\s*\[[^\]]*\]'), '')
+        .replaceAll(
+          RegExp(r'\s+(?:feat|ft)\.?\s+[^&\s].*$', caseSensitive: false),
+          '',
+        )
+        .replaceAll(RegExp(r'\s+-\s+.*$', caseSensitive: false), '')
+        .trim();
+
+    // Весь заголовок был в скобках («(Sic)»): после удаления скобок пусто,
+    // название целиком ушло в titleParts. Для такого кейса:
+    // - ослабляем title-матчинг (см. ArtworkTitleUtils.titleMatches
+    //   cleanTitleEmpty);
+    // - в вариантах запроса НЕ используем скобочный cleanTitle — Genius API
+    //   плохо распознаёт скобки в `q` («slipknot (sic)» → 0 hits).
+    final cleanTitleEmpty = rawClean.isEmpty && titleParts.isNotEmpty;
+    final effectiveCleanTitle = cleanTitleEmpty ? '' : cleanTitle;
+
+    // wantTitleNorm включает хинты и части названия из скобок — чтобы
+    // exactMatch сработал и для ремикса, и для «(Sic)» → «Sic».
+    final wantTitleParts = <String>[
+      if (effectiveCleanTitle.trim().isNotEmpty) effectiveCleanTitle.trim(),
+      ...titleParts,
+      ...versionHints,
+    ];
+    final wantTitleNorm = _normalize(wantTitleParts.join(' '));
     final wantArtists = artists.map((a) => a.toLowerCase().trim()).toList();
 
     // Матчим страницы Genius строго, если искали конкретную версию трека
@@ -576,6 +638,8 @@ class ArtworkProvider {
     final hasVersionHints = versionHints.isNotEmpty;
 
     Future<(int status, Map<String, dynamic>? data)> searchGenius(String q) async {
+      final so = geniusSearchOverride;
+      if (so != null) return so(q);
       final resp = await _dio.get<dynamic>(
         'https://api.genius.com/search',
         // 10 вместо 5: нужная страница (особенно версия трека) чаще попадает
@@ -588,95 +652,123 @@ class ArtworkProvider {
       return (resp.statusCode ?? 0, _asMap(resp.data));
     }
 
-    String buildQ(List<String> extraWords) {
-      final parts = <String>[...artists, cleanTitle, ...extraWords];
-      return parts.where((s) => s.isNotEmpty).join(' ').trim();
-    }
+    // Нормализация ключа дедупликации: lowercase + схлопывание пробелов.
+    String seenKey(String q) =>
+        q.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
 
-    // ---------- запрос №1: с versionHints --------------------------------
-    var q = buildQ(versionHints);
-    var (status, data) = await searchGenius(q);
+    final variants = ArtworkTitleUtils.buildGeniusQueryVariants(
+      artists: artists,
+      originalTitle: title,
+      cleanTitle: effectiveCleanTitle,
+      versionHints: versionHints,
+      titleParts: titleParts,
+    );
 
-    // Если Genius не авторизован — сразу стоп
-    if (status == 401 || status == 403) {
-      if (kDebugMode) {
-        debugPrint(
-          '[ArtworkProvider] Genius HTTP $status — '
-          'проверь GENIUS_TOKEN (нужен Client Access Token).',
-        );
-      }
-      return null;
-    }
+    final seenQueries = <String>{};
+    var lastQ = variants.isNotEmpty ? variants.first : '';
 
-    if (status != 200) data = null;
+    // ---------- итерация по сгенерированным вариантам запроса ------------
+    // Early-exit при УСПЕШНОМ выборе обложки: если вариант дал hits, но
+    // строгий матч отклонил все, пробуем следующий вариант (вместо старого
+    // поведения «первый непустой hits побеждает»).
+    for (final q in variants) {
+      if (!seenQueries.add(seenKey(q))) continue; // дедупликация HTTP
+      lastQ = q;
 
-    List hits = (data?['response']?['hits'] as List?) ?? const [];
+      final (status, data) = await searchGenius(q);
 
-    // ---------- запрос №2: без хинтов (retry) ----------------------------
-    if (hits.isEmpty && versionHints.isNotEmpty) {
-      final qNoHints = buildQ([]);
-      if (qNoHints != q) {
+      // Если Genius не авторизован — сразу стоп (нет смысла retry).
+      if (status == 401 || status == 403) {
         if (kDebugMode) {
           debugPrint(
-            '[ArtworkProvider] Genius: no hits for "$q", retry without hints "$qNoHints"',
+            '[ArtworkProvider] Genius HTTP $status — '
+            'проверь GENIUS_TOKEN (нужен Client Access Token).',
           );
         }
-        (status, data) = await searchGenius(qNoHints);
-        if (status == 200) {
-          hits = (data?['response']?['hits'] as List?) ?? const [];
-          q = qNoHints;
-        }
+        return null;
       }
+
+      final List hits = (status == 200)
+          ? ((data?['response']?['hits'] as List?) ?? const [])
+          : const [];
+
+      if (kDebugMode) {
+        debugPrint('[ArtworkProvider] Genius: try q="$q" → ${hits.length} hits');
+      }
+
+      if (hits.isEmpty) continue;
+
+      final result = await _processGeniusHits(
+        hits,
+        wantArtists,
+        wantTitleNorm,
+        isFallback: false,
+        hasVersionHints: hasVersionHints,
+        cleanTitleEmpty: cleanTitleEmpty,
+        preferredSize: preferredSize,
+      );
+
+      // Успех = непустой URL. Пустая строка ('') = «hits были, но матч
+      // не прошёл» — пробуем следующий вариант.
+      if (result != null && result.isNotEmpty) return result;
     }
 
-    // ---------- запрос №3: только по артисту (кириллический fallback) ----
+    // ---------- финальный шаг: только по артисту (кириллический fallback)
     // Для результатов ЭТОГО запроса смягчаем матчинг (isFallback: true):
     // если правильной страницы трека нет, берём первый трек артиста. Иначе
     // после ужесточения title-матчинга кириллический fallback перестал бы
     // находить обложки (title-матчинг с непустым wantTitleNorm не проходит).
-    var isFallbackQuery = false;
-    if (hits.isEmpty && _hasCyrillic(q) && artists.isNotEmpty) {
+    if (_hasCyrillic(lastQ) && artists.isNotEmpty) {
       final fallbackQ = artists.join(' ').trim();
-      if (fallbackQ.isNotEmpty && fallbackQ != q) {
+      if (fallbackQ.isNotEmpty && seenQueries.add(seenKey(fallbackQ))) {
         if (kDebugMode) {
-          debugPrint('[ArtworkProvider] Genius: retry with artist-only "$fallbackQ"');
+          debugPrint(
+            '[ArtworkProvider] Genius: retry with artist-only "$fallbackQ"',
+          );
         }
-        (status, data) = await searchGenius(fallbackQ);
-        if (status == 200) {
-          hits = (data?['response']?['hits'] as List?) ?? const [];
-          isFallbackQuery = hits.isNotEmpty;
-          if (kDebugMode && hits.isNotEmpty) {
+        final (status, data) = await searchGenius(fallbackQ);
+        if (status == 401 || status == 403) return null;
+        final List hits = (status == 200)
+            ? ((data?['response']?['hits'] as List?) ?? const [])
+            : const [];
+        if (hits.isNotEmpty) {
+          if (kDebugMode) {
             debugPrint('[ArtworkProvider] Genius fallback: ${hits.length} hits');
           }
+          return _processGeniusHits(
+            hits,
+            wantArtists,
+            wantTitleNorm,
+            isFallback: true,
+            hasVersionHints: hasVersionHints,
+            cleanTitleEmpty: cleanTitleEmpty,
+            preferredSize: preferredSize,
+          );
         }
       }
     }
 
-    if (hits.isEmpty) {
-      if (kDebugMode) debugPrint('[ArtworkProvider] Genius: пустая выдача для "$q"');
-      return '';
+    if (kDebugMode) {
+      debugPrint('[ArtworkProvider] Genius: пустая выдача для "$lastQ"');
     }
-
-    return _processGeniusHits(
-      hits,
-      wantArtists,
-      wantTitleNorm,
-      isFallback: isFallbackQuery,
-      hasVersionHints: hasVersionHints,
-      preferredSize: preferredSize,
-    );
+    return '';
   }
 
   /// Проверяет, содержит ли строка кириллические символы.
   static bool _hasCyrillic(String s) => ArtworkTitleUtils.hasCyrillic(s);
 
   /// Обрабатывает хиты Genius (основной или fallback) и возвращает URL обложки.
+  ///
+  /// [cleanTitleEmpty] — весь исходный заголовок был в скобках («(Sic)»);
+  /// прокидывается в [ArtworkTitleUtils.titleMatches] для ослабленного
+  /// матчинга названий-скобок.
   Future<String?> _processGeniusHits(
     List hits,
     List<String> wantArtists,
     String wantTitleNorm, {
     required bool hasVersionHints,
     required bool isFallback,
+    bool cleanTitleEmpty = false,
     int preferredSize = 300,
   }) async {
     final candidates = <Map<String, dynamic>>[];
@@ -740,7 +832,12 @@ class ArtworkProvider {
       bool hasTitle = false;
       for (final raw in titleFields) {
         if (raw is! String) continue;
-        if (titleMatches(raw, wantTitleNorm, hasVersionHints: hasVersionHints)) {
+        if (titleMatches(
+          raw,
+          wantTitleNorm,
+          hasVersionHints: hasVersionHints,
+          cleanTitleEmpty: cleanTitleEmpty,
+        )) {
           hasTitle = true;
           break;
         }
@@ -820,7 +917,11 @@ class ArtworkProvider {
     if (override != null) return override(artist, title, preferredSize);
 
     final artists = _splitArtists(artist);
-    final (:cleanTitle, :versionHints) = _extractVersionHints(title);
+    // titleParts здесь не используются: iTunes-матчинг мягче (contains по
+    // подстроке), расширение для скобок-названий — отдельной задачей (см.
+    // docs/genius_brackets_fix.md §8).
+    final (:cleanTitle, :versionHints, titleParts: _) =
+        _extractVersionHints(title);
     final cleanArtist = _cleanSearchTerm(artists.firstOrNull ?? artist);
     final term = '$cleanArtist $cleanTitle ${versionHints.join(' ')}'.trim();
 
