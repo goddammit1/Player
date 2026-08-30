@@ -139,21 +139,14 @@ class PlaylistBackup {
 
   /// Читает файл бэкапа с диска и импортирует в репозиторий.
   ///
-  /// Возвращает [ImportResult] со статистикой.
-  static Future<ImportResult> importFromFile(
-    String path, {
-    required ImportStrategy strategy,
-  }) async {
+  /// Все плейлисты из файла добавляются как новые (без выбора и проверки
+  /// на дубликаты). Возвращает [ImportResult] со статистикой.
+  static Future<ImportResult> importFromFile(String path) async {
     final raw = await File(path).readAsString();
     final playlists = decode(raw);
-    return await PlaylistRepository.instance.importPlaylists(
-      playlists,
-      strategy: strategy,
-    );
+    return await PlaylistRepository.instance.importPlaylists(playlists);
   }
 }
-
-enum ImportStrategy { replace, keepBoth, skip }
 
 /// Статистика импорта для отображения пользователю.
 class ImportResult {
