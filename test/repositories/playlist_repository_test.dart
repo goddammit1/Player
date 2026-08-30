@@ -127,7 +127,7 @@ void main() {
       expect(PlaylistRepository.instance.current.first.tracks.last.id, '1');
     });
 
-    test('importPlaylists adds new playlists', () async {
+    test('importPlaylists always adds new playlists', () async {
       await PlaylistRepository.instance.ensureLoaded();
       final existing = PlaylistRepository.instance.create('Existing');
 
@@ -138,60 +138,28 @@ void main() {
           tracks: const [],
           createdAt: DateTime(2024),
         ),
+        Playlist(
+          id: existing.id,
+          name: existing.name,
+          tracks: const [],
+          createdAt: DateTime(2024),
+        ),
       ];
 
-      final result = await PlaylistRepository.instance.importPlaylists(
-        incoming,
-        strategy: ImportStrategy.skip,
-      );
-      expect(result.added, 1);
-      expect(PlaylistRepository.instance.current.length, 2);
+      final result =
+          await PlaylistRepository.instance.importPlaylists(incoming);
+      // Никакого выбора/пропуска: оба плейлиста импортированы как новые,
+      // даже идентичный существующему по имени и id.
+      expect(result.added, 2);
+      expect(result.replaced, 0);
+      expect(result.skipped, 0);
+      expect(PlaylistRepository.instance.current.length, 3);
       expect(
         PlaylistRepository.instance.current.any((p) => p.id == existing.id),
         isTrue,
       );
-    });
-
-    test('importPlaylists replaces existing', () async {
-      await PlaylistRepository.instance.ensureLoaded();
-      final existing = PlaylistRepository.instance.create('Existing');
-      final incoming = [
-        Playlist(
-          id: existing.id,
-          name: 'Replaced',
-          tracks: const [],
-          createdAt: DateTime(2024),
-        ),
-      ];
-
-      final result = await PlaylistRepository.instance.importPlaylists(
-        incoming,
-        strategy: ImportStrategy.replace,
-      );
-      expect(result.replaced, 1);
-      expect(PlaylistRepository.instance.current.first.name, 'Replaced');
-    });
-
-    test('importPlaylists keepBoth creates new id', () async {
-      await PlaylistRepository.instance.ensureLoaded();
-      final existing = PlaylistRepository.instance.create('Existing');
-      final incoming = [
-        Playlist(
-          id: existing.id,
-          name: 'Duplicate',
-          tracks: const [],
-          createdAt: DateTime(2024),
-        ),
-      ];
-
-      final result = await PlaylistRepository.instance.importPlaylists(
-        incoming,
-        strategy: ImportStrategy.keepBoth,
-      );
-      expect(result.added, 1);
-      expect(PlaylistRepository.instance.current.length, 2);
       final ids = PlaylistRepository.instance.current.map((p) => p.id).toSet();
-      expect(ids.length, 2);
+      expect(ids.length, 3, reason: 'у каждого плейлиста уникальный id');
     });
   });
 

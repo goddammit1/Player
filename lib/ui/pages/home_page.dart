@@ -582,21 +582,15 @@ class _AddNewCard extends ConsumerWidget {
     if (path == null) return; // отмена
 
     if (!context.mounted) return;
-    final strategy = await _askImportStrategy(context, ref);
-    if (strategy == null) return; // отмена
 
     try {
-      final result = await PlaylistBackup.importFromFile(
-        path,
-        strategy: strategy,
-      );
+      final result = await PlaylistBackup.importFromFile(path);
       if (!context.mounted) return;
       _showInfo(
         context,
         ref,
         title: 'Import complete',
-        body:
-            'Added: ${result.added}\nReplaced: ${result.replaced}\nSkipped: ${result.skipped}',
+        body: 'Added: ${result.added}',
       );
     } catch (e) {
       if (!context.mounted) return;
@@ -607,45 +601,6 @@ class _AddNewCard extends ConsumerWidget {
         body: e is FormatException ? e.message : e.toString(),
       );
     }
-  }
-
-  /// Спрашивает, что делать с плейлистами, у которых `id` уже есть.
-  Future<ImportStrategy?> _askImportStrategy(
-    BuildContext context,
-    WidgetRef ref,
-  ) {
-    final colors = ref.read(currentPaletteProvider);
-
-    return showDialog<ImportStrategy>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: colors.elevated,
-          title: Text(
-            'Import playlist',
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          content: Text(
-            'If a playlist already exists, what should happen?',
-            style: TextStyle(color: colors.textSecondary),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.keepBoth),
-              child: const Text('Keep both'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.skip),
-              child: const Text('Skip existing'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ImportStrategy.replace),
-              child: const Text('Replace'),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   void _showInfo(
