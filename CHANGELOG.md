@@ -5,6 +5,45 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [2.5.0] - 2026-08-31
+
+### Added
+
+- Кнопка «Cache all tracks» в меню плейлиста: пакетное скачивание всех треков
+  плейлиста в дисковый кэш для офлайн-прослушивания. Шторка прогресса
+  (`playlist_cache_progress_sheet.dart`) показывает текущий трек и общий
+  прогресс, поддерживает отмену и по завершении выводит итоговый отчёт
+  (скачано / уже в кэше / пропущено из-за отключённого источника / ошибки).
+  Логика вынесена в чистый Dart-сервис `PlaylistCacheService`
+  (`lib/core/playlist_cache_service.dart`): последовательная загрузка через
+  `resolveStreamUrl` → `Dio().download` → `pin`, отмена через `CancelToken`.
+- Ручной режим сортировки треков в плейлисте (`PlaylistSortMode.manual`):
+  порядок, сохранённый в БД при добавлении/перестановке треков, больше не
+  подвергается дополнительной сортировке и реверсу. Выбранный режим
+  сортировки вынесен в `playlistSortModeProvider`
+  (`lib/core/providers/playlist_sort_mode.dart`) и персистится в таблице
+  `settings` — выбор переживает перезапуск приложения.
+
+### Fixed
+
+- Поиск: исправлены фильтры источников и вычисление id трека из очереди
+  (`fd54f93`, `lib/sources/conversion.dart`, `lib/ui/pages/search_page.dart`).
+- Обложки: обход ограничения Genius API по скобкам в названиях треков —
+  `buildGeniusQueryVariants` добавляет fallback-варианты запроса с
+  удалением/заменой скобок (подробности в `docs/genius_brackets_fix.md`).
+
+### Refactored
+
+- Импорт бэкапа упрощён: плейлисты всегда добавляются как новые, без попыток
+  слияния с существующими (`lib/core/backup/playlist_backup.dart`).
+
+### Tests
+
+- Unit-тесты `PlaylistCacheService` — 11 шт.
+  (`test/core/playlist_cache_service_test.dart`).
+- Widget-тесты меню кэширования плейлиста — 6 шт.
+  (`test/ui/playlist_cache_menu_test.dart`).
+
 ## [2.4.1] - 2026-08-25
 
 ### Fixed
