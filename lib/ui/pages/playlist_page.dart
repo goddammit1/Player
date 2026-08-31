@@ -1,9 +1,11 @@
 import 'dart:math' as math;
 
+import 'package:dio/dio.dart' show CancelToken;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/backup/playlist_backup.dart';
+import '../../core/playlist_cache_service.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../../models/track.dart';
@@ -12,6 +14,8 @@ import '../widgets/artwork.dart';
 import '../../core/artwork_helper.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
+import '../widgets/playlist_cache_progress_sheet.dart';
+import '../widgets/snack.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';
 import '../../core/platform/haptic_helper.dart';
@@ -104,6 +108,11 @@ class PlaylistPage extends ConsumerStatefulWidget {
   /// открывается из десктопного shell — там свою панель плеера рисует
   /// [DesktopPlayerBar] (см. ui/desktop/desktop_player_bar.dart).
   final bool showNowPlayingOverlay;
+
+  /// Тестовая точка инжекции сервиса пакетного кэширования: если задана,
+  /// `_cacheAllTracks` использует её вместо дефолтного конструктора.
+  @visibleForTesting
+  static PlaylistCacheService Function()? playlistCacheServiceFactoryOverride;
 
   @override
   ConsumerState<PlaylistPage> createState() => _PlaylistPageState();
@@ -276,6 +285,21 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                 },
               ),
               ListTile(
+                leading: Icon(
+                  Icons.download_rounded,
+                  color: colors.textPrimary,
+                ),
+                title: Text(
+                  'Cache all tracks',
+                  style: TextStyle(color: colors.textPrimary),
+                ),
+                onTap: () async {
+                  HapticHelper.light(ref: ref);
+                  Navigator.of(sheetCtx).pop();
+                  await _cacheAllTracks(context, p);
+                },
+              ),
+              ListTile(
                 leading: const Icon(
                   Icons.delete_outline_rounded,
                   color: Colors.redAccent,
@@ -305,6 +329,55 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
         );
       },
     );
+  }
+
+  Future<void> _cacheAllTracks(BuildContext context, Playlist p) async {
+    if (p.tracks.isEmpty) {
+      showSnack(context, 'Nothing to cache');
+      return;
+    }
+
+    final service =
+        (PlaylistPage.playlistCacheServiceFactoryOverride ??
+            PlaylistCacheService.new)();
+    final cancelToken = CancelToken();
+    // Снапшот: плейлист может измениться, пока идёт загрузка.
+    final tracks = List<Track>.of(p.tracks);
+
+    final result = await showPlaylistCacheProgressSheet(
+      context,
+      playlistName: p.name,
+      run: (onProgress) => service.cacheTracks(
+        tracks,
+        cancelToken: cancelToken,
+        onProgress: onProgress,
+      ),
+      onCancel: cancelToken.cancel,
+    );
+
+    if (!mounted || !context.mounted) return;
+
+    if (result == null) {
+      showErrorSnack(context, 'Caching failed');
+    } else if (result.cancelled) {
+      showSnack(
+        context,
+        'Caching cancelled — ${result.downloaded + result.skippedCached} '
+        'of ${result.total} saved',
+      );
+    } else if (result.failed == 0) {
+      showSuccessSnack(
+        context,
+        'Playlist cached: ${result.downloaded} downloaded, '
+        '${result.skippedCached} already cached'
+        '${result.skippedDisabled > 0 ? ', ${result.skippedDisabled} unavailable' : ''}',
+      );
+    } else {
+      showErrorSnack(
+        context,
+        'Cached with errors: ${result.failed} of ${result.total} failed',
+      );
+    }
   }
 
   Future<void> _exportPlaylist(BuildContext context, Playlist p) async {
