@@ -125,6 +125,15 @@ class VibrationNotifier extends StateNotifier<bool> {
     _ready = _load();
   }
 
+  /// Тестовый конструктор: инициализирует состояние [initial] БЕЗ чтения БД.
+  /// Иначе в widget-тестах (FakeAsync-зона) lazy-read настройки
+  /// 'vibration_enabled' через sqflite вешает тест PendingTimerException
+  /// (HapticHelper.*(ref:) читает vibrationEnabledProvider при тапах).
+  @visibleForTesting
+  VibrationNotifier.seeded(super.initial) {
+    _ready = Future<void>.value();
+  }
+
   @visibleForTesting
   Future<void> get ready => _ready;
   late final Future<void> _ready;

@@ -59,6 +59,18 @@ class PlaylistSortModeNotifier extends StateNotifier<PlaylistSortMode> {
     _ready = _load();
   }
 
+  /// Тестовый конструктор: инициализирует состояние [initial] БЕЗ чтения БД.
+  ///
+  /// Нужен виджет-тестам PlaylistPage: дефолтный конструктор запускает
+  /// асинхронный `_load()`, который лениво обращается к SQLite и может
+  /// упасть на уже закрытой tearDown'ом БД (sqflite_ffi) или повиснуть
+  /// в FakeAsync-зоне. Здесь `_ready` сразу завершён, а `setMode` в тестах
+  /// не вызывается (или перенаправляется на in-memory state).
+  @visibleForTesting
+  PlaylistSortModeNotifier.seeded(super.initial) {
+    _ready = Future<void>.value();
+  }
+
   @visibleForTesting
   Future<void> get ready => _ready;
   late final Future<void> _ready;

@@ -235,6 +235,25 @@ class PlaylistRepository {
     if (changed) _notifyAndSchedulePersist();
   }
 
+  /// Reorder для drag&drop списка плейлистов.
+  ///
+  /// Семантика индексов — как у [ReorderableListView.onReorder]:
+  /// [newIndex] указывает позицию ПОСЛЕ удаления элемента, т.е. при
+  /// переносе вниз UI передаёт newIndex = target + 1.
+  void reorderPlaylists(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _list.length) return;
+    var ni = newIndex;
+    if (ni > oldIndex) ni--;
+    if (ni < 0) ni = 0;
+    if (ni > _list.length - 1) ni = _list.length - 1;
+    if (ni == oldIndex) return;
+    final next = List<Playlist>.of(_list);
+    final item = next.removeAt(oldIndex);
+    next.insert(ni, item);
+    _list = next;
+    _notifyAndSchedulePersist();
+  }
+
   /// Reorder для drag&drop в UI.
   void reorderTracks(String playlistId, int oldIndex, int newIndex) {
     var changed = false;
@@ -244,7 +263,10 @@ class PlaylistRepository {
       var ni = newIndex;
       if (ni > oldIndex) ni--;
       if (ni < 0) ni = 0;
-      if (ni > p.tracks.length) ni = p.tracks.length;
+      // Верхний кламп — length-1: после removeAt список короче на 1, и
+      // insert(length) был бы RangeError (кламп к length — пре-существующий
+      // баг, вскрытый тестами: reorderTracks(0, 999) падал).
+      if (ni > p.tracks.length - 1) ni = p.tracks.length - 1;
       if (ni == oldIndex) return p;
       final t = List<Track>.of(p.tracks);
       final item = t.removeAt(oldIndex);
@@ -272,6 +294,11 @@ class PlaylistRepository {
   /// уже существующему, он всё равно добавляется как новый — никакого
   /// выбора и пропуска конфликтов не происходит.
   ///
+  /// Импортированные плейлисты вставляются в начало списка в порядке их
+  /// следования в файле (первый из файла оказывается выше остальных
+  /// импортированных). Ручной порядок существующих плейлистов сохраняется —
+  /// никакой пересортировки по дате не выполняется.
+  ///
   /// Возвращает статистику для UI.
   Future<ImportResult> importPlaylists(List<Playlist> incoming) async {
     await ensureLoaded();
@@ -292,7 +319,6 @@ class PlaylistRepository {
     }
 
     if (added > 0) {
-      working.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       _list = working;
       _notifyAndSchedulePersist();
     }

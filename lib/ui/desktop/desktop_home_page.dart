@@ -14,6 +14,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
+import '../widgets/playlist_reorder_scope.dart';
+import '../widgets/reorderable_playlist_card.dart';
 
 /// Главный раздел десктопного shell.
 class DesktopHomePage extends ConsumerWidget {
@@ -95,29 +97,44 @@ class DesktopHomePage extends ConsumerWidget {
           child: LayoutBuilder(
             builder: (context, c) {
               final columns = (c.maxWidth / 240).floor().clamp(2, 8);
-              return GridView.builder(
-                padding: const EdgeInsets.fromLTRB(28, 4, 28, 28),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  mainAxisSpacing: 20,
-                  crossAxisSpacing: 20,
-                  childAspectRatio: 0.78,
-                ),
-                itemCount: playlists.length + 1,
-                itemBuilder: (context, i) {
-                  if (i == playlists.length) {
-                    return _AddNewCard(
-                      onTap: () => _showCreateDialog(context, ref),
-                      colors: colors,
+              // Scope «живого» предпросмотра перестановки (см. home_page):
+              // параметры должны совпадать с gridDelegate ниже.
+              return PlaylistReorderScope(
+                crossAxisCount: columns,
+                mainAxisSpacing: 20,
+                crossAxisSpacing: 20,
+                itemExtent: playlists.length,
+                child: GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(28, 4, 28, 28),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: columns,
+                    mainAxisSpacing: 20,
+                    crossAxisSpacing: 20,
+                    childAspectRatio: 0.78,
+                  ),
+                  itemCount: playlists.length + 1,
+                  itemBuilder: (context, i) {
+                    if (i == playlists.length) {
+                      return _AddNewCard(
+                        onTap: () => _showCreateDialog(context, ref),
+                        colors: colors,
+                      );
+                    }
+                    final p = playlists[i];
+                    return ReorderablePlaylistCard(
+                      key: ValueKey('reorder_${p.id}'),
+                      index: i,
+                      onReorder: ref
+                          .read(playlistRepositoryProvider)
+                          .reorderPlaylists,
+                      child: _PlaylistCard(
+                        playlist: p,
+                        colors: colors,
+                        onOpen: () => onOpenPlaylist(p.id),
+                      ),
                     );
-                  }
-                  final p = playlists[i];
-                  return _PlaylistCard(
-                    playlist: p,
-                    colors: colors,
-                    onOpen: () => onOpenPlaylist(p.id),
-                  );
-                },
+                  },
+                ),
               );
             },
           ),
