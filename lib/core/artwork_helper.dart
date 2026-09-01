@@ -65,6 +65,14 @@ class ArtworkHelper {
   static final Map<String, String> _customArtCache = {};
   static bool _initialized = false;
 
+  /// Тестовый флаг: отключает lazy-read БД в [_ensureLoaded].
+  /// В widget-тестах (FakeAsync-зона) синхронный [getCustomArtworkSync]
+  /// шедулит sqflite-транзакцию, чей 10-сек. lock-таймер повисает с
+  /// PendingTimerException. Тесты выставляют `true` и работают только
+  /// с in-memory кэшем (по умолчанию пустым).
+  @visibleForTesting
+  static bool disableDbReadsForTesting = false;
+
   /// Мемо: trackId → уже выполненная/выполняемая ленивая подгрузка.
   /// Исключает дублирующие запросы в БД и гонку между суффиксами.
   static final Map<String, Future<void>> _pendingLoads = {};
@@ -131,6 +139,7 @@ class ArtworkHelper {
   /// Файл НЕ обязан существовать на диске — проверка existsSync происходит
   /// в геттерах при отдаче (и в resolveEffectiveArtwork — по пути).
   static Future<void> _ensureLoaded(String trackId) async {
+    if (disableDbReadsForTesting) return;
     final pending = _pendingLoads[trackId];
     if (pending != null) return pending;
     final future = _loadOne(trackId);

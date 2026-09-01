@@ -17,10 +17,15 @@ class PlaylistDao {
   PlaylistDao._();
   static final PlaylistDao instance = PlaylistDao._();
 
-  /// Загружает все плейлисты (с треками и кастомными обложками) из БД,
-  /// сортируя их «новые сверху».
+  /// Загружает все плейлисты (с треками и кастомными обложками) из БД.
+  ///
+  /// Порядок — ручной (по колонке `sort_order`, записываемой при сохранении
+  /// как индекс в списке репозитория). При равных `sort_order` (легаси-строки
+  /// с одинаковым дефолтом) новые плейлисты оказываются сверху
+  /// (`created_at_ms DESC`), стабильность обеспечивает `id ASC`.
   Future<List<Playlist>> loadPlaylists(Database db) async {
-    final rows = await db.query('playlists', orderBy: 'created_at_ms DESC');
+    final rows = await db.query('playlists',
+        orderBy: 'sort_order ASC, created_at_ms DESC, id ASC');
     final result = <Playlist>[];
     for (final row in rows) {
       final tracks = await db.query(

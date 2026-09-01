@@ -8,6 +8,8 @@ import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
+import '../widgets/playlist_reorder_scope.dart';
+import '../widgets/reorderable_playlist_card.dart';
 
 import 'history_page.dart';
 import 'playlist_page.dart';
@@ -141,15 +143,62 @@ class HomePage extends ConsumerWidget {
                             ),
                           ),
                         ),
+                      // Scope «живого» предпросмотра перестановки: карточки
+                      // внутри читают draggingIndex/hoverIndex и плавно
+                      // разъезжаются до drop. Параметры сетки (колонки,
+                      // зазоры) должны совпадать с gridDelegate ниже.
                       if (isDesktop)
                         SliverConstrainedCrossAxis(
                           maxExtent: 1400,
                           sliver: SliverPadding(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
-                            sliver: SliverGrid.builder(
+                            sliver: PlaylistReorderScope(
+                              crossAxisCount: columns,
+                              mainAxisSpacing: 16,
+                              crossAxisSpacing: 16,
+                              itemExtent: playlists.length,
+                              child: SliverGrid.builder(
+                                gridDelegate:
+                                    SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: columns,
+                                      mainAxisSpacing: 16,
+                                      crossAxisSpacing: 16,
+                                      childAspectRatio: 0.82,
+                                    ),
+                                itemCount: playlists.length + 1,
+                                itemBuilder: (context, i) {
+                                  if (i == playlists.length) {
+                                    return const _AddNewCard();
+                                  }
+                                  final p = playlists[i];
+                                  return ReorderablePlaylistCard(
+                                    key: ValueKey('reorder_${p.id}'),
+                                    index: i,
+                                    onReorder: ref
+                                        .read(playlistRepositoryProvider)
+                                        .reorderPlaylists,
+                                    child: _PlaylistCard(
+                                      playlist: p,
+                                      colors: colors,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                          sliver: PlaylistReorderScope(
+                            crossAxisCount: 2,
+                            mainAxisSpacing: 16,
+                            crossAxisSpacing: 16,
+                            itemExtent: playlists.length,
+                            child: SliverGrid.builder(
                               gridDelegate:
-                                  SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: columns,
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
                                     mainAxisSpacing: 16,
                                     crossAxisSpacing: 16,
                                     childAspectRatio: 0.82,
@@ -160,33 +209,19 @@ class HomePage extends ConsumerWidget {
                                   return const _AddNewCard();
                                 }
                                 final p = playlists[i];
-                                return _PlaylistCard(
-                                  playlist: p,
-                                  colors: colors,
+                                return ReorderablePlaylistCard(
+                                  key: ValueKey('reorder_${p.id}'),
+                                  index: i,
+                                  onReorder: ref
+                                      .read(playlistRepositoryProvider)
+                                      .reorderPlaylists,
+                                  child: _PlaylistCard(
+                                    playlist: p,
+                                    colors: colors,
+                                  ),
                                 );
                               },
                             ),
-                          ),
-                        )
-                      else
-                        SliverPadding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
-                          sliver: SliverGrid.builder(
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 2,
-                                  mainAxisSpacing: 16,
-                                  crossAxisSpacing: 16,
-                                  childAspectRatio: 0.82,
-                                ),
-                            itemCount: playlists.length + 1,
-                            itemBuilder: (context, i) {
-                              if (i == playlists.length) {
-                                return const _AddNewCard();
-                              }
-                              final p = playlists[i];
-                              return _PlaylistCard(playlist: p, colors: colors);
-                            },
                           ),
                         ),
                     ],

@@ -163,6 +163,65 @@ void main() {
     });
   });
 
+  group('PlaylistRepository - reorderTracks', () {
+    Future<Playlist> seedThree() async {
+      final repo = PlaylistRepository.instance;
+      await repo.ensureLoaded();
+      final p = repo.create('Reorder');
+      const t1 = Track(
+          id: '1', sourceId: 'youtube', title: 'Song 1', artist: 'A');
+      const t2 = Track(
+          id: '2', sourceId: 'youtube', title: 'Song 2', artist: 'B');
+      const t3 = Track(
+          id: '3', sourceId: 'youtube', title: 'Song 3', artist: 'C');
+      repo.addTrack(p.id, t1);
+      repo.addTrack(p.id, t2);
+      repo.addTrack(p.id, t3);
+      return p;
+    }
+
+    List<String> trackIds() => PlaylistRepository.instance.current
+        .firstWhere((p) => p.name == 'Reorder')
+        .tracks
+        .map((t) => t.id)
+        .toList();
+
+    test('moves track forward (down the list)', () async {
+      final p = await seedThree();
+      // ReorderableListView-семантика: newIndex > oldIndex уменьшается на 1.
+      PlaylistRepository.instance.reorderTracks(p.id, 0, 2);
+      expect(trackIds(), ['2', '1', '3']);
+    });
+
+    test('moves track backward (up the list)', () async {
+      final p = await seedThree();
+      PlaylistRepository.instance.reorderTracks(p.id, 2, 0);
+      expect(trackIds(), ['3', '1', '2']);
+    });
+
+    test('clamps out-of-range newIndex and ignores invalid oldIndex',
+        () async {
+      final p = await seedThree();
+
+      // newIndex за пределами — клампится в конец.
+      PlaylistRepository.instance.reorderTracks(p.id, 0, 999);
+      expect(trackIds(), ['2', '3', '1']);
+
+      // Отрицательный newIndex — клампится в начало.
+      PlaylistRepository.instance.reorderTracks(p.id, 2, -5);
+      expect(trackIds(), ['1', '2', '3']);
+
+      // Невалидный oldIndex — без изменений.
+      PlaylistRepository.instance.reorderTracks(p.id, 99, 0);
+      PlaylistRepository.instance.reorderTracks(p.id, -1, 0);
+      expect(trackIds(), ['1', '2', '3']);
+
+      // Несуществующий плейлист — без падения и изменений.
+      PlaylistRepository.instance.reorderTracks('missing', 0, 1);
+      expect(trackIds(), ['1', '2', '3']);
+    });
+  });
+
   group('PlaylistRepository - manual order persistence', () {
     test('reorderTracks order survives flush + reload (DB roundtrip)',
         () async {
@@ -193,6 +252,87 @@ void main() {
         PlaylistRepository.instance.current.first.tracks.map((t) => t.id),
         ['3', '1', '2'],
       );
+    });
+  });
+
+  group('PlaylistRepository - playlist manual order', () {
+    List<String> currentIds() =>
+        PlaylistRepository.instance.current.map((p) => p.id).toList();
+
+    test('reorderPlaylists moves item down with ReorderableListView semantics',
+        () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final a = PlaylistRepository.instance.create('A');
+      final b = PlaylistRepository.instance.create('B');
+      final c = PlaylistRepository.instance.create('C');
+      // Каждый create вставляет в начало → [C, B, A].
+      expect(currentIds(), [c.id, b.id, a.id]);
+
+      PlaylistRepository.instance.reorderPlaylists(0, 2);
+      expect(currentIds(), [b.id, c.id, a.id]);
+    });
+
+    test('reorderPlaylists moves item up', () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final a = PlaylistRepository.instance.create('A');
+      final b = PlaylistRepository.instance.create('B');
+      final c = PlaylistRepository.instance.create('C');
+      expect(currentIds(), [c.id, b.id, a.id]);
+
+      PlaylistRepository.instance.reorderPlaylists(2, 0);
+      expect(currentIds(), [a.id, c.id, b.id]);
+    });
+
+    test('reorderPlaylists ignores no-op and out-of-range indices', () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final a = PlaylistRepository.instance.create('A');
+      final b = PlaylistRepository.instance.create('B');
+      final c = PlaylistRepository.instance.create('C');
+      final initial = currentIds();
+      expect(initial, [c.id, b.id, a.id]);
+
+      // No-op: после коррекции (0, 1) → ni = 0 == oldIndex.
+      PlaylistRepository.instance.reorderPlaylists(0, 1);
+      expect(currentIds(), initial);
+
+      // No-op: oldIndex == newIndex.
+      PlaylistRepository.instance.reorderPlaylists(1, 1);
+      expect(currentIds(), initial);
+
+      // Out-of-range oldIndex.
+      PlaylistRepository.instance.reorderPlaylists(99, 0);
+      expect(currentIds(), initial);
+
+      PlaylistRepository.instance.reorderPlaylists(-1, 0);
+      expect(currentIds(), initial);
+    });
+
+    test('playlist order survives flush + reload (DB roundtrip)', () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final a = PlaylistRepository.instance.create('A');
+      final b = PlaylistRepository.instance.create('B');
+      // [B, A].
+      expect(currentIds(), [b.id, a.id]);
+
+      PlaylistRepository.instance.reorderPlaylists(0, 2);
+      expect(currentIds(), [a.id, b.id]);
+
+      await PlaylistRepository.instance.flush();
+      await PlaylistRepository.instance.reload();
+
+      expect(currentIds(), [a.id, b.id]);
+    });
+
+    test('create inserts on top without destroying manual order', () async {
+      await PlaylistRepository.instance.ensureLoaded();
+      final a = PlaylistRepository.instance.create('A');
+      final b = PlaylistRepository.instance.create('B');
+      // [B, A] → reorder → [A, B].
+      PlaylistRepository.instance.reorderPlaylists(0, 2);
+      expect(currentIds(), [a.id, b.id]);
+
+      final d = PlaylistRepository.instance.create('D');
+      expect(currentIds(), [d.id, a.id, b.id]);
     });
   });
 

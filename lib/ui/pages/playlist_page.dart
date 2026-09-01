@@ -129,6 +129,10 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   bool _isMenuOpen = false;
   bool _isShuffling = false;
 
+  /// Режим ручного редактирования порядка треков (drag & drop).
+  /// Активен только когда выбрана сортировка [PlaylistSortMode.manual].
+  bool _isEditingOrder = false;
+
   @override
   void initState() {
     super.initState();
@@ -142,10 +146,22 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
 
   @override
   void dispose() {
+    // Сбрасываем режим редактирования при уходе со страницы: State может
+    // сохраниться в дереве (например, в десктопном content stack), и
+    // заходить на страницу снова с активным редактированием неожиданно.
+    _isEditingOrder = false;
     _searchCtl.removeListener(_onSearchChanged);
     _searchCtl.dispose();
     _searchFocus.dispose();
     super.dispose();
+  }
+
+  /// Выход из режима редактирования порядка с гарантированным сливом
+  /// нового порядка в БД (debounce-persist 300мс мог бы отработать позже).
+  Future<void> _finishEditingOrder() async {
+    setState(() => _isEditingOrder = false);
+    await ref.read(playlistRepositoryProvider).flush();
+    if (mounted) showSnack(context, 'Order saved');
   }
 
   void _scrollToFilters() async {
@@ -585,6 +601,12 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                     onTap: () {
                       HapticHelper.light(ref: ref);
                       Navigator.of(ctx).pop();
+                      // Уход с manual — выходим из режима редактирования,
+                      // чтобы при возврате не застрять в нём.
+                      if (mode != PlaylistSortMode.manual &&
+                          _isEditingOrder) {
+                        setState(() => _isEditingOrder = false);
+                      }
                       // Переключаем выбор через провайдер — режим сохранится в БД.
                       notifier.setMode(mode);
                     },
@@ -652,6 +674,10 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     // Режим сортировки хранится в БД (см. playlistSortModeProvider) —
     // watch подхватывает и выбор пользователя, и значение после перезапуска.
     final sortMode = ref.watch(playlistSortModeProvider);
+
+    // Режим редактирования имеет смысл только при ручной сортировке —
+    // подстраховка на случай смены режима извне (импорт бэкапа и т.п.).
+    final editingOrder = _isEditingOrder && sortMode == PlaylistSortMode.manual;
 
     // Сначала фильтруем и сортируем (чтобы порядок совпадал с экраном)
     final displayedTracks = _filterAndSort(p.tracks, sortMode);
@@ -723,16 +749,33 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                               const SizedBox(width: 10),
                             ],
                             Expanded(
-                              child: _SearchPill(
-                                colors: colors,
-                                controller: _searchCtl,
-                                focusNode: _searchFocus,
-                                hint: 'In playlist?',
-                                onTap: () {
-                                  HapticHelper.light(ref: ref);
-                                  _scrollToFilters(); // ВЫЗЫВАЕМ ПРОКРУТКУ
-                                },
-                              ),
+                              child: editingOrder
+                                  // В режиме редактирования поиск отключён:
+                                  // reorder работает по ПОЛНОМУ списку, а
+                                  // фильтрация сломала бы соответствие
+                                  // индексов onReorder ↔ репозиторий.
+                                  ? IgnorePointer(
+                                      child: Opacity(
+                                        opacity: 0.5,
+                                        child: _SearchPill(
+                                          colors: colors,
+                                          controller: _searchCtl,
+                                          focusNode: _searchFocus,
+                                          hint: 'In playlist?',
+                                          onTap: () {},
+                                        ),
+                                      ),
+                                    )
+                                  : _SearchPill(
+                                      colors: colors,
+                                      controller: _searchCtl,
+                                      focusNode: _searchFocus,
+                                      hint: 'In playlist?',
+                                      onTap: () {
+                                        HapticHelper.light(ref: ref);
+                                        _scrollToFilters(); // ВЫЗЫВАЕМ ПРОКРУТКУ
+                                      },
+                                    ),
                             ),
                             const SizedBox(width: 10),
                             _CircleButton(
@@ -1015,110 +1058,303 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                       child: Padding(
                         key: _filterKey,
                         padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 95,
-                              height: 48,
-                              child: Material(
-                                color: colors.elevatedHi,
-                                borderRadius: const BorderRadius.only(
-                                  topLeft: Radius.circular(24),
-                                  bottomLeft: Radius.circular(24),
-                                  topRight: Radius.circular(5),
-                                  bottomRight: Radius.circular(5),
-                                ),
-                                child: InkWell(
-                                  borderRadius: const BorderRadius.only(
-                                    topLeft: Radius.circular(24),
-                                    bottomLeft: Radius.circular(24),
-                                    topRight: Radius.circular(5),
-                                    bottomRight: Radius.circular(5),
-                                  ),
-                                  onTap: () {
-                                    HapticHelper.light(ref: ref);
-                                    _showSortPicker();
-                                  },
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Text(
-                                          sortMode.label,
-                                          style: TextStyle(
-                                            color: colors.textPrimary,
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w600,
+                        child: editingOrder
+                            // Режим редактирования: вместо обычного sort-бара —
+                            // индикатор режима и кнопка завершения.
+                            ? Row(
+                                children: [
+                                  Expanded(
+                                    child: SizedBox(
+                                      height: 48,
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                          ),
+                                          child: Text(
+                                            'Reorder tracks',
+                                            style: TextStyle(
+                                              color: colors.textPrimary,
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w600,
+                                            ),
                                           ),
                                         ),
-                                      ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            SizedBox(
-                              width: 48,
-                              height: 48,
-                              child: Material(
-                                color: colors.elevatedHi,
-                                borderRadius: _sortReversed
-                                    ? BorderRadius.circular(24)
-                                    : const BorderRadius.only(
-                                        topLeft: Radius.circular(5),
-                                        bottomLeft: Radius.circular(5),
-                                        topRight: Radius.circular(24),
-                                        bottomRight: Radius.circular(24),
-                                      ),
-                                child: InkWell(
-                                  borderRadius: _sortReversed
-                                      ? BorderRadius.circular(24)
-                                      : const BorderRadius.only(
-                                          topLeft: Radius.circular(5),
-                                          bottomLeft: Radius.circular(5),
-                                          topRight: Radius.circular(24),
-                                          bottomRight: Radius.circular(24),
+                                  SizedBox(
+                                    width: 48,
+                                    height: 48,
+                                    child: Material(
+                                      color: colors.elevatedHi,
+                                      borderRadius: BorderRadius.circular(24),
+                                      child: InkWell(
+                                        key: const ValueKey(
+                                          'done_editing_button',
                                         ),
-                                  onTap: () {
-                                    HapticHelper.light(ref: ref);
-                                    setState(
-                                      () => _sortReversed = !_sortReversed,
-                                    );
-                                  },
-                                  child: AnimatedPadding(
-                                    duration: const Duration(milliseconds: 200),
-                                    padding: _sortReversed
-                                        ? const EdgeInsets.all(0)
-                                        : const EdgeInsets.only(right: 4),
-                                    child: Center(
-                                      child: AnimatedRotation(
-                                        turns: _sortReversed ? 0.5 : 0,
-                                        duration: const Duration(
-                                          milliseconds: 200,
-                                        ),
-                                        child: Icon(
-                                          Icons.keyboard_arrow_down_rounded,
-                                          color: colors.textPrimary,
-                                          size: 24,
+                                        borderRadius: BorderRadius.circular(24),
+                                        onTap: () {
+                                          HapticHelper.light(ref: ref);
+                                          _finishEditingOrder();
+                                        },
+                                        child: Center(
+                                          child: Icon(
+                                            Icons.check_rounded,
+                                            color: colors.accent,
+                                            size: 24,
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
-                                ),
+                                ],
+                              )
+                            : Row(
+                                children: [
+                                  // Ширина не фиксирована: раньше Row внутри
+                                  // контейнера 95px переполнялся меткой
+                                  // "By artist" (RenderFlex overflow 43px).
+                                  // Теперь кнопка тянется по контенту, а текст
+                                  // при нехватке места обрезается эллипсисом.
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      minWidth: 95,
+                                      maxWidth: 200,
+                                    ),
+                                    child: SizedBox(
+                                      height: 48,
+                                      child: Material(
+                                        color: colors.elevatedHi,
+                                        borderRadius:
+                                            const BorderRadius.only(
+                                          topLeft: Radius.circular(24),
+                                          bottomLeft: Radius.circular(24),
+                                          topRight: Radius.circular(5),
+                                          bottomRight: Radius.circular(5),
+                                        ),
+                                        child: InkWell(
+                                          borderRadius:
+                                              const BorderRadius.only(
+                                            topLeft: Radius.circular(24),
+                                            bottomLeft: Radius.circular(24),
+                                            topRight: Radius.circular(5),
+                                            bottomRight: Radius.circular(5),
+                                          ),
+                                          onTap: () {
+                                            HapticHelper.light(ref: ref);
+                                            _showSortPicker();
+                                          },
+                                          child: Padding(
+                                            padding:
+                                                const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.center,
+                                              children: [
+                                                Flexible(
+                                                  child: Text(
+                                                    sortMode.label,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: TextStyle(
+                                                      color:
+                                                          colors.textPrimary,
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  SizedBox(
+                                    width: 48,
+                                    height: 48,
+                                    child: Material(
+                                      color: colors.elevatedHi,
+                                      borderRadius: _sortReversed
+                                          ? BorderRadius.circular(24)
+                                          : const BorderRadius.only(
+                                              topLeft: Radius.circular(5),
+                                              bottomLeft: Radius.circular(5),
+                                              topRight: Radius.circular(24),
+                                              bottomRight:
+                                                  Radius.circular(24),
+                                            ),
+                                      child: InkWell(
+                                        borderRadius: _sortReversed
+                                            ? BorderRadius.circular(24)
+                                            : const BorderRadius.only(
+                                                topLeft: Radius.circular(5),
+                                                bottomLeft:
+                                                    Radius.circular(5),
+                                                topRight: Radius.circular(24),
+                                                bottomRight:
+                                                    Radius.circular(24),
+                                              ),
+                                        // Для ручного режима реверс
+                                        // бессмысленен (и игнорируется
+                                        // _filterAndSort) — кнопку гасим.
+                                        onTap:
+                                            sortMode == PlaylistSortMode.manual
+                                                ? null
+                                                : () {
+                                                    HapticHelper.light(
+                                                      ref: ref,
+                                                    );
+                                                    setState(
+                                                      () => _sortReversed =
+                                                          !_sortReversed,
+                                                    );
+                                                  },
+                                        child: AnimatedPadding(
+                                          duration: const Duration(
+                                            milliseconds: 200,
+                                          ),
+                                          padding: _sortReversed
+                                              ? const EdgeInsets.all(0)
+                                              : const EdgeInsets.only(
+                                                  right: 4,
+                                                ),
+                                          child: Center(
+                                            child: AnimatedRotation(
+                                              turns:
+                                                  _sortReversed ? 0.5 : 0,
+                                              duration: const Duration(
+                                                milliseconds: 200,
+                                              ),
+                                              child: Icon(
+                                                Icons
+                                                    .keyboard_arrow_down_rounded,
+                                                color: sortMode ==
+                                                        PlaylistSortMode.manual
+                                                    ? colors.textSecondary
+                                                        .withValues(
+                                                        alpha: 0.4,
+                                                      )
+                                                    : colors.textPrimary,
+                                                size: 24,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  // Вход в ручное редактирование порядка —
+                                  // только для режима manual и непустого
+                                  // плейлиста.
+                                  if (sortMode == PlaylistSortMode.manual &&
+                                      p.tracks.isNotEmpty) ...[
+                                    const SizedBox(width: 4),
+                                    SizedBox(
+                                      width: 48,
+                                      height: 48,
+                                      child: Material(
+                                        color: colors.elevatedHi,
+                                        borderRadius:
+                                            BorderRadius.circular(24),
+                                        child: InkWell(
+                                          key: const ValueKey(
+                                            'edit_order_button',
+                                          ),
+                                          borderRadius:
+                                              BorderRadius.circular(24),
+                                          onTap: () {
+                                            HapticHelper.light(ref: ref);
+                                            setState(
+                                              () => _isEditingOrder = true,
+                                            );
+                                          },
+                                          child: Center(
+                                            child: Icon(
+                                              Icons.edit_rounded,
+                                              color: colors.textPrimary,
+                                              size: 22,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
-                            ),
-                          ],
-                        ),
                       ),
                     ),
 
                     // ── Track list or empty state ──
-                    if (displayedTracks.isEmpty && _query.isNotEmpty)
+                    if (editingOrder)
+                      // Reorder работает по ПОЛНОМУ списку треков (без фильтра
+                      // _query): индексы onReorder должны совпадать с
+                      // индексами в репозитории.
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
+                        sliver: SliverReorderableList(
+                          itemCount: p.tracks.length,
+                          // Drag-feedback рендерится в Overlay-Stack без
+                          // Material-предка, а _TrackTile содержит InkWell —
+                          // оборачиваем прокси в Material, иначе assertion
+                          // "InkResponse widgets require a Material ancestor".
+                          proxyDecorator: (child, index, animation) =>
+                              Material(
+                            type: MaterialType.transparency,
+                            child: child,
+                          ),
+                          onReorder: (oldIndex, newIndex) {
+                            HapticHelper.light(ref: ref);
+                            ref
+                                .read(playlistRepositoryProvider)
+                                .reorderTracks(p.id, oldIndex, newIndex);
+                          },
+                          itemBuilder: (context, i) {
+                            final t = p.tracks[i];
+                            return _TrackTile(
+                              // Ключи стабильны по globalId — без индексов,
+                              // чтобы Flutter корректно отслеживал элементы
+                              // при перестановке.
+                              key: ValueKey(t.globalId),
+                              track: t,
+                              playlist: p,
+                              playableDisplayedTracks: playableDisplayedTracks,
+                              isFirst: i == 0,
+                              isLast: i == p.tracks.length - 1,
+                              // В режиме редактирования запрещаем
+                              // swipe-to-delete и play по тапу: жесты
+                              // конфликтовали бы с drag-хендлом.
+                              enableDismiss: false,
+                              enableTap: false,
+                              onReplaceTap: () {
+                                HapticHelper.light(ref: ref);
+                                _showReplacementSheet(context, p, t);
+                              },
+                              trailing: ReorderableDragStartListener(
+                                index: i,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 12),
+                                  child: Icon(
+                                    Icons.drag_handle_rounded,
+                                    color: colors.textSecondary,
+                                    size: 22,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      )
+                    else if (displayedTracks.isEmpty && _query.isNotEmpty)
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.only(top: 48),
@@ -1250,6 +1486,9 @@ class _TrackTile extends ConsumerWidget {
     required this.isFirst,
     required this.isLast,
     required this.onReplaceTap,
+    this.enableDismiss = true,
+    this.enableTap = true,
+    this.trailing,
   });
 
   final Track track;
@@ -1258,6 +1497,17 @@ class _TrackTile extends ConsumerWidget {
   final bool isFirst;
   final bool isLast;
   final VoidCallback onReplaceTap;
+
+  /// Разрешает swipe-to-delete (Dismissible). Отключается в режиме
+  /// редактирования порядка, где свайп конфликтует с drag-хендлом.
+  final bool enableDismiss;
+
+  /// Разрешает play по тапу. Отключается в режиме редактирования порядка.
+  final bool enableTap;
+
+  /// Виджет в конце строки (например, drag-хендл в режиме редактирования).
+  /// Когда задан, заменяет стандартный блок длительности/замены.
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1275,7 +1525,11 @@ class _TrackTile extends ConsumerWidget {
       padding: const EdgeInsets.only(bottom: 4),
       child: Dismissible(
         key: ValueKey(track.globalId),
-        direction: DismissDirection.endToStart,
+        // В режиме редактирования порядка swipe-to-delete отключён:
+        // направление none блокирует распознавание свайпа.
+        direction: enableDismiss
+            ? DismissDirection.endToStart
+            : DismissDirection.none,
         background: Container(
           alignment: Alignment.centerRight,
           padding: const EdgeInsets.only(right: 24),
@@ -1293,18 +1547,20 @@ class _TrackTile extends ConsumerWidget {
           repo.removeTrack(playlist.id, track.globalId);
         },
         child: InkWell(
-          onTap: isDisabled
-              ? onReplaceTap
-              : () {
-                  HapticHelper.light(ref: ref);
-                  final idx = playableDisplayedTracks.indexWhere(
-                    (pt) => pt.globalId == track.globalId,
-                  );
-                  player.setQueue(
-                    playableDisplayedTracks,
-                    startIndex: idx >= 0 ? idx : 0,
-                  );
-                },
+          onTap: !enableTap
+              ? null
+              : isDisabled
+                  ? onReplaceTap
+                  : () {
+                      HapticHelper.light(ref: ref);
+                      final idx = playableDisplayedTracks.indexWhere(
+                        (pt) => pt.globalId == track.globalId,
+                      );
+                      player.setQueue(
+                        playableDisplayedTracks,
+                        startIndex: idx >= 0 ? idx : 0,
+                      );
+                    },
           onLongPress: () {
             HapticHelper.medium(ref: ref);
             showTrackSettingsSheet(context, track: track);
@@ -1366,7 +1622,9 @@ class _TrackTile extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  if (isDisabled)
+                  if (trailing != null)
+                    trailing!
+                  else if (isDisabled)
                     IconButton(
                       icon: const Icon(
                         Icons.find_replace_rounded,

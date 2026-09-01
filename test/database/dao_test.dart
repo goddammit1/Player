@@ -158,4 +158,58 @@ void main() {
       );
     });
   });
+
+  group('PlaylistDao - playlist sort_order', () {
+    test('loadPlaylists returns playlists ordered by sort_order ASC',
+        () async {
+      final db = await AppDatabase.instance.database;
+
+      // p1 новее p2: при сортировке по created_at_ms DESC p1 был бы первым
+      // вне зависимости от порядка сохранения.
+      final p1 = Playlist(
+        id: 'p1',
+        name: 'First',
+        tracks: const [],
+        createdAt: DateTime(2024, 1, 3),
+      );
+      final p2 = Playlist(
+        id: 'p2',
+        name: 'Second',
+        tracks: const [],
+        createdAt: DateTime(2024, 1, 1),
+      );
+
+      await PlaylistDao.instance.saveAllPlaylists(db, [p1, p2]);
+      var loaded = await PlaylistDao.instance.loadPlaylists(db);
+      expect(loaded.map((p) => p.id).toList(), ['p1', 'p2']);
+
+      // Меняем порядок списка: теперь p2 первый. Если бы читался
+      // created_at_ms DESC, порядок остался бы ['p1', 'p2'].
+      await PlaylistDao.instance.saveAllPlaylists(db, [p2, p1]);
+      loaded = await PlaylistDao.instance.loadPlaylists(db);
+      expect(loaded.map((p) => p.id).toList(), ['p2', 'p1']);
+    });
+
+    test('loadPlaylists tie-breaks equal sort_order by created_at_ms DESC',
+        () async {
+      final db = await AppDatabase.instance.database;
+
+      // Легаси-строки с одинаковым дефолтным sort_order=0.
+      await db.insert('playlists', {
+        'id': 'old',
+        'name': 'Older',
+        'created_at_ms': DateTime(2024, 1, 1).millisecondsSinceEpoch,
+        'sort_order': 0,
+      });
+      await db.insert('playlists', {
+        'id': 'new',
+        'name': 'Newer',
+        'created_at_ms': DateTime(2024, 1, 5).millisecondsSinceEpoch,
+        'sort_order': 0,
+      });
+
+      final loaded = await PlaylistDao.instance.loadPlaylists(db);
+      expect(loaded.map((p) => p.id).toList(), ['new', 'old']);
+    });
+  });
 }
