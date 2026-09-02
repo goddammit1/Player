@@ -135,6 +135,37 @@ void main() {
       expect(loaded.single.tracks.map((t) => t.id).toList(), ['a', 'b', 'c']);
     });
 
+    test('manual_order_json roundtrips through save/load', () async {
+      final db = await AppDatabase.instance.database;
+
+      final p = Playlist(
+        id: 'pl-manual',
+        name: 'Manual JSON',
+        tracks: const [t1, t2, t3],
+        // Ручной порядок отличен от порядка добавления.
+        manualOrder: const ['youtube:c', 'youtube:a', 'youtube:b'],
+        createdAt: DateTime(2024, 1, 1),
+      );
+      await PlaylistDao.instance.saveAllPlaylists(db, [p]);
+
+      var loaded = await PlaylistDao.instance.loadPlaylists(db);
+      // Порядок добавления — как сохранён…
+      expect(loaded.single.tracks.map((t) => t.id).toList(), ['a', 'b', 'c']);
+      // …а manualOrder восстановлен из manual_order_json.
+      expect(loaded.single.manualOrder,
+          ['youtube:c', 'youtube:a', 'youtube:b']);
+      expect(loaded.single.applyManualOrder().map((t) => t.id).toList(),
+          ['c', 'a', 'b']);
+
+      // Сброс manualOrder (null) очищает колонку.
+      await PlaylistDao.instance
+          .saveAllPlaylists(db, [p.copyWith(manualOrder: null)]);
+      loaded = await PlaylistDao.instance.loadPlaylists(db);
+      expect(loaded.single.manualOrder, isNull);
+      expect(loaded.single.applyManualOrder().map((t) => t.id).toList(),
+          ['a', 'b', 'c']);
+    });
+
     test('reordering the list then re-saving changes the loaded order',
         () async {
       final db = await AppDatabase.instance.database;

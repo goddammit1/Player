@@ -48,12 +48,30 @@ class PlaylistDao {
         name: row['name'] as String,
         tracks: tracks.map(TrackRowCodec.fromRow).toList(),
         coverCustomUrl: coverUrl,
+        manualOrder: _decodeManualOrder(row['manual_order_json']),
         createdAt: DateTime.fromMillisecondsSinceEpoch(
             (row['created_at_ms'] as num).toInt()),
       ));
     }
     return result;
   }
+
+  /// Декодирует JSON-список globalId из колонки `manual_order_json`.
+  /// NULL/битый JSON/пустой список → null (ручной порядок не задан).
+  static List<String>? _decodeManualOrder(Object? raw) {
+    if (raw is! String || raw.isEmpty) return null;
+    try {
+      final list = (jsonDecode(raw) as List).whereType<String>().toList();
+      return list.isEmpty ? null : list;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Кодирует [Playlist.manualOrder] для записи в колонку
+  /// `manual_order_json`. null → NULL (колонка очищается).
+  static String? _encodeManualOrder(Playlist playlist) =>
+      playlist.manualOrder == null ? null : jsonEncode(playlist.manualOrder);
 
   /// Сохраняет (INSERT или REPLACE) плейлист и все его треки.
   Future<void> savePlaylist(
@@ -66,6 +84,7 @@ class PlaylistDao {
           'name': playlist.name,
           'created_at_ms': playlist.createdAt.millisecondsSinceEpoch,
           'sort_order': sortOrder,
+          'manual_order_json': _encodeManualOrder(playlist),
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -122,6 +141,7 @@ class PlaylistDao {
           'name': playlist.name,
           'created_at_ms': playlist.createdAt.millisecondsSinceEpoch,
           'sort_order': i,
+          'manual_order_json': _encodeManualOrder(playlist),
         });
 
         if (playlist.coverCustomUrl != null) {
