@@ -162,6 +162,12 @@ class PlaylistRepository {
   }
 
   /// Добавляет трек в конец плейлиста. Без дедупликации.
+  ///
+  /// В заданный [Playlist.manualOrder] трек НЕ добавляется: «хвост»
+  /// вне списка и так отображается в конце (см. [Playlist.applyManualOrder]),
+  /// а без явной перестановки пользователя Manual совпадает с порядком
+  /// добавления — это сохраняет эквивалентность Manual ↔ «По дате» до
+  /// первого осознанного drag&drop.
   void addTrack(String id, Track track) {
     var changed = false;
     _list = _list.map((p) {
@@ -188,6 +194,10 @@ class PlaylistRepository {
   }
 
   /// Заменяет трек в плейлисте по `globalId` старого трека на новый.
+  ///
+  /// [Playlist.manualOrder] синхронизируется: вхождения старого globalId
+  /// заменяются на globalId нового трека, чтобы заменённый трек остался
+  /// на своей ручной позиции.
   void replaceTrack(String playlistId, String oldGlobalId, Track newTrack) {
     var changed = false;
     _list = _list.map((p) {
@@ -197,21 +207,38 @@ class PlaylistRepository {
       if (idx == -1) return p;
       newTracks[idx] = newTrack;
       changed = true;
-      return p.copyWith(tracks: newTracks);
+      final order = p.manualOrder;
+      return p.copyWith(
+        tracks: newTracks,
+        manualOrder: order == null
+            ? null
+            : [
+                for (final gid in order)
+                  gid == oldGlobalId ? newTrack.globalId : gid,
+              ],
+      );
     }).toList();
     if (changed) _notifyAndSchedulePersist();
   }
 
   /// Удаляет трек по индексу в плейлисте.
+  ///
+  /// Из [Playlist.manualOrder] удаляется РОВНО одно вхождение globalId —
+  /// то, которое соответствует экземпляру с индексом [index] в
+  /// [Playlist.applyManualOrder]: порядок в списке = порядок вхождений
+  /// globalId среди треков.
   void removeTrackAt(String playlistId, int index) {
     var changed = false;
     _list = _list.map((p) {
       if (p.id != playlistId) return p;
       if (index < 0 || index >= p.tracks.length) return p;
-      final newTracks = List<Track>.of(p.tracks);
-      newTracks.removeAt(index);
+      final removed = p.tracks[index];
+      final newTracks = List<Track>.of(p.tracks)..removeAt(index);
       changed = true;
-      return p.copyWith(tracks: newTracks);
+      return p.copyWith(
+        tracks: newTracks,
+        manualOrder: _orderAfterRemoval(p, removed, index),
+      );
     }).toList();
     if (changed) _notifyAndSchedulePersist();
   }
@@ -228,11 +255,45 @@ class PlaylistRepository {
       final newTracks = List<Track>.of(p.tracks);
       final idx = newTracks.indexWhere((t) => t.globalId == trackGlobalId);
       if (idx == -1) return p;
+      final removed = newTracks[idx];
       newTracks.removeAt(idx);
       changed = true;
-      return p.copyWith(tracks: newTracks);
+      return p.copyWith(
+        tracks: newTracks,
+        manualOrder: _orderAfterRemoval(p, removed, idx),
+      );
     }).toList();
     if (changed) _notifyAndSchedulePersist();
+  }
+
+  /// Ручной порядок после удаления [removed] (бывший индекс [oldIndex]).
+  ///
+  /// Определяет, какое по счёту вхождение `globalId` среди треков
+  /// соответствует удаляемому экземпляру, и вычёркивает это же вхождение
+  /// из списка. Вхождения сверх длины manual-списка (трек не попадал в
+  /// ручной порядок) ничего не меняют.
+  static List<String>? _orderAfterRemoval(
+    Playlist p,
+    Track removed,
+    int oldIndex,
+  ) {
+    final order = p.manualOrder;
+    if (order == null) return null;
+    final occurrence = p.tracks
+        .sublist(0, oldIndex)
+        .where((t) => t.globalId == removed.globalId)
+        .length;
+    final next = List<String>.of(order);
+    var seen = 0;
+    for (var i = 0; i < next.length; i++) {
+      if (next[i] != removed.globalId) continue;
+      if (seen == occurrence) {
+        next.removeAt(i);
+        break;
+      }
+      seen++;
+    }
+    return next;
   }
 
   /// Reorder для drag&drop списка плейлистов.
@@ -254,25 +315,43 @@ class PlaylistRepository {
     _notifyAndSchedulePersist();
   }
 
-  /// Reorder для drag&drop в UI.
+  /// Reorder для drag&drop в UI — единственная операция, меняющая
+  /// РУЧНОЙ порядок треков ([Playlist.manualOrder]).
+  ///
+  /// ВАЖНО: [Playlist.tracks] (порядок добавления) здесь намеренно НЕ
+  /// меняется. Раньше перестановка в режиме «Manual» перетирала общий
+  /// порядок хранения, и ручные правки «протекали» в остальные режимы
+  /// сортировки («По дате» и др.) — теперь они изолированы в manualOrder.
+  ///
+  /// Индексы [oldIndex]/[newIndex] относятся к отображаемому manual-списку
+  /// ([Playlist.applyManualOrder]), семантика — как у
+  /// [ReorderableListView.onReorder]: [newIndex] — позиция ПОСЛЕ удаления
+  /// элемента (при переносе вниз UI передаёт target + 1).
   void reorderTracks(String playlistId, int oldIndex, int newIndex) {
     var changed = false;
     _list = _list.map((p) {
       if (p.id != playlistId) return p;
-      if (oldIndex < 0 || oldIndex >= p.tracks.length) return p;
+      // База для индексов — отображаемый ручной порядок.
+      final displayed = p.applyManualOrder();
+      if (oldIndex < 0 || oldIndex >= displayed.length) return p;
       var ni = newIndex;
       if (ni > oldIndex) ni--;
       if (ni < 0) ni = 0;
       // Верхний кламп — length-1: после removeAt список короче на 1, и
       // insert(length) был бы RangeError (кламп к length — пре-существующий
       // баг, вскрытый тестами: reorderTracks(0, 999) падал).
-      if (ni > p.tracks.length - 1) ni = p.tracks.length - 1;
+      if (ni > displayed.length - 1) ni = displayed.length - 1;
       if (ni == oldIndex) return p;
-      final t = List<Track>.of(p.tracks);
-      final item = t.removeAt(oldIndex);
-      t.insert(ni, item);
+      final reordered = List<Track>.of(displayed);
+      final item = reordered.removeAt(oldIndex);
+      reordered.insert(ni, item);
       changed = true;
-      return p.copyWith(tracks: t);
+      // Фиксируем ПОЛНЫЙ порядок (включая «хвост» вне прежнего manualOrder):
+      // иначе новые треки, дописываемые в конец по умолчанию, при
+      // перестановке соседей визуально «перескакивали» бы через головы.
+      return p.copyWith(
+        manualOrder: reordered.map((t) => t.globalId).toList(),
+      );
     }).toList();
     if (changed) _notifyAndSchedulePersist();
   }
@@ -312,6 +391,9 @@ class PlaylistRepository {
         name: src.name,
         tracks: src.tracks,
         coverCustomUrl: src.coverCustomUrl,
+        // Ручной порядок переносим из бэкапа — иначе импортированный
+        // плейлист терял бы расставленные вручную треки.
+        manualOrder: src.manualOrder,
         createdAt: DateTime.now(),
       );
       working = [clone, ...working];

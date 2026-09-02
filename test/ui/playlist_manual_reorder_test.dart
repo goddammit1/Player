@@ -235,6 +235,11 @@ void main() {
 
   Widget buildApp(String playlistId, PlaylistSortMode mode) {
     return ProviderScope(
+      // КЛЮЧ по режиму: при повторном pumpWidget с другим mode ProviderScope
+      // пересоздаётся, а не обновляется in-place. Иначе ProviderContainer
+      // (и seeded sortMode) остаётся от ПЕРВОГО билда — overrides второго
+      // pumpWidget молча игнорируются (см. регрессионный тест D).
+      key: ValueKey(mode),
       overrides: [
         playerServiceProvider.overrideWithValue(_FakePlayer()),
         playlistsProvider.overrideWith((ref) => playlistsFromMemory()),
@@ -282,10 +287,19 @@ void main() {
     }
   }
 
+  /// Порядок ДОБАВЛЕНИЯ в репозитории (режим «По дате»).
   List<String> trackIdsInRepo(String playlistId) => PlaylistRepository
       .instance.current
       .firstWhere((p) => p.id == playlistId)
       .tracks
+      .map((t) => t.id)
+      .toList();
+
+  /// Отображаемый РУЧНОЙ порядок в репозитории (режим «Manual»).
+  List<String> manualIdsInRepo(String playlistId) => PlaylistRepository
+      .instance.current
+      .firstWhere((p) => p.id == playlistId)
+      .applyManualOrder()
       .map((t) => t.id)
       .toList();
 
@@ -402,8 +416,10 @@ void main() {
       });
       await pumpFrames(tester);
 
-      // onReorder(0, 3) → коррекция репозитория → A встал на позицию 2.
-      expect(trackIdsInRepo(p.id), ['2', '3', '1']);
+      // onReorder(0, 3) → коррекция репозитория → A встал на позицию 2
+      // В РУЧНОМ порядке; порядок добавления при этом неизменен.
+      expect(manualIdsInRepo(p.id), ['2', '3', '1']);
+      expect(trackIdsInRepo(p.id), ['1', '2', '3']);
 
       // Done: выход из редактирования + flush внутри — тап в runAsync,
       // чтобы flush() отработал в реальном loop (см. тест A).
@@ -419,7 +435,53 @@ void main() {
         await PlaylistRepository.instance.flush();
         await PlaylistRepository.instance.reload();
       });
-      expect(trackIdsInRepo(p.id), ['2', '3', '1']);
+      expect(manualIdsInRepo(p.id), ['2', '3', '1']);
+      expect(trackIdsInRepo(p.id), ['1', '2', '3']);
+    },
+  );
+
+  testWidgets(
+    'D: manual reorder does not leak into date mode (regression)',
+    (tester) async {
+      setupViewport(tester);
+      late Playlist p;
+      await tester.runAsync(() async {
+        p = await createPlaylistWithTracks();
+      });
+      await tester.pumpWidget(buildApp(p.id, PlaylistSortMode.manual));
+      await pumpFrames(tester);
+
+      // Задаём ручной порядок через репозиторий: C, A, B.
+      await tester.runAsync(() async {
+        PlaylistRepository.instance.reorderTracks(p.id, 2, 0);
+        await PlaylistRepository.instance.flush();
+        await PlaylistRepository.instance.reload();
+      });
+      await pumpFrames(tester);
+
+      // Manual показывает ручной порядок: C выше A выше B.
+      expect(
+        tester.getCenter(find.text('Song C')).dy <
+                tester.getCenter(find.text('Song A')).dy &&
+            tester.getCenter(find.text('Song A')).dy <
+                tester.getCenter(find.text('Song B')).dy,
+        isTrue,
+        reason: 'Manual: C, A, B',
+      );
+
+      // Переключаемся на «По дате» — порядок добавления A, B, C
+      // НЕ должен быть затронут ручной перестановкой.
+      await tester.pumpWidget(buildApp(p.id, PlaylistSortMode.date));
+      await pumpFrames(tester);
+
+      expect(
+        tester.getCenter(find.text('Song A')).dy <
+                tester.getCenter(find.text('Song B')).dy &&
+            tester.getCenter(find.text('Song B')).dy <
+                tester.getCenter(find.text('Song C')).dy,
+        isTrue,
+        reason: 'Date: порядок добавления A, B, C — без ручных правок',
+      );
     },
   );
 
@@ -435,7 +497,8 @@ void main() {
         await PlaylistRepository.instance.flush();
         await PlaylistRepository.instance.reload();
       });
-      expect(trackIdsInRepo(p.id), ['3', '1', '2']);
+      expect(manualIdsInRepo(p.id), ['3', '1', '2']);
+      expect(trackIdsInRepo(p.id), ['1', '2', '3']);
 
       await tester.pumpWidget(buildApp(p.id, PlaylistSortMode.manual));
       await pumpFrames(tester);

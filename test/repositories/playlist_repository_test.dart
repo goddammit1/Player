@@ -104,7 +104,8 @@ void main() {
       expect(PlaylistRepository.instance.current.first.tracks.first.id, '2');
     });
 
-    test('reorderTracks moves track', () async {
+    test('reorderTracks moves track only in manualOrder, tracks untouched',
+        () async {
       await PlaylistRepository.instance.ensureLoaded();
       final p = PlaylistRepository.instance.create('Test');
       const t1 = Track(
@@ -123,8 +124,12 @@ void main() {
       PlaylistRepository.instance.addTrack(p.id, t2);
 
       PlaylistRepository.instance.reorderTracks(p.id, 0, 2);
-      expect(PlaylistRepository.instance.current.first.tracks.first.id, '2');
-      expect(PlaylistRepository.instance.current.first.tracks.last.id, '1');
+      final cur = PlaylistRepository.instance.current.first;
+      // Порядок добавления (режим «По дате») НЕ меняется.
+      expect(cur.tracks.map((t) => t.id), ['1', '2']);
+      // Меняется только ручной порядок.
+      expect(cur.applyManualOrder().map((t) => t.id), ['2', '1']);
+      expect(cur.manualOrder, ['youtube:2', 'youtube:1']);
     });
 
     test('importPlaylists always adds new playlists', () async {
@@ -180,9 +185,17 @@ void main() {
       return p;
     }
 
+    /// Порядок ДОБАВЛЕНИЯ (режим «По дате»): reorderTracks его не трогает.
     List<String> trackIds() => PlaylistRepository.instance.current
         .firstWhere((p) => p.name == 'Reorder')
         .tracks
+        .map((t) => t.id)
+        .toList();
+
+    /// Отображаемый РУЧНОЙ порядок (режим «Manual»).
+    List<String> manualIds() => PlaylistRepository.instance.current
+        .firstWhere((p) => p.name == 'Reorder')
+        .applyManualOrder()
         .map((t) => t.id)
         .toList();
 
@@ -190,13 +203,16 @@ void main() {
       final p = await seedThree();
       // ReorderableListView-семантика: newIndex > oldIndex уменьшается на 1.
       PlaylistRepository.instance.reorderTracks(p.id, 0, 2);
-      expect(trackIds(), ['2', '1', '3']);
+      expect(manualIds(), ['2', '1', '3']);
+      // Порядок добавления неизменен — правки Manual изолированы.
+      expect(trackIds(), ['1', '2', '3']);
     });
 
     test('moves track backward (up the list)', () async {
       final p = await seedThree();
       PlaylistRepository.instance.reorderTracks(p.id, 2, 0);
-      expect(trackIds(), ['3', '1', '2']);
+      expect(manualIds(), ['3', '1', '2']);
+      expect(trackIds(), ['1', '2', '3']);
     });
 
     test('clamps out-of-range newIndex and ignores invalid oldIndex',
@@ -205,19 +221,33 @@ void main() {
 
       // newIndex за пределами — клампится в конец.
       PlaylistRepository.instance.reorderTracks(p.id, 0, 999);
-      expect(trackIds(), ['2', '3', '1']);
+      expect(manualIds(), ['2', '3', '1']);
 
       // Отрицательный newIndex — клампится в начало.
       PlaylistRepository.instance.reorderTracks(p.id, 2, -5);
-      expect(trackIds(), ['1', '2', '3']);
+      expect(manualIds(), ['1', '2', '3']);
 
       // Невалидный oldIndex — без изменений.
       PlaylistRepository.instance.reorderTracks(p.id, 99, 0);
       PlaylistRepository.instance.reorderTracks(p.id, -1, 0);
-      expect(trackIds(), ['1', '2', '3']);
+      expect(manualIds(), ['1', '2', '3']);
 
       // Несуществующий плейлист — без падения и изменений.
       PlaylistRepository.instance.reorderTracks('missing', 0, 1);
+      expect(manualIds(), ['1', '2', '3']);
+
+      // За всё время порядок добавления ни разу не изменился.
+      expect(trackIds(), ['1', '2', '3']);
+    });
+
+    test('subsequent reorders compose on top of the current manual order',
+        () async {
+      final p = await seedThree();
+      PlaylistRepository.instance.reorderTracks(p.id, 0, 3);
+      expect(manualIds(), ['2', '3', '1']);
+      // Второй reorder индексируется уже по НОВОМУ ручному порядку.
+      PlaylistRepository.instance.reorderTracks(p.id, 0, 2);
+      expect(manualIds(), ['3', '2', '1']);
       expect(trackIds(), ['1', '2', '3']);
     });
   });
@@ -240,18 +270,100 @@ void main() {
       // Переставляем: последний трек переезжает в начало (0 → 3).
       PlaylistRepository.instance.reorderTracks(p.id, 2, 0);
       expect(
-        PlaylistRepository.instance.current.first.tracks.map((t) => t.id),
+        PlaylistRepository.instance.current.first
+            .applyManualOrder()
+            .map((t) => t.id),
         ['3', '1', '2'],
+      );
+      // Порядок добавления при этом не тронут.
+      expect(
+        PlaylistRepository.instance.current.first.tracks.map((t) => t.id),
+        ['1', '2', '3'],
       );
 
       // Флаш на диск, сбрасываем память и перечитываем с диска.
       await PlaylistRepository.instance.flush();
       await PlaylistRepository.instance.reload();
 
+      final reloaded = PlaylistRepository.instance.current.first;
+      // Ручной порядок пережил перезапуск…
+      expect(reloaded.applyManualOrder().map((t) => t.id), ['3', '1', '2']);
+      expect(reloaded.manualOrder,
+          ['youtube:3', 'youtube:1', 'youtube:2']);
+      // …а порядок добавления (режим «По дате») остался исходным.
+      expect(reloaded.tracks.map((t) => t.id), ['1', '2', '3']);
+    });
+  });
+
+  group('PlaylistRepository - manual order sync on mutations', () {
+    Future<Playlist> seedWithOrder() async {
+      final repo = PlaylistRepository.instance;
+      await repo.ensureLoaded();
+      final p = repo.create('Sync');
+      const t1 = Track(
+          id: '1', sourceId: 'youtube', title: 'Song 1', artist: 'A');
+      const t2 = Track(
+          id: '2', sourceId: 'youtube', title: 'Song 2', artist: 'B');
+      const t3 = Track(
+          id: '3', sourceId: 'youtube', title: 'Song 3', artist: 'C');
+      repo.addTrack(p.id, t1);
+      repo.addTrack(p.id, t2);
+      repo.addTrack(p.id, t3);
+      // Задаём ручной порядок: C, A, B.
+      repo.reorderTracks(p.id, 2, 0);
+      return p;
+    }
+
+    Playlist current() => PlaylistRepository.instance.current
+        .firstWhere((p) => p.name == 'Sync');
+
+    test('addTrack does not touch manualOrder: new track goes last in Manual',
+        () async {
+      final p = await seedWithOrder();
+      const t4 = Track(
+          id: '4', sourceId: 'youtube', title: 'Song 4', artist: 'D');
+      PlaylistRepository.instance.addTrack(p.id, t4);
+
+      expect(current().tracks.map((t) => t.id), ['1', '2', '3', '4']);
+      // Manual: ручная тройка + новый трек в хвосте.
       expect(
-        PlaylistRepository.instance.current.first.tracks.map((t) => t.id),
-        ['3', '1', '2'],
-      );
+          current().applyManualOrder().map((t) => t.id), ['3', '1', '2', '4']);
+    });
+
+    test('removeTrackAt drops the id from manualOrder', () async {
+      final p = await seedWithOrder();
+      // Удаляем трек A (индекс 0 в порядке добавления).
+      PlaylistRepository.instance.removeTrackAt(p.id, 0);
+
+      expect(current().tracks.map((t) => t.id), ['2', '3']);
+      expect(current().applyManualOrder().map((t) => t.id), ['3', '2']);
+      expect(current().manualOrder, ['youtube:3', 'youtube:2']);
+    });
+
+    test('replaceTrack keeps the manual position of the replaced track',
+        () async {
+      final p = await seedWithOrder();
+      const replacement = Track(
+          id: '9', sourceId: 'muzmo', title: 'Repl', artist: 'R');
+      // Заменяем трек A (он на 2-й позиции в Manual: C, A, B).
+      PlaylistRepository.instance.replaceTrack(p.id, 'youtube:1', replacement);
+
+      expect(current().tracks.map((t) => t.id), ['9', '2', '3']);
+      expect(
+          current().applyManualOrder().map((t) => t.id), ['3', '9', '2']);
+      expect(current().manualOrder,
+          ['youtube:3', 'muzmo:9', 'youtube:2']);
+    });
+
+    test('manual order survives backup encode/decode roundtrip', () async {
+      final p = await seedWithOrder();
+      final encoded = PlaylistBackup.encode([current()]);
+      final decoded = PlaylistBackup.decode(encoded);
+      expect(decoded.single.manualOrder, current().manualOrder);
+      expect(decoded.single.applyManualOrder().map((t) => t.id),
+          ['3', '1', '2']);
+      // suppress unused warning for p
+      expect(p.id, isNotEmpty);
     });
   });
 

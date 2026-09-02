@@ -90,7 +90,9 @@ final _isPlayingProvider = StreamProvider<bool>((ref) {
 // Режим сортировки вынесен в публичный enum [PlaylistSortMode]
 // (см. core/providers/playlist_sort_mode.dart). Он персистится в БД,
 // поэтому выбор переживает перезапуск. `manual` — самостоятельный режим:
-// он сохраняет порядок треков как в БД и не подвержен инверсии.
+// показывает ручной порядок ([Playlist.manualOrder], задаётся drag&drop)
+// и не подвержен инверсии. Ручной порядок хранится ОТДЕЛЬНО от порядка
+// добавления ([Playlist.tracks]) и не влияет на остальные режимы.
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  PLAYLIST PAGE
@@ -159,6 +161,7 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   /// Выход из режима редактирования порядка с гарантированным сливом
   /// нового порядка в БД (debounce-persist 300мс мог бы отработать позже).
   Future<void> _finishEditingOrder() async {
+    if (!_isEditingOrder) return;
     setState(() => _isEditingOrder = false);
     await ref.read(playlistRepositoryProvider).flush();
     if (mounted) showSnack(context, 'Order saved');
@@ -183,8 +186,19 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   }
   // ---- Фильтрация и сортировка ----
 
-  List<Track> _filterAndSort(List<Track> tracks, PlaylistSortMode sortMode) {
-    var result = [...tracks];
+  /// Базовый список треков для режима сортировки [sortMode].
+  ///
+  /// Ручной порядок ([Playlist.manualOrder]) применяется ТОЛЬКО в режиме
+  /// Manual; остальные режимы всегда стартуют от порядка добавления
+  /// ([Playlist.tracks]) — ручные перестановки в них не «протекают».
+  List<Track> _tracksForMode(Playlist p, PlaylistSortMode sortMode) =>
+      sortMode == PlaylistSortMode.manual ? p.applyManualOrder() : p.tracks;
+
+  List<Track> _filterAndSort(
+    Playlist p,
+    PlaylistSortMode sortMode,
+  ) {
+    var result = _tracksForMode(p, sortMode);
 
     if (_query.trim().isNotEmpty) {
       final q = _query.trim().toLowerCase();
@@ -196,10 +210,11 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
 
     switch (sortMode) {
       case PlaylistSortMode.date:
+        // «По дате» оставляет порядок добавления (sort_order в БД) —
+        // без дополнительной сортировки.
+        break;
       case PlaylistSortMode.manual:
-        // «По дате» и «ручной» оставляют порядок, сохранённый в БД
-        // (sort_order при добавлении/перестановке) — без дополнительной
-        // сортировки.
+        // Ручной порядок уже применён в _tracksForMode.
         break;
       case PlaylistSortMode.title:
         result.sort(
@@ -601,11 +616,13 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                     onTap: () {
                       HapticHelper.light(ref: ref);
                       Navigator.of(ctx).pop();
-                      // Уход с manual — выходим из режима редактирования,
-                      // чтобы при возврате не застрять в нём.
+                      // Уход с manual — выходим из режима редактирования
+                      // со сливом порядка в БД (debounce-persist 300мс мог
+                      // бы отработать позже), чтобы при возврате не
+                      // застрять в редактировании.
                       if (mode != PlaylistSortMode.manual &&
                           _isEditingOrder) {
-                        setState(() => _isEditingOrder = false);
+                        _finishEditingOrder();
                       }
                       // Переключаем выбор через провайдер — режим сохранится в БД.
                       notifier.setMode(mode);
@@ -680,7 +697,12 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     final editingOrder = _isEditingOrder && sortMode == PlaylistSortMode.manual;
 
     // Сначала фильтруем и сортируем (чтобы порядок совпадал с экраном)
-    final displayedTracks = _filterAndSort(p.tracks, sortMode);
+    final displayedTracks = _filterAndSort(p, sortMode);
+
+    // Список для reorder-режима — тот же источник, что у Manual-отображения
+    // (applyManualOrder): индексы onReorder должны совпадать с индексами
+    // репозитория (reorderTracks работает по этому же списку).
+    final manualOrderedTracks = editingOrder ? p.applyManualOrder() : null;
 
     // Получаем ТОЛЬКО доступные треки ИЗ ОТОБРАЖАЕМОГО (отсортированного) списка
     final playableDisplayedTracks = displayedTracks
@@ -1296,13 +1318,13 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
 
                     // ── Track list or empty state ──
                     if (editingOrder)
-                      // Reorder работает по ПОЛНОМУ списку треков (без фильтра
+                      // Reorder работает по ПОЛНОМУ ручному списку (без фильтра
                       // _query): индексы onReorder должны совпадать с
                       // индексами в репозитории.
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
                         sliver: SliverReorderableList(
-                          itemCount: p.tracks.length,
+                          itemCount: manualOrderedTracks!.length,
                           // Drag-feedback рендерится в Overlay-Stack без
                           // Material-предка, а _TrackTile содержит InkWell —
                           // оборачиваем прокси в Material, иначе assertion
@@ -1319,17 +1341,20 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                                 .reorderTracks(p.id, oldIndex, newIndex);
                           },
                           itemBuilder: (context, i) {
-                            final t = p.tracks[i];
+                            final t = manualOrderedTracks[i];
                             return _TrackTile(
                               // Ключи стабильны по globalId — без индексов,
                               // чтобы Flutter корректно отслеживал элементы
-                              // при перестановке.
-                              key: ValueKey(t.globalId),
+                              // при перестановке. Для дубликатов (одинаковый
+                              // globalId у нескольких треков) добавляем
+                              // позицию: иначе ключи совпадут и Flutter
+                              // перепутает тайлы.
+                              key: ValueKey('${t.globalId}#$i'),
                               track: t,
                               playlist: p,
                               playableDisplayedTracks: playableDisplayedTracks,
                               isFirst: i == 0,
-                              isLast: i == p.tracks.length - 1,
+                              isLast: i == manualOrderedTracks.length - 1,
                               // В режиме редактирования запрещаем
                               // swipe-to-delete и play по тапу: жесты
                               // конфликтовали бы с drag-хендлом.

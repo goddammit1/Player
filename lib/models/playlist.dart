@@ -19,6 +19,21 @@ class Playlist {
   /// (например, одна и та же песня в разных версиях).
   final List<Track> tracks;
 
+  /// Ручной порядок треков (режим сортировки «Manual») как список
+  /// [Track.globalId] в желаемом порядке.
+  ///
+  /// `null` — ручной порядок не задан: режим Manual показывает [tracks]
+  /// как есть (порядок добавления). Задаётся ТОЛЬКО через drag&drop в
+  /// режиме Manual ([PlaylistRepository.reorderTracks]) и никак не влияет
+  /// на остальные режимы сортировки: те всегда работают по [tracks].
+  ///
+  /// Может быть «неполным» относительно [tracks] (трек добавили после
+  /// задания порядка или удалили): применение порядка в
+  /// [Playlist.applyManualOrder] устойчиво к этому — отсутствующие в списке
+  /// треки дописываются в конец в порядке добавления, лишние id
+  /// игнорируются.
+  final List<String>? manualOrder;
+
   /// Опциональная пользовательская обложка. Если `null`, UI рисует
   /// мозаику 2×2 из обложек первых четырёх треков.
   final String? coverCustomUrl;
@@ -34,6 +49,7 @@ class Playlist {
     required this.name,
     required this.tracks,
     this.coverCustomUrl,
+    this.manualOrder,
     required this.createdAt,
   });
 
@@ -41,15 +57,55 @@ class Playlist {
     String? name,
     List<Track>? tracks,
     Object? coverCustomUrl = _sentinel,
+    Object? manualOrder = _sentinel,
   }) => Playlist(
     id: id,
     name: name ?? this.name,
     tracks: tracks ?? this.tracks,
     coverCustomUrl: identical(coverCustomUrl, _sentinel) ? this.coverCustomUrl : coverCustomUrl as String?,
+    manualOrder: identical(manualOrder, _sentinel) ? this.manualOrder : manualOrder as List<String>?,
     createdAt: createdAt,
   );
 
   static const _sentinel = #sentinel;
+
+  /// Треки в ручном порядке: согласно [manualOrder], недостающие треки —
+  /// в конец в порядке добавления, неизвестные id игнорируются.
+  ///
+  /// Если [manualOrder] не задан — возвращает [tracks] без изменений.
+  /// Дубликаты globalId в [tracks] поддерживаются: каждый экземпляр
+  /// занимает свою позицию (i-е вхождение id в [manualOrder] получает
+  /// i-й трек с этим id).
+  List<Track> applyManualOrder() {
+    final order = manualOrder;
+    if (order == null) return tracks;
+
+    // Индекс → сколько раз globalId уже встречался при раздаче.
+    final usedCountById = <String, int>{};
+    // globalId → очередь треков с этим id (в порядке добавления).
+    final poolById = <String, List<Track>>{};
+    for (final t in tracks) {
+      poolById.putIfAbsent(t.globalId, () => []).add(t);
+    }
+
+    final result = <Track>[];
+    final placed = <Track>{}; // identity-набор размещённых экземпляров.
+    for (final gid in order) {
+      final used = usedCountById[gid] ?? 0;
+      final pool = poolById[gid];
+      if (pool == null || used >= pool.length) continue; // лишний id.
+      final track = pool[used];
+      usedCountById[gid] = used + 1;
+      result.add(track);
+      placed.add(track);
+    }
+    // Треки, не попавшие в manualOrder (добавлены после задания порядка),
+    // — в конец, в порядке добавления.
+    for (final t in tracks) {
+      if (!placed.contains(t)) result.add(t);
+    }
+    return result;
+  }
 
   /// Первые 4 непустых артворка — для мозаичной обложки.
   List<String> get coverThumbnails => tracks
@@ -72,21 +128,31 @@ class Playlist {
     'name': name,
     'cover_custom_url': coverCustomUrl,
     'created_at_ms': createdAt.millisecondsSinceEpoch,
+    // Ручной порядок сериализуем только когда задан — старые версии
+    // приложения просто проигнорируют неизвестный ключ.
+    if (manualOrder != null) 'manual_order': manualOrder,
     'tracks': tracks.map(_trackToJson).toList(),
   };
 
-  factory Playlist.fromJson(Map<String, dynamic> m) => Playlist(
-    id: m['id'] as String,
-    name: m['name'] as String,
-    coverCustomUrl: m['cover_custom_url'] as String?,
-    createdAt: DateTime.fromMillisecondsSinceEpoch(
-      (m['created_at_ms'] as num).toInt(),
-    ),
-    tracks: ((m['tracks'] as List?) ?? const [])
-        .whereType<Map>()
-        .map((e) => _trackFromJson(e.cast<String, dynamic>()))
-        .toList(),
-  );
+  factory Playlist.fromJson(Map<String, dynamic> m) {
+    final rawOrder = (m['manual_order'] as List?)
+        ?.whereType<String>()
+        .toList();
+    return Playlist(
+      id: m['id'] as String,
+      name: m['name'] as String,
+      coverCustomUrl: m['cover_custom_url'] as String?,
+      manualOrder:
+          (rawOrder == null || rawOrder.isEmpty) ? null : rawOrder,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+        (m['created_at_ms'] as num).toInt(),
+      ),
+      tracks: ((m['tracks'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((e) => _trackFromJson(e.cast<String, dynamic>()))
+          .toList(),
+    );
+  }
 
   static Map<String, dynamic> _trackToJson(Track t) => {
     'id': t.id,

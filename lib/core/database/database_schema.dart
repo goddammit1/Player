@@ -24,7 +24,7 @@ import 'package:sqflite/sqflite.dart';
 /// переносит существующий код из `AppDatabase` без изменения поведения.
 abstract class AppDatabaseSchema {
   static const String dbName = 'player_data.db';
-  static const int dbVersion = 4;
+  static const int dbVersion = 5;
 
   /// Создает все таблицы (вызывается sqflite при создании нового файла).
   static Future<void> create(Database db, int version) async {
@@ -33,7 +33,8 @@ abstract class AppDatabaseSchema {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL,
-        sort_order INTEGER NOT NULL DEFAULT 0
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        manual_order_json TEXT
       )
     ''');
 
@@ -155,6 +156,18 @@ abstract class AppDatabaseSchema {
         if (deleted > 0) {
           debugPrint('[AppDatabase] v4 migration: removed $deleted artwork cache entries (full refresh)');
         }
+      } catch (_) {}
+    }
+    if (oldVersion < 5) {
+      // v4 → v5: колонка ручного порядка треков плейлиста (режим «Manual»).
+      // JSON-список globalId; NULL — ручной порядок не задан, Manual
+      // показывает порядок добавления. До этой версии ручная перестановка
+      // перетирала sort_order треков и «протекала» в остальные режимы
+      // сортировки (по дате и т.п.).
+      try {
+        await db.execute(
+          'ALTER TABLE playlists ADD COLUMN manual_order_json TEXT',
+        );
       } catch (_) {}
     }
   }
