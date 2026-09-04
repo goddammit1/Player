@@ -40,11 +40,11 @@ class SettingsPage extends ConsumerWidget {
               backgroundColor: colors.background,
               surfaceTintColor: Colors.transparent,
               elevation: 0,
-              toolbarHeight: 96,
+              toolbarHeight: 132,
               automaticallyImplyLeading: false,
               titleSpacing: 0,
               title: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                padding: const EdgeInsets.fromLTRB(16, 64, 16, 8),
                 child: _PageHeader(colors: colors),
               ),
             ),
@@ -59,7 +59,7 @@ class SettingsPage extends ConsumerWidget {
                   ),
                   child: ListView(
                     padding: EdgeInsets.only(
-                      top: 8,
+                      top: 0,
                       bottom: 8 + NowPlayingOverlay.miniHeight +
                           MediaQuery.of(context).padding.bottom,
                     ),
@@ -126,30 +126,27 @@ class _PageHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Назад показываем только когда страница реально открыта
-        // через Navigator.push (мобильные экраны, десктопные push из
-        // настроек). Когда страница встроена как раздел десктопного shell
-        // (DesktopShell → IndexedStack), она живёт на корневом маршруте, и
-        // Navigator.pop оставил бы приложение с пустым Navigator'ом (тёмный
-        // экран без UI) — поэтому кнопку прячем.
         if (Navigator.of(context).canPop()) ...[
-          CircleBackButton(colors: colors),
-          const SizedBox(width: 10),
+          SizedBox(
+            width: 60,
+            height: 60,
+            child: CircleBackButton(colors: colors),
+          ),
+          const SizedBox(height: 16),
         ],
-        // Заголовок — крупный полужирный белый шрифт, выравнивание по
-        // левому краю, на той же строке, что и кнопка (не под ней).
         Text(
           'Settings',
           style: TextStyle(
             color: colors.textPrimary,
-            fontSize: 28,
-            fontWeight: FontWeight.w700,
+            fontSize: 32,
+            fontWeight: FontWeight.w600,
             letterSpacing: 0,
           ),
         ),
+        const SizedBox(height: 48), // ← отступ между Settings и списком
       ],
     );
   }
@@ -177,18 +174,22 @@ class _SectionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: Icon(icon, color: colors.textPrimary),
+      minVerticalPadding: 16,
+      leading: Icon(icon, color: colors.textPrimary, size: 24),
       title: Text(
         title,
         style: TextStyle(
           color: colors.textPrimary,
           fontSize: 16,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
         ),
       ),
-      subtitle: Text(
-        subtitle,
-        style: TextStyle(color: colors.textSecondary, fontSize: 14),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 4), // ← отступ между title и subtitle
+        child: Text(
+          subtitle,
+          style: TextStyle(color: colors.textSecondary, fontSize: 14),
+        ),
       ),
       trailing: Icon(Icons.chevron_right_rounded, color: colors.textTertiary),
       onTap: onTap,

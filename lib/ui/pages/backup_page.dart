@@ -35,10 +35,35 @@ class BackupPage extends ConsumerWidget {
               backgroundColor: colors.background,
               surfaceTintColor: Colors.transparent,
               elevation: 0,
-              toolbarHeight: 88,
+              toolbarHeight: 132,                       // ← было 134
               automaticallyImplyLeading: false,
               titleSpacing: 0,
-              title: _PageHeader(title: 'Backup', colors: colors),
+              title: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 64, 16, 8), // ← было 16,16,16,8
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (Navigator.of(context).canPop())
+                      _CircleButton(
+                        icon: Icons.chevron_left_rounded,
+                        onTap: () => Navigator.of(context).maybePop(),
+                        colors: colors,
+                      ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Backup',
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 32,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                    const SizedBox(height: 48), // ← добавить
+                  ],
+                ),
+              ),
             ),
             body: LayoutBuilder(
               builder: (context, c) => Align(
@@ -243,6 +268,39 @@ class _BackupPageAnimState extends State<_BackupPageAnim>
       builder: (context, _) => Transform.translate(
         offset: Offset(0, _slide.value),
         child: Opacity(opacity: _fade.value, child: widget.child),
+      ),
+    );
+  }
+}
+
+// =====================================================================
+//  КРУГЛАЯ КНОПКА 60×60
+// =====================================================================
+
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 60,
+          height: 60,
+          child: Icon(icon, color: colors.textPrimary, size: 28),
+        ),
       ),
     );
   }

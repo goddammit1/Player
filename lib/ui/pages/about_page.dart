@@ -34,10 +34,35 @@ class AboutPage extends ConsumerWidget {
               backgroundColor: colors.background,
               surfaceTintColor: Colors.transparent,
               elevation: 0,
-              toolbarHeight: 88,
+              toolbarHeight: 132,                       // ← было 134
               automaticallyImplyLeading: false,
               titleSpacing: 0,
-              title: _PageHeader(title: 'About', colors: colors),
+              title: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 64, 16, 8), // ← было 16,16,16,8
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (Navigator.of(context).canPop())
+                      _CircleButton(
+                        icon: Icons.chevron_left_rounded,
+                        onTap: () => Navigator.of(context).maybePop(),
+                        colors: colors,
+                      ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'About',
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 32,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0,
+                      ),
+                    ),
+                    const SizedBox(height: 48), // ← добавить
+                  ],
+                ),
+              ),
             ),
             body: LayoutBuilder(
               builder: (context, c) => Align(
@@ -49,7 +74,7 @@ class AboutPage extends ConsumerWidget {
                   ),
                   child: ListView(
                     padding: EdgeInsets.only(
-                      top: 8,
+                      top: 0,
                       bottom: 8 + NowPlayingOverlay.miniHeight +
                           MediaQuery.of(context).padding.bottom,
                     ),
@@ -122,36 +147,33 @@ class AboutPage extends ConsumerWidget {
 }
 
 // =====================================================================
-//  PAGE HEADER (кнопка «Назад» + заголовок в одну строку)
+//  КРУГЛАЯ КНОПКА 60×60
 // =====================================================================
 
-class _PageHeader extends StatelessWidget {
-  const _PageHeader({required this.title, required this.colors});
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+  });
 
-  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
   final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          if (Navigator.of(context).canPop()) ...[
-            CircleBackButton(colors: colors),
-            const SizedBox(width: 10),
-          ],
-          Text(
-            title,
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 28,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0,
-            ),
-          ),
-        ],
+    return Material(
+      color: colors.elevated,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 60,
+          height: 60,
+          child: Icon(icon, color: colors.textPrimary, size: 28),
+        ),
       ),
     );
   }
