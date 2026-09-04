@@ -226,30 +226,34 @@ class _CachePageState extends ConsumerState<CachePage> {
         backgroundColor: colors.background,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
+        toolbarHeight: 132,                       // ← было 134
         automaticallyImplyLeading: false,
-        // Назад показываем только когда страница реально открыта через
-        // Navigator.push (мобильные экраны, десктопный push из настроек).
-        // Когда CachePage встроена как раздел десктопного shell
-        // (DesktopShell → IndexedStack), она живёт на корневом маршруте,
-        // и Navigator.pop оставил бы приложение с пустым Navigator'ом
-        // (тёмный экран без UI) — поэтому кнопку прячем.
-        leading: Navigator.of(context).canPop()
-            ? IconButton(
-                icon: Icon(
-                  Icons.chevron_left_rounded,
-                  size: 28,
-                  color: colors.textPrimary,
+        titleSpacing: 0,
+        title: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 64, 16, 8), // ← было 16,16,16,8
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (Navigator.of(context).canPop())
+                _CircleButton(
+                  icon: Icons.chevron_left_rounded,
+                  onTap: () => Navigator.of(context).maybePop(),
+                  colors: colors,
                 ),
-                onPressed: () => Navigator.of(context).maybePop(),
-              )
-            : null,
-        title: Text(
-          'Cache',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 20,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0,
+              const SizedBox(height: 16),
+              Text(
+                'Cache',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 32,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0,
+                ),
+              ),
+              const SizedBox(height: 48), // ← добавить
+            ],
+            
           ),
         ),
         actions: [
@@ -269,7 +273,7 @@ class _CachePageState extends ConsumerState<CachePage> {
             ),
             child: ListView(
               padding: EdgeInsets.only(
-                top: 8,
+                top: 0,
                 bottom: 8 + MediaQuery.of(context).padding.bottom,
               ),
               children: [
@@ -578,3 +582,38 @@ class _LimitChip extends StatelessWidget {
     );
   }
 }
+
+// =====================================================================
+//  КРУГЛАЯ КНОПКА 60×60
+// =====================================================================
+
+class _CircleButton extends StatelessWidget {
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevated,
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 60,
+          height: 60,
+          child: Icon(icon, color: colors.textPrimary, size: 28),
+        ),
+      ),
+    );
+  }
+}
+
+

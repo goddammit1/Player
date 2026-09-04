@@ -230,34 +230,36 @@ class _QueueBody extends StatelessWidget {
       maxHeight,
     );
 
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: isDesktop ? 560 : double.infinity,
-        ),
-        child: Material(
-          color: colors.background,
-          clipBehavior: Clip.antiAlias,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          child: ClipRect(
-            child: OverflowBox(
-              alignment: Alignment.topCenter,
-              minHeight: contentHeight,
-              maxHeight: contentHeight,
-              child: SizedBox(
-                height: contentHeight,
-                child: Column(
-                  children: [
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onVerticalDragUpdate: (d) =>
-                          controller.drag(d.primaryDelta ?? 0, maxHeight),
-                      onVerticalDragEnd: (d) => controller.settle(
-                        d.primaryVelocity ?? 0,
-                        fromButton: false,
-                      ),
-                      child: Padding(
+    return GestureDetector(                 // ← ОДИН GestureDetector на всю шторку
+      behavior: HitTestBehavior.translucent,
+      onVerticalDragUpdate: (details) {
+        if (controller.isClosed) return;
+        controller.drag(details.delta.dy, maxHeight);
+      },
+      onVerticalDragEnd: (details) {
+        if (controller.isClosed) return;
+        controller.settle(details.primaryVelocity ?? 0, fromButton: false);
+      },
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: isDesktop ? 560 : double.infinity,
+          ),
+          child: Material(
+            color: colors.background,
+            clipBehavior: Clip.antiAlias,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            child: ClipRect(
+              child: OverflowBox(
+                alignment: Alignment.topCenter,
+                minHeight: contentHeight,
+                maxHeight: contentHeight,
+                child: SizedBox(
+                  height: contentHeight,
+                  child: Column(
+                    children: [
+                      Padding(              // ← убрали GestureDetector, оставили Padding
                         padding: EdgeInsets.only(top: topPad),
                         child: _Header(
                           player: player,
@@ -265,18 +267,18 @@ class _QueueBody extends StatelessWidget {
                           colors: colors,
                         ),
                       ),
-                    ),
-                    Expanded(
-                      child: _QueueList(
-                        vibrationEnabled: vibrationEnabled,
-                        controller: controller,
-                        player: player,
-                        bottomInset: bottomInset,
-                        maxHeight: maxHeight,
-                        colors: colors,
+                      Expanded(
+                        child: _QueueList(
+                          vibrationEnabled: vibrationEnabled,
+                          controller: controller,
+                          player: player,
+                          bottomInset: bottomInset,
+                          maxHeight: maxHeight,
+                          colors: colors,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -611,30 +613,24 @@ class _QueueListState extends State<_QueueList> {
         builder: (context, iSnap) {
           final current = iSnap.data ?? -1;
           final tracks = widget.player.trackQueue;
-          final all = tracks
-              .map(
-                (t) {
-                  final art = ArtworkHelper.resolveEffectiveArtwork(
-                    fallbackUrl: t.artworkUrl,
-                    trackId: t.id,
-                  );
-                  return MediaItem(
-                    id: t.globalId,
-                    title: t.title,
-                    artist: t.artist,
-                    duration: t.duration,
-                    artUri: art != null && art.isNotEmpty
-                        ? Uri.tryParse(art)
-                        : null,
-                    extras: {
-                      'sourceId': t.sourceId,
-                      'trackId': t.id,
-                      'originalArtworkUrl': t.artworkUrl,
-                    },
-                  );
-                },
-              )
-              .toList();
+          final all = tracks.map((t) {
+            final art = ArtworkHelper.resolveEffectiveArtwork(
+              fallbackUrl: t.artworkUrl,
+              trackId: t.id,
+            );
+            return MediaItem(
+              id: t.globalId,
+              title: t.title,
+              artist: t.artist,
+              duration: t.duration,
+              artUri: art != null && art.isNotEmpty ? Uri.tryParse(art) : null,
+              extras: {
+                'sourceId': t.sourceId,
+                'trackId': t.id,
+                'originalArtworkUrl': t.artworkUrl,
+              },
+            );
+          }).toList();
 
           if (current >= 0 && current != _lastCurrentIndex) {
             _lastCurrentIndex = current;
@@ -644,10 +640,13 @@ class _QueueListState extends State<_QueueList> {
           }
 
           if (all.isEmpty) {
-            return Center(
-              child: Text(
-                'Queue is empty',
-                style: TextStyle(color: widget.colors.textSecondary),
+            return SizedBox.expand(
+              // ← растянуть
+              child: Center(
+                child: Text(
+                  'Queue is empty',
+                  style: TextStyle(color: widget.colors.textSecondary),
+                ),
               ),
             );
           }
