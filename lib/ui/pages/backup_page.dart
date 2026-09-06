@@ -14,7 +14,6 @@ import '../../core/repositories/history_repository.dart';
 import '../../core/backup/playlist_backup.dart';
 import '../../core/repositories/playlist_repository.dart';
 import '../../core/providers.dart';
-import '../widgets/back_button.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
@@ -175,42 +174,6 @@ class BackupPage extends ConsumerWidget {
             ),
           ),
           if (!isDesktop) const NowPlayingOverlay(),
-        ],
-      ),
-    );
-  }
-}
-
-// =====================================================================
-//  PAGE HEADER (кнопка «Назад» + заголовок в одну строку)
-// =====================================================================
-
-class _PageHeader extends StatelessWidget {
-  const _PageHeader({required this.title, required this.colors});
-
-  final String title;
-  final AppColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          if (Navigator.of(context).canPop()) ...[
-            CircleBackButton(colors: colors),
-            const SizedBox(width: 10),
-          ],
-          Text(
-            title,
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 28,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0,
-            ),
-          ),
         ],
       ),
     );
