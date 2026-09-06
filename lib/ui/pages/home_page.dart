@@ -10,6 +10,7 @@ import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/playlist_reorder_scope.dart';
 import '../widgets/reorderable_playlist_card.dart';
+import '../widgets/add_playlist_dialog.dart';
 
 import 'history_page.dart';
 import 'playlist_page.dart';
@@ -575,7 +576,13 @@ class _AddNewCard extends ConsumerWidget {
                 ),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
-                  await _showCreateDialog(context, ref);
+                  final name = await showAddPlaylistDialog(context, ref);
+                  if (name == null || name.isEmpty) return;
+                  final p = ref.read(playlistRepositoryProvider).create(name);
+                  if (!context.mounted) return;
+                  Navigator.of(
+                    context,
+                  ).push(MaterialPageRoute(builder: (_) => PlaylistPage(playlistId: p.id)));
                 },
               ),
               ListTile(
@@ -662,67 +669,6 @@ class _AddNewCard extends ConsumerWidget {
         );
       },
     );
-  }
-
-  Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
-    final colors = ref.read(currentPaletteProvider);
-    final controller = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: colors.elevated,
-          title: Text(
-            'New playlist',
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            style: TextStyle(color: colors.textPrimary),
-            decoration: InputDecoration(
-              hintText: 'Name',
-              hintStyle: TextStyle(color: colors.textTertiary),
-              filled: true,
-              fillColor: colors.background,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: colors.outline),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: colors.outline),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: colors.textPrimary),
-              ),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 12,
-              ),
-            ),
-            onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-              child: const Text('Create'),
-            ),
-          ],
-        );
-      },
-    );
-    if (name == null) return;
-    final p = ref.read(playlistRepositoryProvider).create(name);
-    if (!context.mounted) return;
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => PlaylistPage(playlistId: p.id)));
   }
 }
 
