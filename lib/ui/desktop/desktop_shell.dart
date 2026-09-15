@@ -1,17 +1,4 @@
 // lib/ui/desktop/desktop_shell.dart
-//
-// Десктопный каркас (Windows/Linux/macOS): классическая раскладка —
-// боковая панель разделов слева, контентная область по центру, панель
-// плеера снизу (см. DesktopPlayerBar).
-//
-// Корень приложения переключается в lib/main.dart по [isDesktop]:
-// мобильный UI (Android/iOS) при этом не затрагивается.
-//
-// Разделы рендерятся в IndexedStack — состояние каждого сохраняется при
-// переключении. Внутренняя навигация (например, открытие плейлиста)
-// использует собственный стек контента [_contentStack] вместо
-// Navigator.push — так плейлист открывается внутри окна, а не поверх
-// всей раскладки.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,24 +14,16 @@ import 'desktop_home_page.dart';
 import 'desktop_top_bar.dart';
 import 'queue_panel.dart';
 
-/// Разделы боковой панели. Добавление нового раздела = новая константа
-/// здесь + виджет в IndexedStack в [_DesktopShellState.build].
-///
-/// В ТЗ в левой панели остаются только Playlists / History / Settings.
-/// Поиск (Search) перенесён в верхнюю строку TopBar, а Cache доступен из
-/// настроек (см. _CacheTile в settings_page.dart).
 enum DesktopSection {
   playlists('Playlists', Icons.library_music_rounded),
   history('History', Icons.history_rounded),
   settings('Settings', Icons.settings_rounded);
 
   const DesktopSection(this.label, this.icon);
-
   final String label;
   final IconData icon;
 }
 
-/// Корневой виджет десктопного приложения.
 class DesktopShell extends ConsumerStatefulWidget {
   const DesktopShell({super.key});
 
@@ -54,10 +33,6 @@ class DesktopShell extends ConsumerStatefulWidget {
 
 class _DesktopShellState extends ConsumerState<DesktopShell> {
   DesktopSection _section = DesktopSection.playlists;
-
-  /// Стек открытых «страниц» внутри контентной области. Пока пуст —
-  /// показывается IndexedStack разделов; иначе поверх — последний элемент
-  /// (например, PlaylistPage).
   final List<Widget> _contentStack = [];
 
   void _openPlaylist(String playlistId) {
@@ -72,8 +47,6 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
     setState(() => _contentStack.removeLast());
   }
 
-  /// Очищает активный поисковый запрос — верхняя строка пустеет, а контент
-  /// возвращается к выбранному разделу / открытому плейлисту.
   void _clearSearch() {
     ref.read(searchProvider.notifier).search('');
   }
@@ -82,18 +55,15 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
     if (section == _section) return;
     setState(() {
       _section = section;
-      // При смене раздела закрываем открытые вложенные страницы.
       _contentStack.clear();
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    // Подписка на динамическую палитру
     final colors = ref.watch(animatedPaletteProvider);
 
-    // Поиск больше не открывается через push страницы: верхняя строка пишет
-    // в searchProvider, и как только запрос непустой — контентная область
-    // показывает результаты поиска (SearchPage без собственной строки ввода).
     final searchQuery = ref.watch(searchProvider).query.trim();
     final bool isSearching = searchQuery.isNotEmpty;
 
@@ -106,83 +76,71 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
     } else if (_contentStack.isEmpty) {
       content = IndexedStack(
         index: _section.index,
-        children: [ // по порядку enum DesktopSection
-          DesktopHomePage(onOpenPlaylist: _openPlaylist), // playlists
-          const HistoryPage(showNowPlayingOverlay: false), // history
-          const SettingsPage(), // settings
+        children: [
+          DesktopHomePage(onOpenPlaylist: _openPlaylist),
+          const HistoryPage(showNowPlayingOverlay: false),
+          const SettingsPage(),
         ],
       );
     } else {
       content = _contentStack.last;
     }
 
-    // Правая колонка «Queue/Track» на узких окнах скрывается, чтобы контент
-    // не сжимался. Вариант B — показывать всегда (раскомментируй ниже):
-    //   final bool showQueue = true;
-    final bool showQueue =
-        MediaQuery.sizeOf(context).width >= _queuePanelMinScreenWidth;
+    final bool showQueue = MediaQuery.sizeOf(context).width >= 960;
 
     return Scaffold(
       backgroundColor: colors.background,
-      body: Column(
-        children: [
-          // Зона 1 — верхняя панель (логотип + строка поиска).
-          const DesktopTopBar(),
-          // Зона 5 — нижний плеер-бар остаётся ВНЕ shell (рисует
-          // _DesktopFrame в lib/main.dart). Когда интеграция FloatingPanel
-          // будет готова, панель перенесут внутрь, например так:
-          //   SizedBox(
-          //     height: Dimens.playerBarHeight,
-          //     child: FloatingPanel(child: DesktopPlayerBar()),
-          //   ),
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Зона 2 — левая навигация в «плавающей» панели.
-                FloatingPanel(
-                  padding: EdgeInsets.zero,
-                  child: _NavRail(
-                    selected: _section,
-                    onSelect: _selectSection,
-                    colors: colors,
-                    // «Назад»: сбрасываем поиск, если он активен; иначе
-                    // закрываем открытый плейлист.
-                    showBack: isSearching || _contentStack.isNotEmpty,
-                    onBack: isSearching ? _clearSearch : _closeContent,
+      body: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          Dimens.gap,
+          Dimens.gap,
+          Dimens.gap,
+          0,
+        ),
+        child: Column(
+          children: [
+            // 1. Верхний бар
+            const DesktopTopBar(),
+            const SizedBox(height: Dimens.gap),
+            // 2. Центральная область: сайдбар + контент + очередь
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(
+                    width: Dimens.navRailWidth,
+                    child: _CompactNavRail(
+                      selected: _section,
+                      onSelect: _selectSection,
+                      colors: colors,
+                      showBack: isSearching || _contentStack.isNotEmpty,
+                      onBack: isSearching ? _clearSearch : _closeContent,
+                    ),
                   ),
-                ),
-                // Зазор между левой панелью и контентом.
-                const SizedBox(width: Dimens.gap),
-                // Зона 3 — центральный контент в «плавающей» панели.
-                Expanded(
-                  child: FloatingPanel(
-                    padding: EdgeInsets.zero,
-                    child: content,
-                  ),
-                ),
-                if (showQueue) ...[
-                  // Зазор между контентом и правой колонкой.
                   const SizedBox(width: Dimens.gap),
-                  // Зона 4 — правая колонка «Queue/Track».
-                  const QueuePanel(),
+                  Expanded(
+                    child: FloatingPanel(
+                      padding: EdgeInsets.zero,
+                      child: content,
+                    ),
+                  ),
+                  if (showQueue) ...[
+                    const SizedBox(width: Dimens.gap),
+                    const QueuePanel(width: Dimens.queuePanelWidth),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
-
-  /// Минимальная ширина окна, при которой показывается правая колонка
-  /// «Queue/Track» (ниже — скрывается, контент растягивается).
-  static const double _queuePanelMinScreenWidth = 1000;
 }
 
-/// Боковая панель навигации (классика: иконка + подпись, всегда раскрыта).
-class _NavRail extends StatelessWidget {
-  const _NavRail({
+/// Компактная вертикальная навигация
+class _CompactNavRail extends StatelessWidget {
+  const _CompactNavRail({
     required this.selected,
     required this.onSelect,
     required this.colors,
@@ -198,85 +156,37 @@ class _NavRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Цвет подложки задаёт внешняя FloatingPanel (desktop_shell.dart);
-    // здесь — прозрачный, чтобы панель скругляла углы навигации.
-    return Container(
-      width: 220,
-      color: Colors.transparent,
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Логотип / название приложения.
+    return Column(
+      children: [
+        if (showBack)
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-            child: Row(
-              children: [
-                Icon(Icons.music_note_rounded,
-                    color: colors.textPrimary, size: 24),
-                const SizedBox(width: 10),
-                Text(
-                  'Player',
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
+            padding: const EdgeInsets.only(bottom: 12),
+            child: IconButton(
+              icon: Icon(
+                Icons.arrow_back_rounded,
+                color: colors.textPrimary,
+                size: 24,
+              ),
+              onPressed: onBack,
             ),
           ),
-          // Кнопка «назад» — показывается, когда открыта вложенная
-          // страница (плейлист). Десктопный аналог AppBar-leading.
-          if (showBack)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-              child: Material(
-                color: Colors.transparent,
-                borderRadius: BorderRadius.circular(12),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: onBack,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 11,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.arrow_back_rounded,
-                            color: colors.textPrimary, size: 22),
-                        const SizedBox(width: 12),
-                        Text(
-                          'Back',
-                          style: TextStyle(
-                            color: colors.textPrimary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          for (final s in DesktopSection.values)
-            _NavItem(
-              section: s,
-              selected: s == selected,
-              colors: colors,
-              onTap: () => onSelect(s),
-            ),
-          const Spacer(),
-        ],
-      ),
+        for (final s in DesktopSection.values)
+          _CompactNavItem(
+            key: ValueKey('nav_item_${s.name}'),
+            section: s,
+            selected: s == selected,
+            colors: colors,
+            onTap: () => onSelect(s),
+          ),
+      ],
     );
   }
 }
 
-class _NavItem extends StatelessWidget {
-  const _NavItem({
+/// Элемент навигации с динамическими цветами и анимациями
+class _CompactNavItem extends StatefulWidget {
+  const _CompactNavItem({
+    super.key,
     required this.section,
     required this.selected,
     required this.colors,
@@ -289,32 +199,160 @@ class _NavItem extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_CompactNavItem> createState() => _CompactNavItemState();
+}
+
+class _CompactNavItemState extends State<_CompactNavItem>
+    with SingleTickerProviderStateMixin {
+  bool _isHovered = false;
+  bool _isPressed = false;
+
+  late final AnimationController _selectAnimController;
+  late final Animation<double> _pillWidthAnim;
+  late final Animation<double> _selectOpacityAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 240),
+      value: widget.selected ? 1.0 : 0.0,
+    );
+
+    // Раскрытие selected пилюли от 32px до 56px
+    _pillWidthAnim = Tween<double>(begin: 32.0, end: 56.0).animate(
+      CurvedAnimation(
+        parent: _selectAnimController,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      ),
+    );
+
+    // Плавное появление непрозрачности selected слоя
+    _selectOpacityAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _selectAnimController,
+        curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
+        reverseCurve: const Interval(0.0, 1.0, curve: Curves.easeIn),
+      ),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _CompactNavItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.selected && widget.selected) {
+      _selectAnimController.forward(from: 0.0);
+    } else if (oldWidget.selected && !widget.selected) {
+      _selectAnimController.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _selectAnimController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final fg = selected ? colors.textPrimary : colors.textSecondary;
+    // Цвета берутся из переданной динамической темы
+    final selectedColor = widget.colors.elevatedHi;
+    final hoverColor = selectedColor.withValues(alpha: 0.30);
+
+    // Иконка масштабируется на 10% при наведении, при зажатии возвращается к 1.0
+    final double iconScale = (_isHovered && !_isPressed) ? 1.10 : 1.0;
+
+    final Color foregroundColor = widget.selected || _isHovered
+        ? widget.colors.textPrimary
+        : widget.colors.textSecondary;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-      child: Material(
-        color: selected ? colors.outline : Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-            child: Row(
-              children: [
-                Icon(section.icon, color: fg, size: 22),
-                const SizedBox(width: 12),
-                Text(
-                  section.label,
-                  style: TextStyle(
-                    color: fg,
-                    fontSize: 14,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  ),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() {
+          _isHovered = false;
+          _isPressed = false;
+        }),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (_) => setState(() => _isPressed = true),
+          onTapUp: (_) => setState(() => _isPressed = false),
+          onTapCancel: () => setState(() => _isPressed = false),
+          onTap: widget.onTap,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 56,
+                height: 32,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // 1. Слой Hover-пилюли (56x32px, 50% прозрачности от elevatedHi)
+                    AnimatedOpacity(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      opacity: _isHovered ? 1.0 : 0.0,
+                      child: Container(
+                        width: 56,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: hoverColor,
+                          borderRadius: BorderRadius.circular(Dimens.radiusPill),
+                        ),
+                      ),
+                    ),
+
+                    // 2. Слой Selected-пилюли (раскрывается от 32x32px до 56x32px поверх hover)
+                    AnimatedBuilder(
+                      animation: _selectAnimController,
+                      builder: (context, child) {
+                        if (_selectOpacityAnim.value == 0.0) {
+                          return const SizedBox.shrink();
+                        }
+                        return Opacity(
+                          opacity: _selectOpacityAnim.value,
+                          child: Container(
+                            width: _pillWidthAnim.value,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: selectedColor,
+                              borderRadius: BorderRadius.circular(Dimens.radiusPill),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
+                    // 3. Иконка с анимацией масштаба (hover -> 1.14, press -> 1.0)
+                    AnimatedScale(
+                      scale: iconScale,
+                      duration: const Duration(milliseconds: 140),
+                      curve: Curves.easeOutCubic,
+                      child: Icon(
+                        widget.section.icon,
+                        color: foregroundColor,
+                        size: 22,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 6),
+              // Подпись под иконкой
+              Text(
+                widget.section.label,
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontSize: 12,
+                  fontWeight: widget.selected ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ],
           ),
         ),
       ),

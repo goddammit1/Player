@@ -19,12 +19,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import 'design/dimens.dart';
 import 'desktop_player_bar.dart';
 
-/// Десктопная рамка вокруг содержимого MaterialApp.
-///
-/// [child] — Navigator с текущим маршрутом (передаётся из
-/// `MaterialApp.builder`).
 class DesktopFrame extends ConsumerWidget {
   const DesktopFrame({super.key, required this.child});
 
@@ -32,20 +29,29 @@ class DesktopFrame extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Динамическая палитра: фон вокруг плеера подстраивается под тему,
+    // чёрная кайма вокруг островка исчезает.
     final colors = ref.watch(animatedPaletteProvider);
+
     return Material(
-      color: colors.background,
+      color: colors.background, // вместо Colors.black
       child: Column(
         children: [
           Expanded(child: child ?? const SizedBox.shrink()),
-          SizedBox(
-            height: DesktopPlayerBar.height,
-            child: Overlay(
-              initialEntries: [
-                // DesktopPlayerBar сам читает провайдеры, поэтому закрытие
-                // entry не устаревает при смене палитры.
-                OverlayEntry(builder: (_) => const DesktopPlayerBar()),
-              ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              Dimens.gap,
+              Dimens.gap,
+              Dimens.gap,
+              Dimens.gap,
+            ),
+            child: SizedBox(
+              height: DesktopPlayerBar.height,
+              child: Overlay(
+                initialEntries: [
+                  OverlayEntry(builder: (_) => const DesktopPlayerBar()),
+                ],
+              ),
             ),
           ),
         ],
