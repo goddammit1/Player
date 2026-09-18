@@ -216,11 +216,11 @@ void main() {
     expect(tester.takeException(), isNull);
 
     // Р’РєР»Р°РґРєР° РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ вЂ” В«QueueВ» в†’ Р·Р°РіР»СѓС€РєР° В«Queue emptyВ».
-    expect(find.text('Queue empty'), findsOneWidget);
+    expect(find.text('Queue is empty'), findsOneWidget);
     expect(find.text('No track'), findsNothing);
   });
 
-  testWidgets('non-empty queue shows active track with eq-graphic indicator',
+  testWidgets('non-empty queue highlights current track without tap target',
       (tester) async {
     final player = _FakePlayer(
       queue: [
@@ -243,7 +243,23 @@ void main() {
     expect(tester.takeException(), isNull);
 
     // РђРєС‚РёРІРЅС‹Р№ (РёРЅРґРµРєСЃ 0) С‚СЂРµРє РїРѕРґСЃРІРµС‡РµРЅ РёРЅРґРёРєР°С‚РѕСЂРѕРј В«РёРіСЂР°РµС‚В».
-    expect(find.byIcon(Icons.graphic_eq_rounded), findsOneWidget);
+    // Current track (index 0) is highlighted with a colored Container and has
+    // NO InkWell (not tappable); the rest of the queue items are tappable.
+    expect(
+      find.ancestor(
+        of: find.text('Active Track'),
+        matching: find.byType(InkWell),
+      ),
+      findsNothing,
+      reason: 'current track must not be tappable',
+    );
+    expect(
+      find.ancestor(
+        of: find.text('Queued Track'),
+        matching: find.byType(InkWell),
+      ),
+      findsOneWidget,
+    );
 
     // РћР±Р° Р·Р°РіРѕР»РѕРІРєР° Рё РёСЃРїРѕР»РЅРёС‚РµР»Рё РІРёРґРЅС‹.
     expect(find.text('Active Track'), findsOneWidget);

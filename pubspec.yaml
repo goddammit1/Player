@@ -59,6 +59,7 @@ dependencies:
 
   # --- Permissions / offline ---
   permission_handler: ^11.3.1
+  flutter_local_notifications: ^18.0.1
 
   # --- Десктопный SQLite (Windows/Linux) ---
   sqflite_common_ffi: ^2.4.0+3

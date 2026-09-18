@@ -29,6 +29,7 @@ import 'package:player/models/track.dart';
 import 'package:player/sources/source_registry.dart';
 import 'package:player/sources/track_source.dart';
 import 'package:player/ui/desktop/desktop_shell.dart';
+import 'package:player/ui/desktop/desktop_top_bar.dart';
 import 'package:player/ui/pages/search_page.dart';
 
 import '../setup/test_harness.dart';
@@ -265,8 +266,14 @@ void main() {
     expect(find.text('Found Song One'), findsOneWidget);
 
     // 4) РћС‡РёСЃС‚РєР° РІРѕР·РІСЂР°С‰Р°РµС‚ РєРѕРЅС‚РµРЅС‚ Рє СЂР°Р·РґРµР»Сѓ РїР»РµР№Р»РёСЃС‚РѕРІ.
-    await tester.tap(find.byTooltip('Clear'));
+    // Clear button is a custom _ClearButton without Tooltip: locate its icon
+    // inside the top bar.
+    await tester.tap(find.descendant(
+      of: find.byType(DesktopTopBar),
+      matching: find.byIcon(Icons.close_rounded),
+    ));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 450));
     expect(find.byType(SearchPage), findsNothing);
   });
 }

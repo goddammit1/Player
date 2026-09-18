@@ -392,6 +392,7 @@ class _TimelineSliderState extends State<_TimelineSlider> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: _PlayerSlider(
+                    key: const Key('seek_slider'),
                     value: value,
                     colors: widget.colors,
                     onChanged: known
@@ -435,7 +436,7 @@ class _TimelineSliderState extends State<_TimelineSlider> {
   }
 
   String _fmt(Duration? d) {
-    if (d == null) return '00:00';
+    if (d == null) return '--:--';
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
     return '$m:$s';
@@ -579,6 +580,7 @@ class _VolumeSliderState extends State<_VolumeSlider> {
 
 class _PlayerSlider extends StatefulWidget {
   const _PlayerSlider({
+    super.key,
     this.width,
     required this.value,
     required this.colors,
