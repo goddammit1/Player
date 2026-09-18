@@ -49,6 +49,15 @@ if (-not $apksigner) {
 
 Push-Location $root
 try {
+    Write-Host 'Release build diagnostics:' -ForegroundColor Cyan
+    Write-Host "  Flutter: $((Get-Command flutter -ErrorAction SilentlyContinue).Source)"
+    Write-Host "  Java: $((Get-Command java -ErrorAction SilentlyContinue).Source)"
+    Write-Host "  env.json: $envFile"
+    Write-Host "  key.properties: $keyprops"
+    Write-Host "  keystore: $keystore"
+    Write-Host "  apksigner: $apksigner"
+    Write-Host ''
+
     flutter build apk --release --dart-define-from-file=env.json @args
     if ($LASTEXITCODE -ne 0) {
         Write-Error "flutter build apk failed with exit code $LASTEXITCODE"

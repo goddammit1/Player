@@ -24,6 +24,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -78,6 +79,9 @@ flutter {
 }
 
 dependencies {
+    // Required by flutter_local_notifications for Java 8+ core library APIs.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
     // VolumeProviderCompat + MediaSessionCompat для remote volume
     // (управление громкостью в фоне и на локскрине через MediaSession).
     implementation("androidx.media:media:1.7.0")

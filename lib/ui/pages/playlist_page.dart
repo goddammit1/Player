@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:dio/dio.dart' show CancelToken;
@@ -5,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/backup/playlist_backup.dart';
+import '../../core/playlist_cache_controller.dart';
 import '../../core/playlist_cache_service.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
@@ -365,6 +367,14 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
   Future<void> _cacheAllTracks(BuildContext context, Playlist p) async {
     if (p.tracks.isEmpty) {
       showSnack(context, 'Nothing to cache');
+      return;
+    }
+
+    if (Platform.isAndroid) {
+      final started = await ref.read(playlistCacheControllerProvider.notifier).start(p.name, p.tracks);
+      if (!started && mounted && context.mounted) {
+        showSnack(context, 'Caching is already running');
+      }
       return;
     }
 

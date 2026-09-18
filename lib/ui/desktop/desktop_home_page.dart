@@ -216,7 +216,7 @@ class _PlaylistCardState extends State<_PlaylistCard> {
         ),
       ],
     ).then((v) {
-      if (!mounted || v == null) return;
+      if (!mounted || v == null || !context.mounted) return;
       if (v == 'rename') {
         _showRenameDialog(context, widget.playlist, widget.colors);
       } else if (v == 'delete') {

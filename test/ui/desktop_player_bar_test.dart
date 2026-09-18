@@ -206,9 +206,14 @@ void main() {
     // Никаких исключений (в т.ч. overflow) — тест упадёт, если FlutterError
     // зарепортит проблему во время отрисовки панели.
 
-    final slider = tester.widget<Slider>(find.byKey(const Key('seek_slider')));
-    expect(slider.onChanged, isNull, reason: 'слайдер должен быть disabled');
-    expect(slider.value, 0.0);
+    // Кастомный _PlayerSlider: «disabled» = не установлены обработчики жестов.
+    final slider = find.byKey(const Key('seek_slider'));
+    expect(slider, findsOneWidget);
+    final gesture = tester.widget<GestureDetector>(
+      find.descendant(of: slider, matching: find.byType(GestureDetector)),
+    );
+    expect(gesture.onTapDown, isNull, reason: 'слайдер должен быть disabled');
+    expect(gesture.onHorizontalDragStart, isNull);
 
     // Честные метки времени вместо «00:00 / 00:00».
     expect(find.text('--:--'), findsNWidgets(2));
@@ -223,9 +228,14 @@ void main() {
     await tester.pumpWidget(_wrap(_FakePlayer(duration: dur)));
     await tester.pumpAndSettle();
 
-    final slider = tester.widget<Slider>(find.byKey(const Key('seek_slider')));
-    expect(slider.onChanged, isNotNull, reason: 'слайдер должен быть активен');
-    expect(slider.max, closeTo(214000, 1));
+    final gesture = tester.widget<GestureDetector>(
+      find.descendant(
+        of: find.byKey(const Key('seek_slider')),
+        matching: find.byType(GestureDetector),
+      ),
+    );
+    expect(gesture.onTapDown, isNotNull, reason: 'слайдер должен быть активен');
+    expect(gesture.onHorizontalDragStart, isNotNull);
 
     expect(find.text('00:00'), findsOneWidget);
     expect(find.text('03:34'), findsOneWidget);
@@ -275,6 +285,11 @@ void main() {
     // До фикса падал здесь: «No Material widget found» и «No Overlay widget
     // found» (Slider), «No Overlay» (Tooltip) + overflow на 99929px.
     expect(tester.takeException(), isNull);
-    expect(find.byType(IconButton), findsAtLeastNWidgets(4));
+    // Кнопки панели теперь кастомные (_BarIconButton), а не IconButton.
+    // Проверяем иконки управляющих кнопок, не зависящие от состояния плеера:
+    expect(find.byIcon(Icons.playlist_add_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.shuffle_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.skip_previous_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.skip_next_rounded), findsOneWidget);
   });
 }

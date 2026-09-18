@@ -18,6 +18,7 @@ import 'core/repositories/playlist_repository.dart';
 import 'core/providers.dart';
 import 'core/youtube_cache.dart';
 import 'sources/source_registry.dart';
+import 'core/notifications/playlist_cache_notifier.dart';
 import 'ui/desktop/desktop_frame.dart' show DesktopFrame;
 import 'ui/desktop/desktop_shell.dart';
 import 'ui/pages/home_page.dart';
@@ -97,6 +98,10 @@ Future<void> main() async {
       };
 
       SourceRegistry.instance.registerDefaults();
+
+      if (Platform.isAndroid) {
+        await AndroidPlaylistCacheNotifier().init();
+      }
 
       // === ИНИЦИАЛИЗАЦИЯ ПЛЕЕРА (платформозависимость вынесена) ===
       // Выбор PlayerService (mobile: audio_service) vs DesktopPlayerService

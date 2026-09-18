@@ -208,7 +208,7 @@ class _QueueList extends ConsumerWidget {
             return _QueueTileItem(
               artworkUrl: t.artworkUrl,
               title: t.title,
-              artist: t.artist ?? '',
+              artist: t.artist,
               duration: t.duration,
               isCurrent: isCurrent,
               colors: colors,
