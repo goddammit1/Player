@@ -20,6 +20,7 @@ import '../widgets/playlist_cache_progress_sheet.dart';
 import '../widgets/snack.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';
+import '../widgets/app_dialogs.dart';
 import '../../core/platform/haptic_helper.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -437,65 +438,24 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
     required String title,
     required String body,
   }) {
-    showDialog<void>(
+    showAppInfoDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        actions: [
-          TextButton(
-            onPressed: () {
-              HapticHelper.light(ref: ref);
-              Navigator.of(ctx).pop();
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
+      title: title,
+      subtitle: body,
+      okLabel: 'Got it',
     );
   }
 
   Future<void> _askRename(BuildContext context, Playlist p) async {
-    final colors = ref.read(currentPaletteProvider);
-    final controller = TextEditingController(text: p.name);
-    final name = await showDialog<String>(
+    final name = await showAppInputDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: colors.elevated,
-        title: Text(
-          'Rename playlist',
-          style: TextStyle(color: colors.textPrimary),
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: TextStyle(color: colors.textPrimary),
-          decoration: InputDecoration(
-            hintText: 'Name',
-            hintStyle: TextStyle(color: colors.textTertiary),
-            border: InputBorder.none,
-          ),
-          onSubmitted: (v) {
-            HapticHelper.success(ref: ref);
-            Navigator.of(ctx).pop(v.trim());
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              HapticHelper.light(ref: ref);
-              Navigator.of(ctx).pop();
-            },
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              HapticHelper.success(ref: ref);
-              Navigator.of(ctx).pop(controller.text.trim());
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
+      title: 'Rename Playlist',
+      subtitle: 'Choose a new title for this collection',
+      initialValue: p.name,
+      hintText: 'Playlist name...',
+      confirmLabel: 'Save',
     );
+
     if (name != null && name.isNotEmpty) {
       ref.read(playlistRepositoryProvider).rename(p.id, name);
     }

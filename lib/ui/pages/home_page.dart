@@ -4,13 +4,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/backup/playlist_backup.dart';
 import '../../core/providers.dart';
+import '../../core/platform/haptic_helper.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/playlist_reorder_scope.dart';
 import '../widgets/reorderable_playlist_card.dart';
-import '../widgets/add_playlist_dialog.dart';
+import '../widgets/app_dialogs.dart';
+
+
 
 import 'history_page.dart';
 import 'playlist_page.dart';
@@ -616,29 +619,32 @@ class _AddNewCard extends ConsumerWidget {
       );
     } catch (e) {
       if (!context.mounted) return;
-      _showInfo(context, ref, title: 'Import failed', body: e.toString());
+      HapticHelper.error(ref: ref);
+      _showInfo(context, title: 'Import failed', body: e.toString());
       return;
     }
 
     final path = picked?.files.single.path;
-    if (path == null) return; // отмена
+    if (path == null) return; // отмена выбора
 
     if (!context.mounted) return;
 
     try {
       final result = await PlaylistBackup.importFromFile(path);
       if (!context.mounted) return;
+
+      HapticHelper.success(ref: ref);
       _showInfo(
         context,
-        ref,
         title: 'Import complete',
         body: 'Added: ${result.added}',
       );
     } catch (e) {
       if (!context.mounted) return;
+
+      HapticHelper.error(ref: ref);
       _showInfo(
         context,
-        ref,
         title: 'Import failed',
         body: e is FormatException ? e.message : e.toString(),
       );
@@ -646,28 +652,15 @@ class _AddNewCard extends ConsumerWidget {
   }
 
   void _showInfo(
-    BuildContext context,
-    WidgetRef ref, {
+    BuildContext context, {
     required String title,
     required String body,
   }) {
-    final colors = ref.read(currentPaletteProvider);
-
-    showDialog<void>(
+    showAppInfoDialog(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: colors.elevated,
-          title: Text(title, style: TextStyle(color: colors.textPrimary)),
-          content: Text(body, style: TextStyle(color: colors.textSecondary)),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
+      title: title,
+      subtitle: body,
+      okLabel: 'OK',
     );
   }
 }
