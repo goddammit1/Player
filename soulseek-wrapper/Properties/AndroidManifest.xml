@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="soulseek.wrapper">
+    <!-- Library manifest: no android:label on <application> to avoid
+         manifest-merger conflicts with the host app. -->
+</manifest>

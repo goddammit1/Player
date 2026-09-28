@@ -1,0 +1,153 @@
+﻿// <copyright file="File.cs" company="JP Dillingham">
+//     Copyright (c) JP Dillingham.
+//
+//     Copyright (c) 2021-2026 Jack Bonadies
+//     Modified: added Latin-1 decoding flags for filename and folder
+//
+//     This program is free software: you can redistribute it and/or modify
+//     it under the terms of the GNU General Public License as published by
+//     the Free Software Foundation, version 3.
+//
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//     GNU General Public License for more details.
+//
+//     You should have received a copy of the GNU General Public License
+//     along with this program.  If not, see https://www.gnu.org/licenses/.
+//
+//     This program is distributed with Additional Terms pursuant to Section 7
+//     of the GPLv3.  See the LICENSE file in the root directory of this
+//     project for the complete terms and conditions.
+//
+//     SPDX-FileCopyrightText: JP Dillingham
+//     SPDX-License-Identifier: GPL-3.0-only
+// </copyright>
+
+namespace Soulseek
+{
+    using System.Collections.Generic;
+    using System.Linq;
+
+    /// <summary>
+    ///     A file within search and browse results.
+    /// </summary>
+    public class File
+    {
+        /// <summary>
+        ///     Initializes a new instance of the <see cref="File"/> class.
+        /// </summary>
+        /// <param name="code">The file code.</param>
+        /// <param name="filename">The file name.</param>
+        /// <param name="size">The file size in bytes.</param>
+        /// <param name="extension">The file extension.</param>
+        /// <param name="attributeList">The optional list of <see cref="FileAttribute"/> s.</param>
+        /// <param name="isLatin1Decoded">Whether the filename was decoded as ISO-8859-1 rather than UTF-8.</param>
+        /// <param name="isDirectoryLatin1Decoded">Whether the directory portion of the name was decoded as ISO-8859-1.</param>
+        public File(int code, string filename, long size, string extension, IEnumerable<FileAttribute> attributeList = null, bool isLatin1Decoded = false, bool isDirectoryLatin1Decoded = false)
+        {
+            Code = code;
+            Filename = filename;
+            Size = size;
+            Extension = extension;
+
+            Attributes = (attributeList?.ToList() ?? new List<FileAttribute>()).AsReadOnly();
+            AttributeCount = Attributes.Count;
+            IsLatin1Decoded = isLatin1Decoded;
+            IsDirectoryLatin1Decoded = isDirectoryLatin1Decoded;
+
+            foreach (var attribute in Attributes)
+            {
+                switch (attribute.Type)
+                {
+                    case FileAttributeType.BitDepth:
+                        BitDepth = attribute.Value;
+                        break;
+                    case FileAttributeType.BitRate:
+                        BitRate = attribute.Value;
+                        break;
+                    case FileAttributeType.VariableBitRate:
+                        IsVariableBitRate = attribute.Value != 0;
+                        break;
+                    case FileAttributeType.Length:
+                        Length = attribute.Value;
+                        break;
+                    case FileAttributeType.SampleRate:
+                        SampleRate = attribute.Value;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        /// <summary>
+        ///     Gets the number of file <see cref="FileAttribute"/> s.
+        /// </summary>
+        public int AttributeCount { get; }
+
+        /// <summary>
+        ///     Gets the file attributes.
+        /// </summary>
+        public IReadOnlyCollection<FileAttribute> Attributes { get; }
+
+        /// <summary>
+        ///     Gets the value of the <see cref="FileAttributeType.BitDepth"/> attribute.
+        /// </summary>
+        public int? BitDepth { get; }
+
+        /// <summary>
+        ///     Gets the value of the <see cref="FileAttributeType.BitRate"/> attribute.
+        /// </summary>
+        public int? BitRate { get; }
+
+        /// <summary>
+        ///     Gets a value indicating whether the filename was decoded as ISO-8859-1 rather than UTF-8.
+        /// </summary>
+        public bool IsLatin1Decoded { get; }
+
+        /// <summary>
+        ///     Gets a value indicating whether the directory portion of the name was decoded as ISO-8859-1.  If false,
+        ///     either it was not, or it is not known here and <see cref="Directory.DecodedViaLatin1"/> must be consulted.
+        /// </summary>
+        public bool IsDirectoryLatin1Decoded { get; }
+
+        /// <summary>
+        ///     Gets the file code.
+        /// </summary>
+        public int Code { get; }
+
+        /// <summary>
+        ///     Gets the file extension.
+        /// </summary>
+        public string Extension { get; }
+
+        /// <summary>
+        ///     Gets the file name.
+        ///     This will be decoded as the fullname including directory if from search response.
+        ///     This will be decoded as just the filename if from browse response.
+        /// </summary>
+        public string Filename { get; }
+
+        /// <summary>
+        ///     Gets a value indicating whether the <see cref="FileAttributeType.VariableBitRate"/> attribute value indicates a
+        ///     file with a variable bit rate.
+        /// </summary>
+        public bool? IsVariableBitRate { get; }
+
+        /// <summary>
+        ///     Gets the value of the <see cref="FileAttributeType.Length"/> attribute.
+        /// </summary>
+        public int? Length { get; }
+
+        /// <summary>
+        ///     Gets the value of the <see cref="FileAttributeType.SampleRate"/> attribute.
+        /// </summary>
+        public int? SampleRate { get; }
+
+        /// <summary>
+        ///     Gets the file size in bytes.
+        /// </summary>
+        public long Size { get; }
+    }
+}

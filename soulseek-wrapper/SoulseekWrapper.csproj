@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- .NET Android class library; компилируется в AAR, вызываемый из Kotlin через JNI. -->
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>21.0</SupportedOSPlatformVersion>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Soulseek.Wrapper</RootNamespace>
+    <AssemblyName>soulseek-wrapper</AssemblyName>
+    <LangVersion>latest</LangVersion>
+
+    <!-- ACW (Android Callable Wrappers) из [Register] генерируются только при
+         AndroidApplication=true. Для class library это отключено по умолчанию
+         (см. Microsoft.Android.Sdk.BuildOrder.targets: _GenerateJavaStubs
+         включается только при AndroidApplication=='True'). Включаем принудительно,
+         чтобы Java-обёртки SoulseekBridge/ISoulseekEventSink попали в AAR. -->
+    <AndroidApplication>true</AndroidApplication>
+    <GenerateApplicationManifest>false</GenerateApplicationManifest>
+
+    <!-- AOT и trim — основано на подтверждённых настройках SeekerAndroid.
+         PublishTrimted=true + r8 + Profiled AOT подтверждены собираемыми.
+         Временно отключены для отладки генерации ACW. -->
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
+    <AndroidLinkTool>r8</AndroidLinkTool>
+    <PublishTrimmed>false</PublishTrimmed>
+    <AndroidLinkMode>None</AndroidLinkMode>
+    <TrimMode>partial</TrimMode>
+
+    <!-- AAR output -->
+    <AndroidPackageFormat>aar</AndroidPackageFormat>
+
+    <!-- Подавляем предупреждения платформенной совместимости и недокументированных членов. -->
+    <NoWarn>1701;1702;1591;CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Soulseek.NET как включённый проект (не NuGet).
+         netstandard2.0 совместим с net9.0-android. -->
+    <ProjectReference Include="Soulseek.NET\Soulseek.NET.csproj" />
+  </ItemGroup>
+
+  <!-- .NET Android class library SDK по умолчанию включает все .cs файлы из
+       подкаталогов проекта в Compile. Это приводит к двойной компиляции
+       исходников Soulseek.NET (уже собранных через ProjectReference) и
+       ошибкам CS0579 Duplicate attribute. Исключаем подпапку из glob. -->
+  <ItemGroup>
+    <Compile Remove="Soulseek.NET\**" />
+    <None Remove="Soulseek.NET\**" />
+    <EmbeddedResource Remove="Soulseek.NET\**" />
+  </ItemGroup>
+
+  <!-- Hand-written Java sources for which C# bindings should be generated.
+       .NET Android compiles these and generates C# bindings.
+       Only ISoulseekEventSink is here — IGCUserPeer is a runtime marker
+       interface that must NOT generate a binding (it conflicts with Mono.Android.dll).
+       IGCUserPeer.java is compiled separately by build_aar.ps1. -->
+  <ItemGroup>
+    <AndroidJavaSource Include="java-src\soulseek\**\*.java" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- System.Text.Json доступен в net9.0 из коробки; указываем явно для стабильности.
+         Используется для (де)сериализации DTO между C# bridge и Kotlin/Flutter. -->
+    <PackageReference Include="System.Text.Json" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>
