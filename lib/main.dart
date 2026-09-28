@@ -97,6 +97,13 @@ Future<void> main() async {
         FlutterError.dumpErrorToConsole(details);
       };
 
+      // === SOULSEEK FEATURE FLAG ===
+      // Загружаем флаг ДО registerDefaults, чтобы решение о включении
+      // Soulseek в searchable-список принималось на основе сохранённого
+      // значения, а не дефолтного false.
+      await SourceRegistry.loadSoulseekEnabled();
+      // =============================
+
       SourceRegistry.instance.registerDefaults();
 
       if (Platform.isAndroid) {

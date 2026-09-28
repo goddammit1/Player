@@ -11,6 +11,7 @@
 //    страницах (скрыт на десктопе — там свою панель рисует
 //    DesktopPlayerBar).
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -22,6 +23,7 @@ import 'about_page.dart';
 import 'appearance_page.dart';
 import 'backup_page.dart';
 import 'cache_page.dart';
+import 'soulseek_settings_page.dart';
 
 class SettingsPage extends ConsumerWidget {
   const SettingsPage({super.key});
@@ -102,6 +104,20 @@ class SettingsPage extends ConsumerWidget {
                           MaterialPageRoute(builder: (_) => const AboutPage()),
                         ),
                       ),
+                      // Soulseek показываем только на Android — нативный
+                      // плагин недоступен на десктопе/iOS.
+                      if (!isDesktop && defaultTargetPlatform == TargetPlatform.android)
+                        _SectionTile(
+                          colors: colors,
+                          icon: Icons.hub_rounded,
+                          title: 'Soulseek',
+                          subtitle: 'P2P network, account, downloads',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SoulseekSettingsPage(),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
