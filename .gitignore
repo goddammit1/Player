@@ -76,3 +76,23 @@ build_*.txt
 doctor_log.txt
 run_*.txt
 window_shot*.png
+
+# === Soulseek integration — local build & verification artifacts ===
+# .NET wrapper native build outputs
+/soulseek-wrapper/bin/
+/soulseek-wrapper/obj/
+/soulseek-wrapper/Soulseek.NET/bin/
+/soulseek-wrapper/Soulseek.NET/obj/
+/soulseek-wrapper/*.aprof
+
+# Android libs — keep built AARs only, ignore verification/unpacked junk
+/android/app/libs/*
+!/android/app/libs/*.aar
+
+# Local verification / debug scratch dirs and logs
+/.tmp/
+/_sw-check/
+/_apk-assemblies-check/
+/apk-verify*/
+/libs-verify/
+/crash_log*.txt
