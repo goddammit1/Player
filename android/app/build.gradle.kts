@@ -85,4 +85,14 @@ dependencies {
     // VolumeProviderCompat + MediaSessionCompat для remote volume
     // (управление громкостью в фоне и на локскрине через MediaSession).
     implementation("androidx.media:media:1.7.0")
+
+    // Soulseek .NET wrapper (AAR) — собирается из soulseek-wrapper/ через build_aar.ps1
+    // и копируется в android/app/libs/. Содержит SoulseekBridge (JNI-вызываемый адаптер
+    // протокола Soulseek). Аудиобайты остаются в нативном слое; через Platform Channel
+    // идут только метаданные и команды.
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+
+    // Kotlin Coroutines — нужна для Kotlin-стороны Platform Channel (Фаза 2):
+    // мост между асинхронными вызовами SoulseekBridge (блокирующие C# методы) и корутинами.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

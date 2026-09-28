@@ -33,6 +33,12 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Регистрация SoulseekPlugin (MethodChannel "soulseek/methods",
+        // EventChannel "soulseek/events"). Plugin сам управляет lifecycle
+        // через FlutterPlugin.onAttachedToEngine / onDetachedFromEngine.
+        flutterEngine.plugins.add(SoulseekPlugin())
+
         updateChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "player/app_update"
