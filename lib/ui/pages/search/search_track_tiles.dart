@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/artwork_helper.dart';
 import '../../../models/track.dart';
+import '../../../sources/soulseek_source.dart';
 import '../../widgets/add_to_playlist_sheet.dart';
 import '../../widgets/artwork.dart';
 import '../../widgets/track_settings_sheet.dart';
@@ -104,6 +105,15 @@ class SearchTrackTileList extends StatelessWidget {
                           fontSize: 13,
                         ),
                       ),
+                      // Quality badge / Soulseek icon for Soulseek tracks
+                      if (track.sourceId == SoulseekSource.sourceId)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: _QualityBadge(
+                            track: track,
+                            colors: colors,
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -280,6 +290,50 @@ class _SearchTrackTileGridState extends State<SearchTrackTileGrid> {
                 ),
               ),
 
+            // === QUALITY BADGE for Soulseek tracks ===
+            if (track.sourceId == SoulseekSource.sourceId &&
+                track.qualityLabel != null &&
+                track.qualityLabel!.isNotEmpty)
+              Positioned(
+                top: 8,
+                left: 8,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.hub_rounded,
+                        size: 9,
+                        color: (track.qualityLabel!.contains('FLAC') ||
+                                track.qualityLabel!.contains('WAV') ||
+                                track.qualityLabel!.contains('ALAC'))
+                            ? Colors.greenAccent
+                            : Colors.white,
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        track.qualityLabel!,
+                        style: TextStyle(
+                          color: (track.qualityLabel!.contains('FLAC') ||
+                                  track.qualityLabel!.contains('WAV') ||
+                                  track.qualityLabel!.contains('ALAC'))
+                              ? Colors.greenAccent
+                              : Colors.white,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             Positioned(
               top: 8,
               right: 8,
@@ -418,6 +472,71 @@ class _SearchTileImage extends StatelessWidget {
           size: 32,
         ),
       ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUALITY BADGE — бейдж качества для Soulseek-треков
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _QualityBadge extends StatelessWidget {
+  const _QualityBadge({required this.track, required this.colors});
+
+  final Track track;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = track.qualityLabel;
+    if (label == null || label.isEmpty) return const SizedBox.shrink();
+
+    // Цвет бейджа: lossless → зелёный, high quality → акцент, иначе — серый
+    final isLossless = label.contains('FLAC') ||
+        label.contains('WAV') ||
+        label.contains('ALAC');
+    final isHighQuality = label.contains('320') ||
+        label.contains('256') ||
+        label.contains('V0');
+
+    final badgeColor = isLossless
+        ? Colors.greenAccent
+        : isHighQuality
+            ? colors.accent as Color
+            : colors.textTertiary as Color;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Soulseek icon
+        Icon(
+          Icons.hub_rounded,
+          size: 11,
+          color: badgeColor.withValues(alpha: 0.8),
+        ),
+        const SizedBox(width: 4),
+        // Quality label
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+          decoration: BoxDecoration(
+            color: badgeColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: badgeColor.withValues(alpha: 0.3),
+              width: 0.5,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: badgeColor,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

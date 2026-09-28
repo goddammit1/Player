@@ -28,9 +28,10 @@ void main() {
     SourceRegistry.instance.registerDefaults();
     addTearDown(() async => await SourceRegistry.instance.disposeAll());
 
-    expect(SourceRegistry.instance.all.length, 3);
+    expect(SourceRegistry.instance.all.length, 4);
     expect(SourceRegistry.instance.require('youtube').id, 'youtube');
     expect(SourceRegistry.instance.require('muzmo').id, 'muzmo');
     expect(SourceRegistry.instance.require('soundcloud').id, 'soundcloud');
+    expect(SourceRegistry.instance.require('soulseek').id, 'soulseek');
   });
 }

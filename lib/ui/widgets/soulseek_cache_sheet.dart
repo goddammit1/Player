@@ -1,0 +1,643 @@
+// lib/ui/widgets/soulseek_cache_sheet.dart
+//
+// Фаза 4 — нижний лист управления кэшем Soulseek.
+//
+// Показывает список кэшированных файлов с:
+//  - именем файла (из localPath)
+//  - размером файла
+//  - статусом complete / incomplete
+//  - индикатором pinned (закреплён)
+//  - кнопками Pin/Unpin и Delete
+//
+// Platform channel не имеет команды «список всех кэш-записей», поэтому
+// используется SoulseekSource.knownCacheKeys — индекс cache keys,
+// который ведётся в SharedPreferences.
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/providers.dart';
+import '../../sources/soulseek_models.dart';
+import '../../sources/soulseek_platform_channel.dart';
+import '../../sources/soulseek_source.dart';
+import '../../sources/source_registry.dart';
+import '../desktop/desktop_layout.dart';
+import 'snack.dart';
+
+/// Показывает нижний лист управления кэшем Soulseek.
+Future<void> showSoulseekCacheSheet(BuildContext context) {
+  if (isDesktop) {
+    return showDesktopModalSheet(
+      context: context,
+      builder: (_) => const _CacheSheet(),
+    );
+  }
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    barrierColor: Colors.black.withValues(alpha: 0.5),
+    builder: (_) => const _CacheSheet(),
+  );
+}
+
+class _CacheSheet extends ConsumerStatefulWidget {
+  const _CacheSheet();
+
+  @override
+  ConsumerState<_CacheSheet> createState() => _CacheSheetState();
+}
+
+class _CacheSheetState extends ConsumerState<_CacheSheet> {
+  final _platform = SoulseekPlatformChannel.instance;
+
+  List<_CacheItem> _items = const [];
+  bool _loading = true;
+  int _totalBytes = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final source = SourceRegistry.instance.get('soulseek');
+    if (source is! SoulseekSource) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+
+    final keys = source.knownCacheKeys;
+    final items = <_CacheItem>[];
+    var totalBytes = 0;
+
+    for (final key in keys) {
+      try {
+        final entry = await _platform.getCacheEntry(key);
+        if (entry != null) {
+          items.add(_CacheItem(cacheKey: key, entry: entry));
+          if (entry.complete) totalBytes += entry.sizeBytes;
+        } else {
+          // Файл удалён нативно — убираем из индекса.
+          source.forgetCacheKey(key);
+        }
+      } catch (_) {
+        // Игнорируем отдельные ошибки.
+      }
+    }
+
+    // Сортировка: pinned первыми, затем по размеру (убывание).
+    items.sort((a, b) {
+      if (a.entry.pinned != b.entry.pinned) {
+        return a.entry.pinned ? -1 : 1;
+      }
+      return b.entry.sizeBytes.compareTo(a.entry.sizeBytes);
+    });
+
+    if (mounted) {
+      setState(() {
+        _items = items;
+        _totalBytes = totalBytes;
+        _loading = false;
+      });
+    }
+  }
+
+  // ── Действия ──
+
+  Future<void> _togglePin(_CacheItem item) async {
+    try {
+      final newPinned = !item.entry.pinned;
+      await _platform.pinCache(item.cacheKey, pinned: newPinned);
+      if (mounted) {
+        showSnack(
+          context,
+          newPinned ? 'Pinned' : 'Unpinned',
+        );
+      }
+      _refresh();
+    } catch (_) {
+      if (mounted) showSnack(context, 'Failed to update pin status');
+    }
+  }
+
+  Future<void> _delete(_CacheItem item) async {
+    try {
+      await _platform.removeCache(item.cacheKey);
+      final source = SourceRegistry.instance.get('soulseek');
+      if (source is SoulseekSource) {
+        source.forgetCacheKey(item.cacheKey);
+      }
+      if (mounted) showSnack(context, 'Cache file removed');
+      _refresh();
+    } catch (_) {
+      if (mounted) showSnack(context, 'Failed to remove cache file');
+    }
+  }
+
+  Future<void> _cleanup() async {
+    try {
+      final removed = await _platform.cleanupCache();
+      if (mounted) {
+        showSnack(context, 'Cleaned up $removed file(s)');
+      }
+      _refresh();
+    } catch (_) {
+      if (mounted) showSnack(context, 'Cleanup failed');
+    }
+  }
+
+  Future<void> _deleteAll() async {
+    final confirmed = await _showConfirmDialog(
+      'Clear all Soulseek cache?',
+      'This will permanently remove all cached Soulseek files '
+      'from this device. Pinned files will also be removed.',
+    );
+    if (confirmed != true) return;
+
+    int removed = 0;
+    for (final item in _items.toList()) {
+      try {
+        final ok = await _platform.removeCache(item.cacheKey);
+        if (ok) removed++;
+      } catch (_) {}
+    }
+
+    final source = SourceRegistry.instance.get('soulseek');
+    if (source is SoulseekSource) {
+      source.clearCacheIndex();
+    }
+
+    if (mounted) showSnack(context, 'Removed $removed file(s)');
+    _refresh();
+  }
+
+  Future<bool?> _showConfirmDialog(String title, String subtitle) {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(subtitle),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── UI ──
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ref.watch(animatedPaletteProvider);
+    final media = MediaQuery.of(context);
+    final maxHeight = media.size.height * 0.85;
+
+    return Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildHandle(colors),
+          _buildHeader(colors),
+          const Divider(height: 1),
+          Flexible(
+            child: _loading
+                ? _buildLoading(colors)
+                : _items.isEmpty
+                    ? _buildEmpty(colors)
+                    : _buildList(colors, media.padding.bottom),
+          ),
+          if (!_loading && _items.isNotEmpty)
+            _buildFooterActions(colors, media.padding.bottom),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHandle(dynamic colors) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Container(
+        width: 40,
+        height: 4,
+        decoration: BoxDecoration(
+          color: colors.textTertiary,
+          borderRadius: BorderRadius.circular(2),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(dynamic colors) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 16, 12),
+      child: Row(
+        children: [
+          Icon(Icons.storage_rounded, color: colors.textPrimary, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Soulseek cache',
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (_items.isNotEmpty)
+                  Text(
+                    '${_items.length} files · ${_humanBytes(_totalBytes)}',
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 12,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            icon: Icon(Icons.close_rounded, color: colors.textSecondary),
+            iconSize: 22,
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoading(dynamic colors) {
+    return SizedBox(
+      height: 120,
+      child: Center(
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: colors.accent,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmpty(dynamic colors) {
+    return SizedBox(
+      height: 200,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.folder_off_outlined,
+              size: 40,
+              color: colors.textTertiary,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'No cached files',
+              style: TextStyle(
+                color: colors.textSecondary,
+                fontSize: 15,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Downloaded Soulseek files will appear here',
+              style: TextStyle(
+                color: colors.textTertiary,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildList(dynamic colors, double bottomInset) {
+    return ListView.separated(
+      shrinkWrap: true,
+      padding: EdgeInsets.only(top: 4, bottom: 8),
+      itemCount: _items.length,
+      separatorBuilder: (_, _) => Divider(
+        height: 1,
+        indent: 16,
+        endIndent: 16,
+        color: colors.outline.withValues(alpha: 0.3),
+      ),
+      itemBuilder: (context, index) {
+        final item = _items[index];
+        return _CacheTile(
+          item: item,
+          colors: colors,
+          onTogglePin: () => _togglePin(item),
+          onDelete: () => _delete(item),
+        );
+      },
+    );
+  }
+
+  Widget _buildFooterActions(dynamic colors, double bottomInset) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, 8, 16, 12 + bottomInset),
+      child: Row(
+        children: [
+          Expanded(
+            child: _FooterButton(
+              label: 'Cleanup (LRU)',
+              icon: Icons.auto_delete_outlined,
+              colors: colors,
+              onTap: _cleanup,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _FooterButton(
+              label: 'Clear all',
+              icon: Icons.delete_sweep_outlined,
+              colors: colors,
+              onTap: _deleteAll,
+              destructive: true,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _humanBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var size = bytes.toDouble();
+    var unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit++;
+    }
+    if (unit == 0) return '$bytes B';
+    return '${size.toStringAsFixed(size >= 100 ? 0 : 1)} ${units[unit]}';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Data
+// ═══════════════════════════════════════════════════════════════════════
+
+class _CacheItem {
+  final String cacheKey;
+  final SoulseekCacheEntry entry;
+
+  const _CacheItem({required this.cacheKey, required this.entry});
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  _CacheTile — отдельный кэш-файл
+// ═══════════════════════════════════════════════════════════════════════
+
+class _CacheTile extends StatelessWidget {
+  const _CacheTile({
+    required this.item,
+    required this.colors,
+    required this.onTogglePin,
+    required this.onDelete,
+  });
+
+  final _CacheItem item;
+  final dynamic colors;
+  final VoidCallback onTogglePin;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = item.entry;
+    final filename = _basename(entry.localPath);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          // Иконка статуса
+          Icon(
+            entry.complete
+                ? (entry.pinned
+                    ? Icons.push_pin_rounded
+                    : Icons.check_circle_outline_rounded)
+                : Icons.downloading_rounded,
+            color: entry.pinned
+                ? colors.accent as Color
+                : entry.complete
+                    ? Colors.greenAccent
+                    : colors.textTertiary as Color,
+            size: 22,
+          ),
+          const SizedBox(width: 12),
+          // Имя + размер
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  filename,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Text(
+                      _humanBytes(entry.sizeBytes),
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 12,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                    if (!entry.complete) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.orangeAccent.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'incomplete',
+                          style: TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // Pin toggle
+          _IconButton(
+            icon: entry.pinned
+                ? Icons.push_pin_rounded
+                : Icons.push_pin_outlined,
+            colors: colors,
+            onTap: onTogglePin,
+            active: entry.pinned,
+          ),
+          // Delete
+          _IconButton(
+            icon: Icons.delete_outline_rounded,
+            colors: colors,
+            onTap: onDelete,
+            destructive: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _basename(String path) {
+    final i = path.lastIndexOf('/');
+    final j = path.lastIndexOf('\\');
+    final idx = i > j ? i : j;
+    if (idx >= 0 && idx < path.length - 1) return path.substring(idx + 1);
+    return path;
+  }
+
+  String _humanBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var size = bytes.toDouble();
+    var unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit++;
+    }
+    if (unit == 0) return '$bytes B';
+    return '${size.toStringAsFixed(size >= 100 ? 0 : 1)} ${units[unit]}';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Small widgets
+// ═══════════════════════════════════════════════════════════════════════
+
+class _IconButton extends StatelessWidget {
+  const _IconButton({
+    required this.icon,
+    required this.colors,
+    required this.onTap,
+    this.destructive = false,
+    this.active = false,
+  });
+
+  final IconData icon;
+  final dynamic colors;
+  final VoidCallback onTap;
+  final bool destructive;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = destructive
+        ? Colors.redAccent
+        : active
+            ? colors.accent as Color
+            : colors.textSecondary as Color;
+
+    return Material(
+      color: Colors.transparent,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, size: 20, color: color),
+        ),
+      ),
+    );
+  }
+}
+
+class _FooterButton extends StatelessWidget {
+  const _FooterButton({
+    required this.label,
+    required this.icon,
+    required this.colors,
+    required this.onTap,
+    this.destructive = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final dynamic colors;
+  final VoidCallback onTap;
+  final bool destructive;
+
+  @override
+  Widget build(BuildContext context) {
+    final fgColor = destructive
+        ? Colors.redAccent
+        : colors.textPrimary as Color;
+    final bgColor = destructive
+        ? Colors.redAccent.withValues(alpha: 0.08)
+        : colors.elevated;
+
+    return Material(
+      color: bgColor,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          height: 44,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: fgColor, size: 18),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: fgColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
