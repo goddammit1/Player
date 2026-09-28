@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Модифицированная Soulseek.NET v10.0.2 (SeekerAndroid).
+         netstandard2.0 совместим с .NET Android (net9.0-android). -->
+    <TargetFrameworks>netstandard2.1;netstandard2.0</TargetFrameworks>
+    <LangVersion>9.0</LangVersion>
+    <IsPackable>false</IsPackable>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <RootNamespace>Soulseek</RootNamespace>
+    <AssemblyName>Soulseek.NET</AssemblyName>
+    <Version>10.0.2-seekerandroid</Version>
+
+    <!-- Эта библиотека нацеливается на netstandard, где trimming не поддерживается
+         (NETSDK1124). Trimming выполняется только в главном wrapper-проекте
+         (SoulseekWrapper.csproj, net9.0-android), поэтому здесь явно отключаем. -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <IsTrimmable>false</IsTrimmable>
+
+    <!-- Отключаем генерацию XML-документации и предупреждения о недокументированных членах,
+         чтобы сборка под trim/AOT была чистой. -->
+    <NoWarn>1701;1702;1591;CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Единственные зависимости, подтверждённые trim/AOT-совместимыми.
+         Microsoft.CSharp требуется для dynamic/dynamicInvoke, используемых в протоколе. -->
+    <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
+    <PackageReference Include="System.Memory" Version="4.6.0" />
+  </ItemGroup>
+
+</Project>

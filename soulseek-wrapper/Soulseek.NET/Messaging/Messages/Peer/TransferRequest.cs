@@ -1,0 +1,127 @@
+﻿// <copyright file="TransferRequest.cs" company="JP Dillingham">
+//     Copyright (c) JP Dillingham.
+//
+//     Copyright (c) 2021-2026 Jack Bonadies
+//     Modified: added Latin-1 encoding flags for filename and folder
+//
+//     This program is free software: you can redistribute it and/or modify
+//     it under the terms of the GNU General Public License as published by
+//     the Free Software Foundation, version 3.
+//
+//     This program is distributed in the hope that it will be useful,
+//     but WITHOUT ANY WARRANTY; without even the implied warranty of
+//     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//     GNU General Public License for more details.
+//
+//     You should have received a copy of the GNU General Public License
+//     along with this program.  If not, see https://www.gnu.org/licenses/.
+//
+//     This program is distributed with Additional Terms pursuant to Section 7
+//     of the GPLv3.  See the LICENSE file in the root directory of this
+//     project for the complete terms and conditions.
+//
+//     SPDX-FileCopyrightText: JP Dillingham
+//     SPDX-License-Identifier: GPL-3.0-only
+// </copyright>
+
+namespace Soulseek.Messaging.Messages
+{
+    /// <summary>
+    ///     A request to transfer a file.
+    /// </summary>
+    internal sealed class TransferRequest : IIncomingMessage, IOutgoingMessage
+    {
+        /// <summary>
+        ///     Initializes a new instance of the <see cref="TransferRequest"/> class.
+        /// </summary>
+        /// <param name="direction">The direction of the transfer (download, upload).</param>
+        /// <param name="token">The unique token for the transfer.</param>
+        /// <param name="filename">The name of the file being transferred.</param>
+        /// <param name="fileSize">The size of the file being transferred.</param>
+        /// <param name="isFileDecodedLatin1">Whether the filename should be written as ISO-8859-1 rather than UTF-8.</param>
+        /// <param name="isFolderDecodedLatin1">Whether the directory portion should be written as ISO-8859-1.</param>
+        public TransferRequest(TransferDirection direction, int token, string filename, long fileSize = 0, bool isFileDecodedLatin1 = false, bool isFolderDecodedLatin1 = false)
+        {
+            Direction = direction;
+            Token = token;
+            Filename = filename;
+            FileSize = fileSize;
+            IsFileDecodedLatin1 = isFileDecodedLatin1;
+            IsFolderDecodedLatin1 = isFolderDecodedLatin1;
+        }
+
+        /// <summary>
+        ///     Gets the direction of the transfer (download, upload).
+        /// </summary>
+        public TransferDirection Direction { get; }
+
+        /// <summary>
+        ///     Gets the name of the file being transferred.
+        /// </summary>
+        public string Filename { get; }
+
+        /// <summary>
+        ///     Gets the size of the file being transferred.
+        /// </summary>
+        public long FileSize { get; }
+
+        /// <summary>
+        ///     Gets the unique token for the transfer.
+        /// </summary>
+        public int Token { get; }
+
+        /// <summary>
+        ///     Gets a value indicating whether the filename should be written as ISO-8859-1.
+        /// </summary>
+        public bool IsFileDecodedLatin1 { get; }
+
+        /// <summary>
+        ///     Gets a value indicating whether the directory portion of the filename should be written as ISO-8859-1.
+        /// </summary>
+        public bool IsFolderDecodedLatin1 { get; }
+
+        /// <summary>
+        ///     Creates a new instance of <see cref="TransferRequest"/> from the specified <paramref name="bytes"/>.
+        /// </summary>
+        /// <param name="bytes">The byte array from which to parse.</param>
+        /// <returns>The parsed instance.</returns>
+        public static TransferRequest FromByteArray(byte[] bytes)
+        {
+            var reader = new MessageReader<MessageCode.Peer>(bytes);
+            var code = reader.ReadCode();
+
+            if (code != MessageCode.Peer.TransferRequest)
+            {
+                throw new MessageException($"Message Code mismatch creating {nameof(TransferRequest)} (expected: {(int)MessageCode.Peer.TransferRequest}, received: {(int)code})");
+            }
+
+            var direction = (TransferDirection)reader.ReadInteger();
+            var token = reader.ReadInteger();
+            var filename = reader.ReadString();
+
+            long fileSize = 0;
+
+            if (reader.HasMoreData)
+            {
+                fileSize = reader.ReadLong();
+            }
+
+            return new TransferRequest(direction, token, filename, fileSize);
+        }
+
+        /// <summary>
+        ///     Constructs a <see cref="byte"/> array from this message.
+        /// </summary>
+        /// <returns>The constructed byte array.</returns>
+        public byte[] ToByteArray()
+        {
+            return new MessageBuilder()
+                .WriteCode(MessageCode.Peer.TransferRequest)
+                .WriteInteger((int)Direction)
+                .WriteInteger(Token)
+                .WriteString(Filename, this.IsFileDecodedLatin1, this.IsFolderDecodedLatin1)
+                .WriteLong(FileSize)
+                .Build();
+        }
+    }
+}
