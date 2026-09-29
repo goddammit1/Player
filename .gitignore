@@ -43,6 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/app/build/
 
 # Android local config / signing
 /android/local.properties
@@ -95,4 +96,9 @@ window_shot*.png
 /_apk-assemblies-check/
 /apk-verify*/
 /libs-verify/
-/crash_log*.txt
+
+# Diagnostic / verification session dumps (root scratch logs)
+/*_session*.txt
+/verify_*.txt
+/crash_*.txt
+/logcat*.txt
