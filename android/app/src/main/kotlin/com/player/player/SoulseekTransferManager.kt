@@ -9,6 +9,7 @@ import soulseek.wrapper.ISoulseekEventSink
 import soulseek.wrapper.SoulseekBridge
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
+import kotlin.random.Random
 
 /**
  * Очередь и управление трансферами Soulseek.
@@ -40,6 +41,9 @@ class SoulseekTransferManager(
         /** Базовая задержка retry, мс (экспоненциальный backoff: base * 2^attempt). */
         private const val RETRY_BASE_DELAY_MS = 2_000L
 
+        /** Предел задержки retry, мс (план 5.5: backoff с пределом 30 секунд). */
+        private const val RETRY_MAX_DELAY_MS = 30_000L
+
         /** Throttle обновления БД-чекпоинта прогресса, мс. */
         private const val CHECKPOINT_THROTTLE_MS = 1_000L
 
@@ -55,6 +59,11 @@ class SoulseekTransferManager(
         val remoteFilename: String,
         @Volatile var sizeBytes: Long = 0L,
         val fileExtension: String,
+        /** NEW-3: человекочитаемые метаданные из поисковой выдачи —
+         *  фиксируются в cache_entries при завершении загрузки. */
+        val title: String? = null,
+        val artist: String? = null,
+        val durationSeconds: Int? = null,
         @Volatile var state: TransferState,
         @Volatile var bytesReceived: Long = 0L,
         @Volatile var bytesPerSecond: Long = 0L,
@@ -64,7 +73,11 @@ class SoulseekTransferManager(
         @Volatile var lastNotificationAt: Long = 0L,
         /** Управляет retry-loop корутины. */
         @Volatile var pauseRequested: Boolean = false,
-        @Volatile var cancelRequested: Boolean = false
+        @Volatile var cancelRequested: Boolean = false,
+        /** Сигнал промежуточной retryable-неудачи от bridge: выводит
+         *  [awaitTerminalState], retry-loop продолжает с backoff
+         *  (терминальным для Dart это не является). */
+        @Volatile var retrySignal: Boolean = false
     )
 
     /** Все известные трансферы (активные + paused + завершённые до перечитывания БД). */
@@ -107,7 +120,10 @@ class SoulseekTransferManager(
         remoteFilename: String,
         sizeBytes: Long,
         cacheKey: String,
-        fileExtension: String
+        fileExtension: String,
+        title: String? = null,
+        artist: String? = null,
+        durationSeconds: Int? = null
     ): String {
         if (shutdown) {
             throw SoulseekServiceException(
@@ -141,6 +157,9 @@ class SoulseekTransferManager(
             remoteFilename = remoteFilename,
             sizeBytes = sizeBytes,
             fileExtension = fileExtension,
+            title = title,
+            artist = artist,
+            durationSeconds = durationSeconds,
             state = TransferState.QUEUED
         )
         transfers[downloadId] = ctx
@@ -190,6 +209,7 @@ class SoulseekTransferManager(
         }
         ctx.pauseRequested = false
         ctx.cancelRequested = false
+        ctx.retrySignal = false
         ctx.state = TransferState.QUEUED
         persistTransfer(ctx)
         emitTransferEvent(downloadId, TransferState.QUEUED, ctx.bytesReceived, ctx.sizeBytes)
@@ -254,6 +274,9 @@ class SoulseekTransferManager(
                 onActiveTransfersChanged()
 
                 try {
+                    // Новая попытка: сбрасываем сигнал прошлой промежуточной неудачи.
+                    ctx.retrySignal = false
+
                     // Актуализируем bytesReceived из .part файла перед стартом (resume offset).
                     checkpointFromPartFile(ctx)
 
@@ -327,8 +350,9 @@ class SoulseekTransferManager(
                 break
             }
 
-            // Экспоненциальный backoff перед следующей попыткой.
-            val delayMs = RETRY_BASE_DELAY_MS * (1L shl min(attempt, 4))
+            // Экспоненциальный backoff с jitter и пределом 30с перед следующей
+            // попыткой. Слот semaphore при этом не удерживается (delay вне withPermit).
+            val delayMs = retryDelayMs(attempt)
             Log.i(TAG, "Retrying ${ctx.downloadId} in ${delayMs}ms (attempt $attempt)")
             delay(delayMs)
         }
@@ -340,20 +364,57 @@ class SoulseekTransferManager(
      * или cancelRequested.
      */
     private suspend fun awaitTerminalState(ctx: TransferContext) {
-        while (!ctx.state.isTerminal && !ctx.pauseRequested && !ctx.cancelRequested) {
+        while (!ctx.state.isTerminal && !ctx.pauseRequested && !ctx.cancelRequested && !ctx.retrySignal) {
             delay(200)
         }
     }
 
+    /**
+     * Классификация неудачи трансфера (план 5.5):
+     *  - отмена пользователя — терминальная (CANCELLED);
+     *  - битый файл / валидация / параметры — терминальная (retryable=false из bridge);
+     *  - сетевые/временные (retryable=true) в рамках общего бюджета попыток —
+     *    retry-loop продолжает с backoff; промежуточное состояние не выглядит
+     *    для Dart окончательным failure.
+     */
     private fun handleTransferFailure(ctx: TransferContext, e: SoulseekServiceException, attempt: Int) {
         Log.w(TAG, "Transfer ${ctx.downloadId} failed (attempt $attempt): ${e.code} — ${e.message}")
+
+        if (ctx.cancelRequested) {
+            ctx.state = TransferState.CANCELLED
+            emitTransferEvent(ctx)
+            persistTransfer(ctx)
+            cleanupMappings(ctx)
+            return
+        }
+
+        val canRetry = e.retryable &&
+            attempt + 1 < MAX_RETRY_ATTEMPTS &&
+            !ctx.pauseRequested
+
+        if (canRetry) {
+            ctx.state = TransferState.QUEUED
+            ctx.bytesPerSecond = 0L
+            emitTransferEvent(ctx)
+            persistTransfer(ctx)
+            return
+        }
+
         ctx.state = TransferState.FAILED
         emitTransferEvent(
             ctx.downloadId, TransferState.FAILED, ctx.bytesReceived, ctx.sizeBytes,
             errorCode = e.code, retryable = e.retryable, message = e.message
         )
         persistTransfer(ctx)
-        if (ctx.state.isTerminal) cleanupMappings(ctx)
+        cleanupMappings(ctx)
+    }
+
+    /** Экспоненциальный backoff: base * 2^attempt, предел [RETRY_MAX_DELAY_MS], jitter до 10%. */
+    private fun retryDelayMs(attempt: Int): Long {
+        val exp = RETRY_BASE_DELAY_MS * (1L shl min(attempt, 4))
+        val capped = min(exp, RETRY_MAX_DELAY_MS)
+        val jitter = capped / 10L
+        return capped - Random.nextLong(0, jitter + 1)
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -438,8 +499,15 @@ class SoulseekTransferManager(
                 ctx.state = TransferState.COMPLETED
                 ctx.bytesPerSecond = 0L
 
-                // Регистрируем завершённый файл в кэше.
-                val finalFile = cacheManager.completeTransfer(ctx.cacheKey, ctx.fileExtension)
+                // Регистрируем завершённый файл в кэше (NEW-3: вместе с
+                // человекочитаемыми метаданными из поисковой выдачи).
+                val finalFile = cacheManager.completeTransfer(
+                    ctx.cacheKey,
+                    ctx.fileExtension,
+                    title = ctx.title,
+                    artist = ctx.artist,
+                    durationSeconds = ctx.durationSeconds
+                )
                 if (finalFile != null) ctx.localPath = finalFile.absolutePath
 
                 emitTransferEvent(ctx)
@@ -452,6 +520,46 @@ class SoulseekTransferManager(
                 val ctx = transfers[downloadId] ?: return
                 val errorCode = obj.optString("errorCode", null)
                 val retryable = obj.optBoolean("retryable", false)
+                val rawState = BridgeStateMapper.mapTransferState(obj.optString("state", null))
+
+                // Пауза: C#-передача отменена самим pauseDownload — сохраняем
+                // PAUSED, не FAILED (resume продолжит с offset .part файла).
+                if (ctx.pauseRequested) {
+                    ctx.state = TransferState.PAUSED
+                    ctx.bytesPerSecond = 0L
+                    persistTransfer(ctx)
+                    onActiveTransfersChanged()
+                    return
+                }
+
+                // Отмена пользователя — терминальная (CANCELLED, не FAILED).
+                if (ctx.cancelRequested || rawState == TransferState.CANCELLED) {
+                    ctx.state = TransferState.CANCELLED
+                    ctx.bytesPerSecond = 0L
+                    emitTransferEvent(ctx)
+                    persistTransfer(ctx)
+                    cleanupMappings(ctx)
+                    onActiveTransfersChanged()
+                    return
+                }
+
+                // Сетевая/временная неудача в рамках бюджета попыток —
+                // retry-loop продолжит с backoff. Состояние НЕ терминальное,
+                // mappings сохранены (dedupe по cacheKey продолжает работать),
+                // для Dart это не окончательный failure.
+                val canRetry = retryable && ctx.retryCount + 1 < MAX_RETRY_ATTEMPTS
+                if (canRetry) {
+                    ctx.state = TransferState.QUEUED
+                    ctx.bytesPerSecond = 0L
+                    ctx.retrySignal = true
+                    emitTransferEvent(ctx)
+                    persistTransfer(ctx)
+                    onActiveTransfersChanged()
+                    return
+                }
+
+                // Терминальный отказ: битый файл/валидация (VALIDATION_*),
+                // исчерпанный бюджет попыток, неретрайные ошибки.
                 ctx.state = TransferState.FAILED
                 emitTransferEvent(
                     ctx.downloadId, TransferState.FAILED, ctx.bytesReceived, ctx.sizeBytes,
