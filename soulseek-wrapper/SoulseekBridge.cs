@@ -315,16 +315,22 @@ namespace Soulseek.Wrapper
                 if (IOFile.Exists(partPath))
                 {
                     startOffset = new FileInfo(partPath).Length;
-                    // Если .part уже полностью скачан (size совпадает), сразу rename.
+
+                    // Остаток считается полным только при точном совпадении размера.
+                    // Содержимое проверяется единым валидатором с обычным завершением:
+                    // oversized или битый остаток не публикуется и не используется
+                    // для resume (см. план исправления CACHE-01, раздел 5.3).
                     if (dto.SizeBytes > 0 && startOffset >= dto.SizeBytes)
                     {
+                        ValidateDownloadedFile(partPath, safeExtension, dto.SizeBytes);
+
                         AtomicRename(partPath, finalPath);
                         EmitEvent(new SoulseekEventDto
                         {
                             EventType = "downloadComplete",
                             DownloadId = dto.DownloadId,
                             State = nameof(TransferStates.Succeeded),
-                            BytesReceived = startOffset,
+                            BytesReceived = dto.SizeBytes,
                             TotalBytes = dto.SizeBytes,
                             LocalPath = finalPath,
                         });
@@ -350,6 +356,14 @@ namespace Soulseek.Wrapper
                     options: transferOptions,
                     cancellationToken: ct).ConfigureAwait(false);
 
+                // Единая валидация ДО публикации: размер точно равен заявленному
+                // (если известен), магические байты соответствуют расширению;
+                // HTML/JSON-payload отклоняется. Повреждённый файл не публикуется.
+                var expectedSize = dto.SizeBytes > 0
+                    ? dto.SizeBytes
+                    : (transfer.Size > 0 ? transfer.Size : 0L);
+                ValidateDownloadedFile(partPath, safeExtension, expectedSize);
+
                 // Atomic rename .part → финальное расширение.
                 AtomicRename(partPath, finalPath);
 
@@ -372,6 +386,24 @@ namespace Soulseek.Wrapper
                     State = nameof(TransferStates.Cancelled),
                     ErrorCode = "CANCELLED",
                     Message = "Download cancelled",
+                    Retryable = false,
+                });
+            }
+            catch (FileValidationException vex)
+            {
+                // Невалидный результат не публикуем: удаляем остаток .part и
+                // возможный старый final, чтобы кэш не выдал повреждённый файл.
+                // Осмысленная ошибка уходит в downloadFailed (не retryable —
+                // повторная передача от того же пира даст тот же байт-поток).
+                TryDeleteFile(partPath);
+                TryDeleteFile(finalPath);
+                EmitEvent(new SoulseekEventDto
+                {
+                    EventType = "downloadFailed",
+                    DownloadId = dto.DownloadId,
+                    State = nameof(TransferStates.Errored),
+                    ErrorCode = vex.ErrorCode,
+                    Message = vex.Message,
                     Retryable = false,
                 });
             }
@@ -779,6 +811,227 @@ namespace Soulseek.Wrapper
 
             // File.Move атомарен на одной файловой системе (Android external storage).
             IOFile.Move(partPath, finalPath);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  Валидация скачанного файла (контракт публикации:
+        //  close → validate → rename; битое содержимое не публикуется)
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Отказ валидации: файл не является обещанным аудио.</summary>
+        private class FileValidationException : Exception
+        {
+            public string ErrorCode { get; }
+
+            public FileValidationException(string errorCode, string message)
+                : base(message)
+            {
+                ErrorCode = errorCode;
+            }
+        }
+
+        /// <summary>
+        ///   Проверяет скачанный файл перед публикацией: размер должен точно
+        ///   совпадать с заявленным (если известен), магические байты —
+        ///   соответствовать расширению контейнера. Для неизвестных расширений
+        ///   минимум отклоняются HTML/JSON-подобные payload. Память ограничена
+        ///   заголовком в 32 байта (+ точный seek для ID3-префикса FLAC).
+        /// </summary>
+        private static void ValidateDownloadedFile(string filePath, string extension, long expectedSizeBytes)
+        {
+            var name = Path.GetFileName(filePath);
+            var info = new FileInfo(filePath);
+            var actualSize = info.Exists ? info.Length : 0L;
+
+            if (actualSize <= 0L)
+            {
+                throw new FileValidationException("VALIDATION_EMPTY", $"Downloaded file is empty: {name}");
+            }
+
+            if (expectedSizeBytes > 0L && actualSize != expectedSizeBytes)
+            {
+                // Меньше — обрыв передачи; больше — ошибка resume/счётчиков.
+                // Равенство — необходимое, но недостаточное условие.
+                var code = actualSize < expectedSizeBytes ? "VALIDATION_INCOMPLETE" : "VALIDATION_SIZE_MISMATCH";
+                throw new FileValidationException(
+                    code,
+                    $"Downloaded size {actualSize} does not match expected {expectedSizeBytes}: {name}");
+            }
+
+            var header = new byte[32];
+            int read;
+            using (var stream = IOFile.OpenRead(filePath))
+            {
+                read = stream.Read(header, 0, header.Length);
+            }
+
+            if (read <= 0)
+            {
+                throw new FileValidationException("VALIDATION_EMPTY", $"Could not read file header: {name}");
+            }
+
+            var ext = (extension ?? string.Empty).TrimStart('.').ToLowerInvariant();
+            switch (ext)
+            {
+                case "flac":
+                    ValidateFlac(filePath, name);
+                    break;
+                case "mp3":
+                    ValidateMp3(header, read, name);
+                    break;
+                case "ogg":
+                case "oga":
+                case "opus":
+                    RequireMagic(header, read, 0, "OggS", name);
+                    break;
+                case "mp4":
+                case "m4a":
+                case "m4b":
+                    RequireMagic(header, read, 4, "ftyp", name);
+                    break;
+                case "wav":
+                    RequireMagic(header, read, 0, "RIFF", name);
+                    break;
+                case "ape":
+                    RequireMagic(header, read, 0, "MAC ", name);
+                    break;
+                case "wv":
+                    RequireMagic(header, read, 0, "wvpk", name);
+                    break;
+                case "dsf":
+                    RequireMagic(header, read, 0, "DSD ", name);
+                    break;
+                case "dff":
+                    RequireMagic(header, read, 0, "FRM8", name);
+                    break;
+                default:
+                    RejectTextPayload(header, read, name);
+                    break;
+            }
+        }
+
+        /// <summary>
+        ///   FLAC: маркер fLaC в начале потока; явно поддержан ID3v2-префикс
+        ///   (тег пропускается по synchsafe-размеру, за ним обязан идти fLaC).
+        /// </summary>
+        private static void ValidateFlac(string filePath, string name)
+        {
+            using var stream = IOFile.OpenRead(filePath);
+            var head = new byte[10];
+            var n = stream.Read(head, 0, head.Length);
+            if (n >= 4 && HasMagic(head, 0, "fLaC"))
+            {
+                return;
+            }
+
+            if (n >= 10 && HasMagic(head, 0, "ID3"))
+            {
+                var tagSize = ((head[6] & 0x7F) << 21) | ((head[7] & 0x7F) << 14)
+                    | ((head[8] & 0x7F) << 7) | (head[9] & 0x7F);
+                stream.Seek(10L + tagSize, SeekOrigin.Begin);
+                var probe = new byte[4];
+                var m = stream.Read(probe, 0, probe.Length);
+                if (m == 4 && HasMagic(probe, 0, "fLaC"))
+                {
+                    return;
+                }
+            }
+
+            throw new FileValidationException("VALIDATION_FORMAT", $"Not a FLAC stream (missing fLaC marker): {name}");
+        }
+
+        /// <summary>MP3: ID3v2-тег или MPEG frame sync (0xFF 0xEx/0xFx).</summary>
+        private static void ValidateMp3(byte[] header, int read, string name)
+        {
+            if (read >= 3 && HasMagic(header, 0, "ID3"))
+            {
+                return;
+            }
+
+            if (read >= 2 && header[0] == 0xFF && (header[1] & 0xE0) == 0xE0)
+            {
+                return;
+            }
+
+            throw new FileValidationException(
+                "VALIDATION_FORMAT",
+                $"Not an MP3 stream (missing ID3 tag or frame sync): {name}");
+        }
+
+        /// <summary>Неизвестное расширение: минимум отсекаем HTML/JSON-подобный ответ.</summary>
+        private static void RejectTextPayload(byte[] header, int read, string name)
+        {
+            int i = 0;
+            while (i < read && (header[i] == (byte)' ' || header[i] == (byte)'\t'
+                || header[i] == (byte)'\r' || header[i] == (byte)'\n'))
+            {
+                i++;
+            }
+
+            if (i >= read)
+            {
+                throw new FileValidationException("VALIDATION_FORMAT", $"File header is whitespace-only: {name}");
+            }
+
+            var first = header[i];
+            if (first == (byte)'{' || first == (byte)'[')
+            {
+                throw new FileValidationException("VALIDATION_FORMAT", $"Payload looks like JSON, not audio: {name}");
+            }
+
+            var probe = System.Text.Encoding.ASCII
+                .GetString(header, i, Math.Min(16, read - i))
+                .ToLowerInvariant();
+            if (probe.StartsWith("<html") || probe.StartsWith("<!doctype"))
+            {
+                throw new FileValidationException("VALIDATION_FORMAT", $"Payload looks like HTML, not audio: {name}");
+            }
+        }
+
+        private static bool HasMagic(byte[] buffer, int offset, string magic)
+        {
+            if (buffer.Length < offset + magic.Length)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < magic.Length; i++)
+            {
+                if (buffer[offset + i] != (byte)magic[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static void RequireMagic(byte[] header, int read, int offset, string magic, string name)
+        {
+            if (read >= offset + magic.Length && HasMagic(header, offset, magic))
+            {
+                return;
+            }
+
+            throw new FileValidationException(
+                "VALIDATION_FORMAT",
+                $"File does not look like {magic.Trim()} audio (bad magic bytes): {name}");
+        }
+
+        /// <summary>Лучше-усилие удаление файла; ошибка не маскирует исходный отказ.</summary>
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (path != null && IOFile.Exists(path))
+                {
+                    IOFile.Delete(path);
+                }
+            }
+            catch
+            {
+                // Повторная попытка загрузки перезапишет остаток.
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────────

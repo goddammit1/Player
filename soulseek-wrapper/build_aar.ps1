@@ -101,7 +101,10 @@ Write-Host "[4/6] Building with ACW generation..." -ForegroundColor Yellow
 
 # Build with AndroidRuntimeIdentifiers for multi-ABI.
 # AndroidApplication=true is set in the .csproj so _GenerateJavaStubs runs.
-$abiList = $Abis -join ";"
+# NB: dotnet build re-tokenizes -p: values on ';' (=> MSB1006 "Property is
+# not valid"), so the separator is escaped as %3B; MSBuild unescapes it back
+# to ';' when the property is set. Works for any number of ABIs.
+$abiList = ($Abis -join ";") -replace ";", "%3B"
 & dotnet build $ProjectPath `
     -c $Configuration `
     -p:AndroidPackageFormat=aar `
