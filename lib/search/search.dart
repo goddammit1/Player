@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/track.dart';
 import '../sources/muzmo_source.dart';
+import '../sources/soulseek_source.dart';
 import '../sources/soundcloud_source.dart';
 import '../sources/source_registry.dart';
 
@@ -122,6 +123,17 @@ class SearchController extends StateNotifier<SearchState> {
   /// но и достаточно, чтобы медленный, но рабочий источник успел ответить.
   static const _sourceTimeout = Duration(seconds: 5);
 
+  /// NEW-2: Soulseek — P2P-поиск с «окном тишины» на стороне C# bridge
+  /// (минимум ~10–15 c, т.к. ответы пиров приходят волнами). Общий
+  /// [_sourceTimeout] в 5 c отрезал бы его результаты всегда, поэтому
+  /// для Soulseek выделяем расширенное окно. Результаты остальных
+  /// источников показываются сразу — Soulseek доклеится позже.
+  static const _soulseekSourceTimeout = Duration(seconds: 16);
+
+  /// Возвращает пер-источниковый таймаут (NEW-2: расширенный для Soulseek).
+  Duration _timeoutFor(dynamic source) =>
+      source is SoulseekSource ? _soulseekSourceTimeout : _sourceTimeout;
+
   /// Поиск во всех зарегистрированных источниках сразу.
   ///
   /// Результаты показываются сразу по мере поступления — как только хотя
@@ -145,11 +157,12 @@ class SearchController extends StateNotifier<SearchState> {
     }
 
     // Запускаем поиск в каждом источнике параллельно.
-    // Каждый источник обёрнут в таймаут — если не ответил за 5 сек,
+    // Каждый источник обёрнут в таймаут — если не ответил вовремя,
     // возвращается пустой список (тихо, без ошибки в UI).
+    // NEW-2: для Soulseek — расширенное окно (см. [_soulseekSourceTimeout]).
     final futures = sources.map((s) async {
       try {
-        return await s.search(query).timeout(_sourceTimeout);
+        return await s.search(query).timeout(_timeoutFor(s));
       } catch (_) {
         return <Track>[];
       }
@@ -247,8 +260,8 @@ class SearchController extends StateNotifier<SearchState> {
   }
 
   /// Запускает фоновое обогащение обложками для треков источников,
-  /// которые это поддерживают (Muzmo, SoundCloud). Для остальных —
-  /// no-op.
+  /// которые это поддерживают (Muzmo, SoundCloud, Soulseek). Для
+  /// остальных — no-op.
   ///
   /// ВАЖНО: треки берутся из **state.results** (а не из сырого ответа
   /// источника), чтобы при повторном поиске enrich видел уже известные
@@ -273,6 +286,13 @@ class SearchController extends StateNotifier<SearchState> {
         _patchResults(query, generation),
       );
     } else if (source is SoundCloudSource) {
+      source.enrichArtworksInBackground(
+        sourceTracksInState,
+        _patchResults(query, generation),
+      );
+    } else if (source is SoulseekSource) {
+      // P5: Soulseek не отдаёт обложки в выдаче — дозаполняем из
+      // ArtworkProvider (Genius/iTunes) по artist/title.
       source.enrichArtworksInBackground(
         sourceTracksInState,
         _patchResults(query, generation),

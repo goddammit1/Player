@@ -9,9 +9,10 @@
 //  - индикатором pinned (закреплён)
 //  - кнопками Pin/Unpin и Delete
 //
-// Platform channel не имеет команды «список всех кэш-записей», поэтому
-// используется SoulseekSource.knownCacheKeys — индекс cache keys,
-// который ведётся в SharedPreferences.
+// P1-каскад: список строится из нативной БД (getCacheEntries),
+// известной Kotlin-стороне с момента завершения загрузки. Прежний
+// Dart-индекс knownCacheKeys (SharedPreferences) пополнялся только из
+// transfer-событий и терял записи, завершённые без подписки.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -68,23 +69,32 @@ class _CacheSheetState extends ConsumerState<_CacheSheet> {
       return;
     }
 
-    final keys = source.knownCacheKeys;
     final items = <_CacheItem>[];
     var totalBytes = 0;
 
-    for (final key in keys) {
-      try {
-        final entry = await _platform.getCacheEntry(key);
-        if (entry != null) {
-          items.add(_CacheItem(cacheKey: key, entry: entry));
-          if (entry.complete) totalBytes += entry.sizeBytes;
-        } else {
-          // Файл удалён нативно — убираем из индекса.
-          source.forgetCacheKey(key);
+    // P1-каскад: источник истины — нативная БД (getCacheEntries).
+    // Попутно синхронизируем Dart-индекс knownCacheKeys.
+    List<SoulseekCacheEntry> entries;
+    try {
+      await source.refreshCacheIndex();
+      entries = await _platform.getCacheEntries();
+    } catch (_) {
+      // Нативный список недоступен (не Android / сервис не привязан) —
+      // фолбэк на локальный индекс.
+      entries = const [];
+      for (final key in source.knownCacheKeys) {
+        try {
+          final entry = await _platform.getCacheEntry(key);
+          if (entry != null) entries = [...entries, entry];
+        } catch (_) {
+          // Игнорируем отдельные ошибки.
         }
-      } catch (_) {
-        // Игнорируем отдельные ошибки.
       }
+    }
+
+    for (final entry in entries) {
+      items.add(_CacheItem(cacheKey: entry.cacheKey, entry: entry));
+      if (entry.complete) totalBytes += entry.sizeBytes;
     }
 
     // Сортировка: pinned первыми, затем по размеру (убывание).
@@ -426,7 +436,14 @@ class _CacheTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final entry = item.entry;
-    final filename = _basename(entry.localPath);
+    // NEW-3: человекочитаемые метаданные из БД v2; для старых записей
+    // (завершённых до миграции) — фолбэк на basename файла.
+    final title =
+        (entry.title != null && entry.title!.isNotEmpty)
+            ? entry.title!
+            : _basename(entry.localPath);
+    final artist = entry.artist;
+    final durationText = _durationText(entry.durationSeconds);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -447,13 +464,13 @@ class _CacheTile extends StatelessWidget {
             size: 22,
           ),
           const SizedBox(width: 12),
-          // Имя + размер
+          // Заголовок/артист + размер/длительность
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  filename,
+                  title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -465,6 +482,31 @@ class _CacheTile extends StatelessWidget {
                 const SizedBox(height: 2),
                 Row(
                   children: [
+                    Flexible(
+                      child: Text(
+                        artist != null && artist.isNotEmpty
+                            ? artist
+                            : _basename(entry.localPath),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colors.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    if (durationText != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        '· $durationText',
+                        style: TextStyle(
+                          color: colors.textTertiary,
+                          fontSize: 12,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 8),
                     Text(
                       _humanBytes(entry.sizeBytes),
                       style: TextStyle(
@@ -526,6 +568,14 @@ class _CacheTile extends StatelessWidget {
     final idx = i > j ? i : j;
     if (idx >= 0 && idx < path.length - 1) return path.substring(idx + 1);
     return path;
+  }
+
+  /// «3:45» из durationSeconds; null, если длительность неизвестна.
+  String? _durationText(int? seconds) {
+    if (seconds == null || seconds <= 0) return null;
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return '$m:${s.toString().padLeft(2, '0')}';
   }
 
   String _humanBytes(int bytes) {

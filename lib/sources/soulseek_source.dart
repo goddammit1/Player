@@ -20,13 +20,16 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/track.dart';
+import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
 import 'soulseek_models.dart';
 import 'soulseek_platform_channel.dart';
@@ -57,7 +60,17 @@ abstract class SoulseekChannel {
   /// Возвращает запись о кэшированном файле (или null, если файла нет).
   Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey);
 
+  /// Возвращает все завершённые записи нативного кэша (LRU-порядок).
+  ///
+  /// P1-каскад: источник истины для кэш-листа — нативная БД, а не
+  /// Dart-индекс [_knownCacheKeys], который пополнялся только из
+  /// transfer-событий и терял записи, завершённые без активной подписки.
+  Future<List<SoulseekCacheEntry>> getCacheEntries();
+
   /// Запускает загрузку файла (или возвращает путь к кэшированному).
+  ///
+  /// NEW-3: [title]/[artist]/[durationSeconds] — человекочитаемые
+  /// метаданные для кэш-листа (сохраняются в cache_entries при завершении).
   Future<SoulseekDownloadResult> startDownload({
     required String downloadId,
     required String peerUsername,
@@ -65,6 +78,9 @@ abstract class SoulseekChannel {
     required int sizeBytes,
     required String cacheKey,
     required String fileExtension,
+    String? title,
+    String? artist,
+    int? durationSeconds,
   });
 
   /// Возвращает информацию о трансфере по downloadId (или null).
@@ -81,6 +97,42 @@ class SoulseekSource implements TrackSource {
 
   /// Настраиваемые фильтры поиска (UI Фазы 4 может менять перед вызовом search).
   SoulseekSearchFilters searchFilters = SoulseekSearchFilters.empty;
+
+  /// Интервал поллинга нативного состояния в [_waitForDownloadComplete].
+  ///
+  /// P1-фикс: события EventChannel могут теряться (переподписка после
+  /// onCancel/onListen, рестарт engine) — поллинг getTransfer/getCacheEntry
+  /// гарантирует завершение ожидания даже без события.
+  @visibleForTesting
+  Duration pollInterval = const Duration(seconds: 3);
+
+  /// Общий таймаут ожидания завершения одной загрузки.
+  @visibleForTesting
+  Duration downloadTimeout = const Duration(minutes: 10);
+
+  /// NEW-2: таймаут поиска из настроек (SoulseekPrefs.searchTimeoutSec),
+  /// применяется вместо хардкода 15 c. Управляет «окном тишины» C# bridge
+  /// (SearchInternal сбрасывает таймер на каждый ответ, поэтому это не
+  /// общий бюджет, а пауза после последнего пира). Загружается лениво из
+  /// SharedPreferences при первом поиске; настройка применяется со
+  /// следующего поиска после смены.
+  @visibleForTesting
+  int searchTimeoutMs = 15000;
+
+  static const _searchTimeoutKey = 'soulseek_search_timeout_sec';
+  bool _searchTimeoutLoaded = false;
+
+  Future<void> _ensureSearchTimeoutLoaded() async {
+    if (_searchTimeoutLoaded) return;
+    _searchTimeoutLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sec = prefs.getInt(_searchTimeoutKey);
+      if (sec != null && sec > 0) searchTimeoutMs = sec * 1000;
+    } catch (_) {
+      // best-effort: остаётся дефолт 15 c.
+    }
+  }
 
   /// Активные подписки на event stream — для отмены в [dispose].
   final Set<StreamSubscription<SoulseekTransferEvent>> _activeSubscriptions = {};
@@ -125,6 +177,11 @@ class SoulseekSource implements TrackSource {
     }
   }
 
+  /// Тестовый доступ к [_recordCacheKey].
+  @visibleForTesting
+  Future<void> recordCacheKeyForTest(String cacheKey) =>
+      _recordCacheKey(cacheKey);
+
   /// Удаляет [cacheKey] из индекса и персистит.
   Future<void> _removeCacheKey(String cacheKey) async {
     if (_knownCacheKeys.remove(cacheKey)) {
@@ -163,6 +220,24 @@ class SoulseekSource implements TrackSource {
     } catch (_) {}
   }
 
+  /// Синхронизирует индекс [_knownCacheKeys] с нативным списком кэша.
+  ///
+  /// P1-каскад: загрузки, завершённые без активной подписки на
+  /// transferEvents, не попадали в Dart-индекс — кэш-лист их не показывал.
+  /// Вызывается кэш-листом при каждом открытии/обновлении.
+  Future<void> refreshCacheIndex() async {
+    try {
+      final entries = await _channel.getCacheEntries();
+      var changed = false;
+      for (final e in entries) {
+        if (e.complete && _knownCacheKeys.add(e.cacheKey)) changed = true;
+      }
+      if (changed) await _persistCacheIndex();
+    } catch (_) {
+      // Не Android / канал недоступен — индекс остаётся как есть.
+    }
+  }
+
   @override
   String get id => sourceId;
 
@@ -184,11 +259,14 @@ class SoulseekSource implements TrackSource {
 
     final requestId = const Uuid().v4();
 
+    // NEW-2: применяем настраиваемый таймаут из настроек (default 15 c).
+    await _ensureSearchTimeoutLoaded();
+
     try {
       final results = await _channel.search(
         requestId: requestId,
         query: q,
-        timeoutMs: 15000,
+        timeoutMs: searchTimeoutMs,
         responseLimit: 250,
         filters: searchFilters,
       );
@@ -196,14 +274,19 @@ class SoulseekSource implements TrackSource {
       // Пост-фильтрация на Dart-стороне (дублирование native-фильтров).
       final filtered = results.where((r) => searchFilters.matches(r)).toList();
 
-      // Дедупликация по filename + size.
-      final seen = <String>{};
+      // Дедупликация по filename + size и по resultId (P4-защита).
+      //
+      // Дубликаты resultId давали несколько треков с одинаковым globalId
+      // в результатах поиска → мульти-подсветка «играющих» треков после
+      // одного тапа (isPlaying сравнивает mediaItem.id с globalId).
+      final seenFiles = <String>{};
+      final seenIds = <String>{};
       final deduped = <SoulseekSearchResult>[];
       for (final r in filtered) {
-        final key = '${r.filename}|${r.sizeBytes}';
-        if (seen.add(key)) {
-          deduped.add(r);
-        }
+        final fileKey = '${r.filename}|${r.sizeBytes}';
+        if (!seenFiles.add(fileKey)) continue;
+        if (r.resultId.isNotEmpty && !seenIds.add(r.resultId)) continue;
+        deduped.add(r);
       }
 
       final tracks = deduped.take(limit).map(_resultToTrack).toList();
@@ -301,6 +384,10 @@ class SoulseekSource implements TrackSource {
       sizeBytes: sizeBytes,
       cacheKey: cacheKey,
       fileExtension: extension,
+      // NEW-3: человекочитаемые метаданные для кэш-листа.
+      title: track.title,
+      artist: track.artist,
+      durationSeconds: track.duration?.inSeconds,
     );
 
     // Cache hit — файл уже complete (мог появиться между шагами 1 и 2).
@@ -315,15 +402,24 @@ class SoulseekSource implements TrackSource {
     return _waitForDownloadComplete(actualDownloadId);
   }
 
-  /// Ждёт transfer-событие completed/failed/cancelled для [downloadId].
+  /// Ждёт завершения загрузки [downloadId] — событие ИЛИ поллинг-fallback.
   ///
-  /// Подписывается на event stream, затем проверяет текущее состояние через
-  /// getTransfer (race-safe: если событие уже пришло, completer уже completed).
-  Future<String> _waitForDownloadComplete(
-    String downloadId, {
-    Duration timeout = const Duration(minutes: 10),
-  }) async {
+  /// P1-фикс: раньше ожидание опиралось только на transfer-события
+  /// EventChannel. Если событие терялось (переподписка onCancel→onListen,
+  /// рестарт engine), completer не завершался никогда. Теперь:
+  ///  1. Подписка на события (основной путь).
+  ///  2. Немедленная проверка текущего состояния после подписки.
+  ///  3. Поллинг getTransfer + getCacheEntry(cacheKey) каждые [pollInterval]
+  ///     — гарантированное завершение даже без событий.
+  ///  4. Общий таймаут [downloadTimeout] — бросает SoulseekException.
+  Future<String> _waitForDownloadComplete(String downloadId) async {
+    final cacheKey = downloadId.replaceFirst('dl_', '');
     final completer = Completer<String>();
+    Timer? pollTimer;
+
+    void finish() {
+      pollTimer?.cancel();
+    }
 
     void handleInfo(SoulseekTransferInfo info) {
       if (info.downloadId != downloadId) return;
@@ -360,7 +456,38 @@ class SoulseekSource implements TrackSource {
     }
 
     // cacheKey для записи в индекс после завершения.
-    final cacheKeyForIndex = downloadId.replaceFirst('dl_', '');
+    final cacheKeyForIndex = cacheKey;
+
+    // Однократная проверка нативного состояния (race-safe: событие могло
+    // прийти между startDownload и подпиской).
+    Future<void> probeOnce() async {
+      // 1. Состояние трансфера.
+      try {
+        final current = await _channel.getTransfer(downloadId);
+        if (current != null) {
+          handleInfo(current);
+          if (current.state == SoulseekTransferState.completed) {
+            _recordCacheKey(cacheKeyForIndex);
+          }
+          if (completer.isCompleted) return;
+        }
+      } catch (_) {
+        // Игнорируем — основной путь события/поллинга продолжит работу.
+      }
+      if (completer.isCompleted) return;
+
+      // 2. Файл мог появиться в кэше даже без трансфера в мапе
+      //    (например, завершён другим процессом или после рестарта сервиса).
+      try {
+        final entry = await _channel.getCacheEntry(cacheKey);
+        if (entry != null && entry.complete) {
+          if (!completer.isCompleted) completer.complete(entry.localPath);
+          _recordCacheKey(cacheKeyForIndex);
+        }
+      } catch (_) {
+        // Игнорируем.
+      }
+    }
 
     final sub = _channel.transferEvents.listen(
       (event) {
@@ -376,22 +503,15 @@ class SoulseekSource implements TrackSource {
     );
     _activeSubscriptions.add(sub);
 
-    // Проверяем текущее состояние после подписки (race-safe).
-    try {
-      final current = await _channel.getTransfer(downloadId);
-      if (current != null) {
-        handleInfo(current);
-        if (current.state == SoulseekTransferState.completed) {
-          _recordCacheKey(cacheKeyForIndex);
-        }
-      }
-    } catch (_) {
-      // Игнорируем — будем ждать событие.
-    }
+    // Поллинг-fallback: периодическая probeOnce до терминального состояния.
+    pollTimer = Timer.periodic(pollInterval, (_) => probeOnce());
+
+    // Немедленная первая проверка после подписки.
+    await probeOnce();
 
     try {
       return await completer.future.timeout(
-        timeout,
+        downloadTimeout,
         onTimeout: () => throw const SoulseekException(
           'DOWNLOAD_TIMEOUT',
           'Download timed out',
@@ -399,6 +519,7 @@ class SoulseekSource implements TrackSource {
         ),
       );
     } finally {
+      finish();
       _activeSubscriptions.remove(sub);
       await sub.cancel();
     }
@@ -478,9 +599,142 @@ class SoulseekSource implements TrackSource {
     return track.qualityScore;
   }
 
-  /// Soulseek не предоставляет обложек — всегда null (фолбэк на Genius/iTunes).
+  /// Soulseek не предоставляет обложек в поисковой выдаче — используем
+  /// общий ArtworkProvider (Genius/iTunes) как фолбэк по artist/title.
+  /// FLAC PICTURE / ID3 APIC извлечение из файла отложено (опционально).
   @override
-  Future<String?> resolveArtwork(Track track) async => null;
+  Future<String?> resolveArtwork(Track track) async {
+    try {
+      return await ArtworkProvider.instance
+          .findArtwork(track.artist, track.title);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  P5: фоновое обогащение обложками (паттерн MuzmoSource)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Запускает фоновое дозаполнение artworkUrl через ArtworkProvider
+  /// (Genius/iTunes) по artist/title — не блокируя выдачу результатов
+  /// поиска (P5: [_resultToTrack] ставит artworkUrl = null).
+  ///
+  /// Паттерн MuzmoSource/SoundCloudSource: приоритет видимых треков,
+  /// ограничение параллелизма, батч-обновление UI через [onUpdate].
+  void enrichArtworksInBackground(
+    List<Track> tracks,
+    void Function(List<Track> updated) onUpdate,
+  ) {
+    final mutable = List<Track>.of(tracks);
+    unawaited(_enrichArtworks(mutable, onUpdate));
+  }
+
+  /// Приоритетный индекс: треки переставляются так, чтобы первые N
+  /// (видимая область экрана) обрабатывались раньше остальных.
+  static const int _visibleCount = 8;
+
+  List<int> _priorityIndices(int total) {
+    final indices = <int>[];
+    // Сначала видимые (0 → _visibleCount-1)
+    for (var i = 0; i < total && i < _visibleCount; i++) {
+      indices.add(i);
+    }
+    // Затем остальные
+    for (var i = _visibleCount; i < total; i++) {
+      indices.add(i);
+    }
+    return indices;
+  }
+
+  Future<void> _enrichArtworks(
+    List<Track> tracks, [
+    void Function(List<Track> updated)? onUpdate,
+  ]) async {
+    const concurrency = 6;
+    final order = _priorityIndices(tracks.length);
+    var pos = 0;
+
+    Timer? notifyTimer;
+    void scheduleNotify() {
+      if (onUpdate == null) return;
+      notifyTimer?.cancel();
+      notifyTimer = Timer(const Duration(milliseconds: 50), () {
+        onUpdate(List<Track>.of(tracks));
+      });
+    }
+
+    Future<void> worker() async {
+      while (true) {
+        final i = pos++;
+        if (i >= order.length) return;
+        final idx = order[i];
+        final t = tracks[idx];
+        // Уже обогащённые пропускаем: enrich получает треки из
+        // state.results, где могли остаться обложки прошлого поиска.
+        if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) continue;
+        try {
+          final url = await ArtworkProvider.instance
+              .findArtwork(t.artist, t.title)
+              .timeout(const Duration(seconds: 4));
+          if (url != null && url.isNotEmpty) {
+            tracks[idx] = t.copyWith(artworkUrl: url);
+            scheduleNotify();
+            // Прекэшируем миниатюру (200px — размер для списков),
+            // чтобы к моменту перерисовки UI она уже была в кэше.
+            unawaited(_precacheThumb(url));
+          }
+        } on TimeoutException {
+          // best-effort
+        } catch (_) {
+          // best-effort
+        }
+      }
+    }
+
+    await Future.wait(List.generate(concurrency, (_) => worker()));
+
+    notifyTimer?.cancel();
+    if (onUpdate != null) onUpdate(List<Track>.of(tracks));
+  }
+
+  /// Фоновый прекэш уменьшенной обложки в CachedNetworkImage,
+  /// чтобы UI показал картинку мгновенно, без второго сетевого круга.
+  static final Set<String> _precachedUrls = {};
+
+  /// В flutter test нет path_provider — CachedNetworkImageProvider падает
+  /// с MissingPluginException (unhandled zone error роняет тест).
+  /// Прекэш — чистая оптимизация, тесты его отключают.
+  @visibleForTesting
+  static bool precacheThumbsEnabled = true;
+
+  static Future<void> _precacheThumb(String url) async {
+    if (_precachedUrls.contains(url)) return;
+    if (!precacheThumbsEnabled) return;
+    _precachedUrls.add(url);
+    try {
+      final provider = CachedNetworkImageProvider(url);
+      final config = ImageConfiguration(size: const Size(200, 200));
+      final stream = provider.resolve(config);
+      final completer = Completer<void>();
+      late ImageStreamListener listener;
+      listener = ImageStreamListener(
+        (info, _) {
+          info.image.dispose();
+          if (!completer.isCompleted) completer.complete();
+        },
+        onError: (e, stack) {
+          if (!completer.isCompleted) completer.complete();
+        },
+      );
+      stream.addListener(listener);
+      try {
+        await completer.future;
+      } finally {
+        stream.removeListener(listener);
+      }
+    } catch (_) {}
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   //  dispose
