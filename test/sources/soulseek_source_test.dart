@@ -23,6 +23,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/models/track.dart';
+import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
 
@@ -38,6 +39,9 @@ class _TestChannel implements SoulseekChannel {
   List<SoulseekSearchResult> searchResults = [];
   Object? searchError;
   String? lastSearchQuery;
+
+  /// NEW-2: последний timeoutMs, переданный в search().
+  int? lastSearchTimeoutMs;
 
   // Конфигурация cache / download
   SoulseekCacheEntry? cacheEntry;
@@ -60,13 +64,32 @@ class _TestChannel implements SoulseekChannel {
     required SoulseekSearchFilters filters,
   }) async {
     lastSearchQuery = query;
+    lastSearchTimeoutMs = timeoutMs;
     if (searchError != null) throw searchError!;
     return searchResults;
   }
 
+  /// Задержка ответов getTransfer/getCacheEntry — имитация нативной
+  /// латентности в тестах поллинга (P1).
+  Duration pollDelay = Duration.zero;
+
   @override
-  Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey) async =>
-      cacheEntry;
+  Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey) async {
+    if (pollDelay > Duration.zero) await Future.delayed(pollDelay);
+    return cacheEntry;
+  }
+
+  // P1-каскад: полный список нативных кэш-записей.
+  List<SoulseekCacheEntry> cacheEntries = const [];
+  bool cacheEntriesError = false;
+
+  @override
+  Future<List<SoulseekCacheEntry>> getCacheEntries() async {
+    if (cacheEntriesError) {
+      throw const SoulseekException('ERR', 'getCacheEntries failed');
+    }
+    return cacheEntries;
+  }
 
   @override
   Future<SoulseekDownloadResult> startDownload({
@@ -76,6 +99,9 @@ class _TestChannel implements SoulseekChannel {
     required int sizeBytes,
     required String cacheKey,
     required String fileExtension,
+    String? title,
+    String? artist,
+    int? durationSeconds,
   }) async {
     startDownloadCalls.add({
       'downloadId': downloadId,
@@ -84,6 +110,9 @@ class _TestChannel implements SoulseekChannel {
       'sizeBytes': sizeBytes,
       'cacheKey': cacheKey,
       'fileExtension': fileExtension,
+      'title': title,
+      'artist': artist,
+      'durationSeconds': durationSeconds,
     });
     return downloadResult ??
         SoulseekDownloadResult(
@@ -94,8 +123,10 @@ class _TestChannel implements SoulseekChannel {
   }
 
   @override
-  Future<SoulseekTransferInfo?> getTransfer(String downloadId) async =>
-      transferInfo;
+  Future<SoulseekTransferInfo?> getTransfer(String downloadId) async {
+    if (pollDelay > Duration.zero) await Future.delayed(pollDelay);
+    return transferInfo;
+  }
 
   @override
   Stream<SoulseekTransferEvent> get transferEvents =>
@@ -766,6 +797,41 @@ void main() {
       expect(path, '/cache/hit.flac');
     });
 
+    test('NEW-3: startDownload receives title/artist/durationSeconds', () async {
+      channel.cacheEntry = null;
+      channel.downloadResult = const SoulseekDownloadResult(
+        downloadId: 'dl_ck_test',
+        result: 'dl_ck_test',
+        cacheHit: false,
+      );
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.completed,
+        localPath: '/cache/done.flac',
+      );
+      // Трек с duration — как из _resultToTrack поисковой выдачи.
+      final track = _makeTrack();
+      final withDuration = Track(
+        id: track.id,
+        sourceId: track.sourceId,
+        title: 'Title',
+        artist: 'Artist',
+        duration: const Duration(seconds: 240),
+        artworkUrl: null,
+        qualityScore: track.qualityScore,
+        qualityLabel: track.qualityLabel,
+        extra: track.extra,
+      );
+
+      await source.resolveStreamUrl(withDuration);
+
+      expect(channel.startDownloadCalls, hasLength(1));
+      final call = channel.startDownloadCalls.single;
+      expect(call['title'], 'Title');
+      expect(call['artist'], 'Artist');
+      expect(call['durationSeconds'], 240);
+    });
+
     test('waits for download completion via getTransfer', () async {
       channel.cacheEntry = null;
       channel.downloadResult = const SoulseekDownloadResult(
@@ -851,6 +917,95 @@ void main() {
         source.resolveStreamUrl(track),
         throwsA(isA<StateError>()),
       );
+    });
+
+    test('polling fallback completes when events are lost (P1)', () async {
+      // Сценарий P1: событие completed потеряно (EventChannel переподписался),
+      // но getCacheEntry при поллинге находит готовый файл.
+      channel.cacheEntry = null;
+      channel.downloadResult = const SoulseekDownloadResult(
+        downloadId: 'dl_ck_test',
+        result: 'dl_ck_test',
+        cacheHit: false,
+      );
+      channel.transferInfo = null;
+      channel.pollDelay = const Duration(milliseconds: 10);
+      source.pollInterval = const Duration(milliseconds: 15);
+
+      Future.delayed(const Duration(milliseconds: 60), () {
+        channel.cacheEntry = const SoulseekCacheEntry(
+          cacheKey: 'ck_test',
+          localPath: '/cache/polled.flac',
+          sizeBytes: 50000000,
+          complete: true,
+          pinned: false,
+        );
+      });
+
+      final path = await source.resolveStreamUrl(_makeTrack());
+      expect(path, '/cache/polled.flac');
+      // Поллинг нашёл ключ — индекс пополнился.
+      await Future.delayed(Duration.zero);
+      expect(source.knownCacheKeys, contains('ck_test'));
+    });
+
+    test('throws DOWNLOAD_TIMEOUT when nothing completes within timeout (P1)',
+        () async {
+      channel.cacheEntry = null;
+      channel.downloadResult = const SoulseekDownloadResult(
+        downloadId: 'dl_ck_test',
+        result: 'dl_ck_test',
+        cacheHit: false,
+      );
+      channel.transferInfo = null;
+      channel.pollDelay = const Duration(milliseconds: 5);
+      source.pollInterval = const Duration(milliseconds: 10);
+      source.downloadTimeout = const Duration(milliseconds: 60);
+
+      await expectLater(
+        source.resolveStreamUrl(_makeTrack()),
+        throwsA(
+          isA<SoulseekException>().having(
+            (e) => e.code,
+            'code',
+            'DOWNLOAD_TIMEOUT',
+          ),
+        ),
+      );
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  refreshCacheIndex (P1-каскад)
+  // ═══════════════════════════════════════════════════════════════════
+  group('refreshCacheIndex', () {
+    test('syncs knownCacheKeys from native cache entries', () async {
+      channel.cacheEntries = const [
+        SoulseekCacheEntry(
+          cacheKey: 'ck_native_1',
+          localPath: '/cache/one.flac',
+          sizeBytes: 100,
+          complete: true,
+          pinned: false,
+        ),
+        SoulseekCacheEntry(
+          cacheKey: 'ck_native_2',
+          localPath: '/cache/two.flac',
+          sizeBytes: 200,
+          complete: true,
+          pinned: true,
+        ),
+      ];
+      await source.refreshCacheIndex();
+      expect(source.knownCacheKeys, containsAll(['ck_native_1', 'ck_native_2']));
+    });
+
+    test('keeps index intact when channel throws', () async {
+      await source.recordCacheKeyForTest('ck_existing');
+      await Future.delayed(Duration.zero);
+      channel.cacheEntriesError = true;
+      await source.refreshCacheIndex();
+      expect(source.knownCacheKeys, contains('ck_existing'));
     });
   });
 
@@ -1011,6 +1166,74 @@ void main() {
       // Clear all.
       source.clearCacheIndex();
       expect(source.knownCacheKeys, isEmpty);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  NEW-2: применяемый таймаут поиска из настроек
+  // ═══════════════════════════════════════════════════════════════════
+  group('search timeout from prefs (NEW-2)', () {
+    test('default 15000 ms when pref not set', () async {
+      channel.searchResults = [_searchResult()];
+      await source.search('query');
+      expect(channel.lastSearchTimeoutMs, 15000);
+    });
+
+    test('pref soulseek_search_timeout_sec=10 → 10000 ms', () async {
+      SharedPreferences.setMockInitialValues({
+        'soulseek_search_timeout_sec': 10,
+      });
+      // Ленивая загрузка один раз на инстанс — пересоздаём source.
+      source = SoulseekSource(channel: channel);
+      await Future.delayed(Duration.zero);
+      channel.searchResults = [_searchResult()];
+      await source.search('query');
+      expect(channel.lastSearchTimeoutMs, 10000);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  P5: фоновое обогащение обложками
+  // ═══════════════════════════════════════════════════════════════════
+  group('enrichArtworksInBackground (P5)', () {
+    test('fills artworkUrl from ArtworkProvider and skips enriched', () async {
+      // В тестах нет path_provider — прекэш миниатюр отключаем.
+      SoulseekSource.precacheThumbsEnabled = false;
+      addTearDown(() => SoulseekSource.precacheThumbsEnabled = true);
+      // Сид in-memory кэша — findArtwork вернёт URL без сети.
+      ArtworkProvider.instance
+          .cacheArtworkForTesting('Artist', 'Title', 'http://art.example/1.jpg');
+
+      final t1 = _makeTrack();
+      final t2 = Track(
+        id: 'already',
+        sourceId: SoulseekSource.sourceId,
+        title: 'Title',
+        artist: 'Artist',
+        duration: null,
+        artworkUrl: 'http://existing.jpg',
+        qualityScore: 1411,
+        qualityLabel: 'FLAC',
+        extra: t1.extra,
+      );
+
+      final updated = <List<Track>>[];
+      source.enrichArtworksInBackground([t1, t2], updated.add);
+
+      // Фоновая задача — даём ей завершиться (worst-case несколько циклов).
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      expect(updated, isNotEmpty);
+      final last = updated.last;
+      expect(
+        last.firstWhere((t) => t.id == 'test_id').artworkUrl,
+        'http://art.example/1.jpg',
+      );
+      // Уже обогащённый трек не перезатирается.
+      expect(
+        last.firstWhere((t) => t.id == 'already').artworkUrl,
+        'http://existing.jpg',
+      );
     });
   });
 

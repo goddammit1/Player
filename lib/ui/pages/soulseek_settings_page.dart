@@ -14,6 +14,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -202,6 +203,24 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         });
       },
     );
+
+    // P2: connectionEvents приходят только при ИЗМЕНЕНИЯХ. При повторном
+    // входе на страницу живое соединение иначе отображалось бы устаревшим
+    // Disconnected — перезапрашиваем актуальный статус у натива.
+    _queryConnectionState();
+  }
+
+  Future<void> _queryConnectionState() async {
+    try {
+      final state = await SoulseekPlatformChannel.instance
+          .getConnectionState();
+      if (!mounted) return;
+      // Не затираем прогресс текущего подключения.
+      if (_connecting) return;
+      setState(() => _connectionState = state);
+    } catch (_) {
+      // Сервис не запущен / платформа недоступна — остаёмся на default.
+    }
   }
 
   // ── Действия ──
@@ -258,46 +277,83 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       _connectionMessage = null;
     });
 
-    try {
-      // Сначала сохраняем учётные данные, затем подключаемся.
-      await SoulseekCredentials.save(
-        username: username,
-        password: password,
-      );
+    // P3: первый коннект после старта сервиса иногда падает по
+    // SocketException (DNS proxy errno=111) — C# bridge классифицирует
+    // его как retryable. Пробуем подключиться до 3 раз с паузой 2 с,
+    // ретраим только retryable-ошибки.
+    const maxAttempts = 3;
+    const retryDelay = Duration(seconds: 2);
 
-      await SoulseekPlatformChannel.instance.startService();
+    SoulseekConnectionInfo? info;
+    SoulseekException? lastError;
 
-      final info = await SoulseekPlatformChannel.instance.connect(
-        username: username,
-        password: password,
-        listenPort: _listenPort,
-      );
-
-      if (mounted) {
-        setState(() {
-          _connectionState = info.state;
-          _connecting = false;
-        });
-      }
-    } on SoulseekException catch (e) {
-      if (mounted) {
-        setState(() {
-          _connectionState = SoulseekConnectionState.failed;
-          _connectionMessage = e.message;
-          _connecting = false;
-        });
-        showSnack(context, 'Connection failed: ${e.message}');
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _connectionState = SoulseekConnectionState.failed;
-          _connectionMessage = e.toString();
-          _connecting = false;
-        });
-        showSnack(context, 'Connection failed');
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        info = await _connectOnce(username, password);
+        break;
+      } on SoulseekException catch (e) {
+        lastError = e;
+        // P3: «Service not bound» / таймаут bind'а — гонка старта сервиса,
+        // не ошибка кредов. Классифицируем как retryable, чтобы существующий
+        // retry-цикл 3×2с подхватил даже если нативный флаг не дошёл.
+        final effectiveRetryable = e.retryable || e.isServiceBindRace;
+        final canRetry = effectiveRetryable && attempt < maxAttempts;
+        if (kDebugMode) {
+          debugPrint(
+            '[Soulseek] connect attempt $attempt/$maxAttempts failed: '
+            '${e.code} (retryable: $effectiveRetryable)',
+          );
+        }
+        if (!canRetry) break;
+        if (mounted) {
+          setState(() => _connectionMessage = 'Retrying ($attempt/$maxAttempts)…');
+        }
+        await Future<void>.delayed(retryDelay);
+      } catch (e) {
+        // Непредвиденная ошибка (secure storage и т.п.) — не ретраим.
+        lastError = SoulseekException('CONNECT_FAILED', e.toString());
+        break;
       }
     }
+
+    if (!mounted) return;
+
+    if (info != null) {
+      final connected = info;
+      setState(() {
+        _connectionState = connected.state;
+        _connectionMessage = null;
+        _connecting = false;
+      });
+    } else {
+      final e = lastError ?? const SoulseekException('CONNECT_FAILED', 'Connect failed');
+      setState(() {
+        _connectionState = SoulseekConnectionState.failed;
+        _connectionMessage = e.message;
+        _connecting = false;
+      });
+      showSnack(context, 'Connection failed: ${e.message}');
+    }
+  }
+
+  /// Одна попытка подключения: сохранить учётные данные, стартовать
+  /// сервис, вызвать connect. Бросает SoulseekException при неудаче.
+  Future<SoulseekConnectionInfo> _connectOnce(
+    String username,
+    String password,
+  ) async {
+    await SoulseekCredentials.save(
+      username: username,
+      password: password,
+    );
+
+    await SoulseekPlatformChannel.instance.startService();
+
+    return SoulseekPlatformChannel.instance.connect(
+      username: username,
+      password: password,
+      listenPort: _listenPort,
+    );
   }
 
   Future<void> _disconnect() async {
