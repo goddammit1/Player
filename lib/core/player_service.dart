@@ -9,8 +9,11 @@ import 'package:rxdart/rxdart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart' show ImageConfiguration, ImageStreamListener, Size;
 import '../models/track.dart';
+import '../sources/soulseek_platform_channel.dart';
+import '../sources/soulseek_source.dart';
 import '../sources/source_registry.dart';
 import '../sources/artwork_provider.dart';
+import 'cache_evictor.dart';
 import 'database/app_database.dart';
 import 'repositories/history_repository.dart';
 import 'repositories/playlist_repository.dart';
@@ -451,8 +454,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
       if (!isRetry) {
         _log('[$myGen] Evicting cache and retrying...');
-        final cacheId = _cacheIdForTrack(track);
-        await YoutubeCache.instance.evict(cacheId);
+        await _evictCacheForTrack(track);
         _loadGeneration = myGen - 1;
         await _playIndex(index, isRetry: true);
       } else {
@@ -460,6 +462,25 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
         _skipAfterError(index);
       }
     }
+  }
+
+  /// Source-aware инвалидация кэша перед повторной попыткой воспроизведения
+  /// (см. [evictTrackCache]): для Soulseek — нативный кэш через platform
+  /// channel (removeCache) + сброс Dart-индекса cache keys; для остальных
+  /// источников — прежнее поведение (YoutubeCache.evict).
+  Future<void> _evictCacheForTrack(Track track) {
+    return evictTrackCache(
+      track,
+      removeSoulseekCache: (cacheKey) =>
+          SoulseekPlatformChannel.instance.removeCache(cacheKey),
+      forgetSoulseekCacheKey: (cacheKey) {
+        final source = SourceRegistry.instance.get(SoulseekSource.sourceId);
+        if (source is SoulseekSource) {
+          source.forgetCacheKey(cacheKey);
+        }
+      },
+      evictYoutubeCache: (cacheId) => YoutubeCache.instance.evict(cacheId),
+    );
   }
 
   int _consecutiveSkips = 0;
@@ -645,10 +666,15 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     listener = ImageStreamListener(
       (imageInfo, _) {
         imageInfo.image.dispose();
-        completer.complete();
+        // NEW-1: слушатель стреляет на каждый кадр (мультифреймовые
+        // изображения) — guard от «Bad state: Future already completed».
+        if (!completer.isCompleted) completer.complete();
       },
       onError: (exception, stackTrace) {
-        completer.completeError(exception, stackTrace);
+        // Error может прийти после успешного кадра — игнорируем.
+        if (!completer.isCompleted) {
+          completer.completeError(exception, stackTrace);
+        }
       },
     );
     stream.addListener(listener);
