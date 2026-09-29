@@ -26,6 +26,19 @@ class SoulseekException implements Exception {
   @override
   String toString() =>
       'SoulseekException($code): $message (retryable: $retryable)';
+
+  /// P3: ошибки гонки bind↔connect / недоступности сервиса.
+  ///
+  /// «Service not bound» (NOT_CONNECTED) может прийти без retryable-флага,
+  /// когда команда пришла в окне между bindService и onServiceConnected
+  /// (нативная pending-очередь закрывает первопричину, но страховка на
+  /// Dart-стороне остаётся). Такие ошибки — не неверные креды и не битый
+  /// файл: повтор через пару секунд почти наверняка успешен.
+  bool get isServiceBindRace => switch (code) {
+        'SERVICE_BIND_TIMEOUT' || 'SERVICE_UNAVAILABLE' => true,
+        'NOT_CONNECTED' => message.toLowerCase().contains('not bound'),
+        _ => false,
+      };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -370,12 +383,21 @@ class SoulseekCacheEntry {
   final bool complete;
   final bool pinned;
 
+  /// NEW-3: человекочитаемые метаданные (null для записей, завершённых
+  /// до миграции БД v2, — UI показывает фолбэк на basename файла).
+  final String? title;
+  final String? artist;
+  final int? durationSeconds;
+
   const SoulseekCacheEntry({
     required this.cacheKey,
     required this.localPath,
     required this.sizeBytes,
     required this.complete,
     required this.pinned,
+    this.title,
+    this.artist,
+    this.durationSeconds,
   });
 
   factory SoulseekCacheEntry.fromMap(Map<String, dynamic> m) {
@@ -385,6 +407,9 @@ class SoulseekCacheEntry {
       sizeBytes: _asInt(m['sizeBytes']),
       complete: m['complete'] == true,
       pinned: m['pinned'] == true,
+      title: m['title'] as String?,
+      artist: m['artist'] as String?,
+      durationSeconds: _asIntOrNull(m['durationSeconds']),
     );
   }
 }
