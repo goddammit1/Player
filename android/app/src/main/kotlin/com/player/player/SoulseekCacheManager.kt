@@ -65,7 +65,11 @@ class SoulseekCacheManager(
         val sizeBytes: Long,
         val complete: Boolean,
         val lastAccessAt: Long,
-        val pinned: Boolean
+        val pinned: Boolean,
+        /** NEW-3: человекочитаемые метаданные (NULL для старых записей). */
+        val title: String? = null,
+        val artist: String? = null,
+        val durationSeconds: Int? = null
     )
 
     /**
@@ -91,10 +95,43 @@ class SoulseekCacheManager(
                 sizeBytes = file.length(),
                 complete = true,
                 lastAccessAt = System.currentTimeMillis(),
-                pinned = row.pinned
+                pinned = row.pinned,
+                title = row.title,
+                artist = row.artist,
+                durationSeconds = row.durationSeconds
             )
         }
         return null
+    }
+
+    /**
+     * Все завершённые кэш-записи с существующим на диске файлом, LRU-порядок.
+     *
+     * P1-каскад: источник истины для Flutter cache sheet — нативная БД,
+     * а не Dart-индекс knownCacheKeys (последний терял записи, завершённые
+     * без активной подписки на event stream).
+     */
+    fun getAllCacheEntries(): List<CacheEntry> {
+        val rows = database.getAllCacheEntriesLru()
+        val out = ArrayList<CacheEntry>(rows.size)
+        for (row in rows) {
+            val file = File(row.localPath)
+            if (!row.complete || !file.exists() || file.length() == 0L) continue
+            out.add(
+                CacheEntry(
+                    cacheKey = row.cacheKey,
+                    localPath = row.localPath,
+                    sizeBytes = file.length(),
+                    complete = true,
+                    lastAccessAt = row.lastAccessAt,
+                    pinned = row.pinned,
+                    title = row.title,
+                    artist = row.artist,
+                    durationSeconds = row.durationSeconds
+                )
+            )
+        }
+        return out
     }
 
     /**
@@ -126,10 +163,19 @@ class SoulseekCacheManager(
      * Регистрирует завершённую загрузку в БД: ищет финальный файл
      * `<cacheKey>.<extension>`, обновляет cache_entries.
      *
+     * NEW-3: [title]/[artist]/[durationSeconds] — человекочитаемые
+     * метаданные из поисковой выдачи; NULL допустимы (restore-сценарий).
+     *
      * C# bridge делает atomic rename .part → final; здесь мы лишь фиксируем
      * результат в метаданных.
      */
-    fun completeTransfer(cacheKey: String, extension: String): File? {
+    fun completeTransfer(
+        cacheKey: String,
+        extension: String,
+        title: String? = null,
+        artist: String? = null,
+        durationSeconds: Int? = null
+    ): File? {
         val sanitizedKey = sanitizeCacheKey(cacheKey) ?: return null
         val safeExt = sanitizeExtension(extension) ?: "dat"
         val finalFile = File(cacheDir, "$sanitizedKey.$safeExt")
@@ -146,7 +192,10 @@ class SoulseekCacheManager(
                 extension = safeExt,
                 complete = true,
                 lastAccessAt = System.currentTimeMillis(),
-                pinned = false
+                pinned = false,
+                title = title,
+                artist = artist,
+                durationSeconds = durationSeconds
             )
         )
         // После регистрации нового файла — запускаем cleanup, чтобы не превысить лимит.

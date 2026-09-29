@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
@@ -54,6 +56,9 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         private const val TAG = "SoulseekPlugin"
         private const val METHOD_CHANNEL = "soulseek/methods"
         private const val EVENT_CHANNEL = "soulseek/events"
+
+        /** P3: максимум ожидания onServiceConnected для команд в очереди. */
+        private const val PENDING_COMMAND_TIMEOUT_MS = 10_000L
     }
 
     private var applicationContext: Context? = null
@@ -69,32 +74,58 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
     private var serviceBinder: SoulseekForegroundService.SoulseekServiceBinder? = null
     private var isBound = false
 
+    // P3: bind уже инициирован (bindService вернул true), но onServiceConnected
+    // ещё не наступил. Команды, пришедшие в этом окне, не выполняются сразу —
+    // они ставятся в pendingCommands и исполняются после подключения.
+    private var bindPending = false
+
     // EventChannel sink — установлен когда Flutter подписывается.
     @Volatile
     private var eventSink: EventChannel.EventSink? = null
 
-    // Pending commands, выполненные ДО того как сервис привязался.
+    // EventSink.success помечен @UiThread — вызов из фонового потока (события
+    // приходят из сервиса через Dispatchers.IO) бросает RuntimeException и
+    // роняет процесс. Маршализуем все отправки на main thread.
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Отправка события в Flutter строго на main thread. */
+    private fun sendEvent(json: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            eventSink?.success(json)
+        } else {
+            mainHandler.post {
+                // Гонка: onCancel мог выполниться, пока post висел в очереди.
+                eventSink?.success(json)
+            }
+        }
+    }
+
+    // Pending commands, выполненные ДО того как сервис привязан.
     // startService триггерит bind; команды ждут в очереди.
-    private val pendingCommands = mutableListOf<Pair<MethodCall, MethodChannel.Result>>()
+    //
+    // P3: очередь ограничена по времени — если onServiceConnected не наступил
+    // за [PENDING_COMMAND_TIMEOUT_MS] (bind не удался, сервис умер), команды
+    // завершаются retryable-ошибкой SERVICE_BIND_TIMEOUT, а не висят вечно.
+    private val pendingCommands =
+        mutableListOf<Triple<MethodCall, MethodChannel.Result, Long>>()
+    private var pendingCommandsTimer: java.util.Timer? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             Log.i(TAG, "onServiceConnected")
+            bindPending = false
+            cancelPendingTimer()
             @Suppress("UNCHECKED_CAST")
             serviceBinder = service as? SoulseekForegroundService.SoulseekServiceBinder
             isBound = true
 
             // Устанавливаем listener для пересылки событий в EventChannel.
             serviceBinder?.setEventListener { json ->
-                eventSink?.success(json)
+                sendEvent(json)
             }
 
             // Выполняем ожидающие команды.
-            val pending = ArrayList(pendingCommands)
-            pendingCommands.clear()
-            for ((call, result) in pending) {
-                handleMethodCall(call, result)
-            }
+            executePendingCommands()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -107,6 +138,20 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             Log.w(TAG, "onBindingDied")
             serviceBinder = null
             isBound = false
+            bindPending = false
+        }
+
+        // P3: система не смогла привязаться (сервис не запустился) —
+        // ожидающие команды завершаем ошибкой вместо вечного зависания.
+        override fun onNullBinding(name: ComponentName?) {
+            Log.w(TAG, "onNullBinding")
+            bindPending = false
+            isBound = false
+            serviceBinder = null
+            failPendingCommands(
+                "SERVICE_UNAVAILABLE",
+                "Failed to bind to Soulseek service"
+            )
         }
     }
 
@@ -139,7 +184,11 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             isBound = false
             serviceBinder = null
         }
+        bindPending = false
         eventSink = null
+        // Завершаем ожидающие команды — engine уничтожается, ответ некому получать.
+        failPendingCommands("ENGINE_DETACHED", "Flutter engine is detached")
+        cancelPendingTimer()
         // Отменяем pending bridge-корутины.
         ioScope.cancel()
         applicationContext = null
@@ -154,13 +203,22 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         Log.i(TAG, "EventChannel onListen")
         eventSink = sink
 
-        // Восстановление состояния: немедленно отправляем snapshot активных
-        // трансферов, чтобы Flutter восстановил UI после переподключения.
+        // P1-фикс: onCancel снимает service-listener, поэтому при каждой
+        // новой подписке Flutter переустанавливаем его. Без этого после
+        // цикла cancel→listen события TransferManager терялись навсегда
+        // (первый resolve зависал в ожидании completed).
+        serviceBinder?.setEventListener { json ->
+            sendEvent(json)
+        }
+
+        // Восстановление состояния: немедленно отправляем snapshot ВСЕХ
+        // трансферов (включая терминальные), чтобы Flutter видел завершённые
+        // загрузки даже если их событие было доставлено до подписки.
         serviceBinder?.transferManager?.let { mgr ->
-            val active = mgr.getActiveTransfers()
-            if (active.isNotEmpty()) {
-                val snapshot = SoulseekEvents.snapshotJson(active).toString()
-                sink?.success(snapshot)
+            val all = mgr.getAllTransfers()
+            if (all.isNotEmpty()) {
+                val snapshot = SoulseekEvents.snapshotJson(all).toString()
+                sendEvent(snapshot)
             }
         }
     }
@@ -168,7 +226,7 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
     override fun onCancel(arguments: Any?) {
         Log.i(TAG, "EventChannel onCancel")
         eventSink = null
-        // Снимаем listener в сервисе.
+        // Снимаем listener в сервисе (onListen установит заново).
         serviceBinder?.setEventListener(null)
     }
 
@@ -177,18 +235,106 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
     // ───────────────────────────────────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        // P2: запрос статуса коннекта не должен иметь побочного эффекта
+        // запуска foreground service — если сервис не привязан, соединения
+        // нет, возвращаем DISCONNECTED сразу.
+        if (call.method == "getConnectionState" && serviceBinder == null) {
+            result.success(ConnectionState.DISCONNECTED.name)
+            return
+        }
+        // P3: bind инициирован, но binder ещё не доставлен (окно между
+        // bindService(true) и onServiceConnected). Раньше такие команды
+        // падали с NOT_CONNECTED "Service not bound" без retryable — теперь
+        // они встают в очередь и исполняются сразу после подключения binder'а.
+        if (bindPending && serviceBinder == null && call.method != "startService") {
+            queuePendingCommand(call, result)
+            return
+        }
         if (!isBound && call.method != "startService") {
-            // Сервис ещё не привязан — команда пойдёт в очередь, выполнится
-            // после onServiceConnected. Но для команд, требующих синхронного
-            // результата, лучше вернуть error сразу, если startService не был вызван.
             if (serviceBinder == null) {
-                // Ставим в очередь — выполнится после bind.
-                pendingCommands.add(call to result)
+                // Сервис не запускался — запускаем и ставим команду в очередь,
+                // выполнится после onServiceConnected.
+                queuePendingCommand(call, result)
                 ensureServiceStarted()
                 return
             }
         }
         handleMethodCall(call, result)
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  Pending commands queue (P3)
+    // ───────────────────────────────────────────────────────────────────
+
+    /** Ставит команду в очередь ожидания bind'а и запускает таймаут-таймер. */
+    private fun queuePendingCommand(call: MethodCall, result: MethodChannel.Result) {
+        mainHandler.post {
+            pendingCommands.add(Triple(call, result, System.currentTimeMillis()))
+            schedulePendingTimer()
+        }
+    }
+
+    /** Периодически проверяет очередь: зависшие команды завершаются ошибкой. */
+    private fun schedulePendingTimer() {
+        pendingCommandsTimer?.cancel()
+        val timer = java.util.Timer("SoulseekPendingCommands", true)
+        pendingCommandsTimer = timer
+        timer.schedule(
+            object : java.util.TimerTask() {
+                override fun run() {
+                    mainHandler.post { expirePendingCommands() }
+                }
+            },
+            PENDING_COMMAND_TIMEOUT_MS
+        )
+    }
+
+    private fun cancelPendingTimer() {
+        pendingCommandsTimer?.cancel()
+        pendingCommandsTimer = null
+    }
+
+    /** Завершает команды, ожидающие дольше [PENDING_COMMAND_TIMEOUT_MS]. */
+    private fun expirePendingCommands() {
+        if (pendingCommands.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val expired = pendingCommands.filter { now - it.third >= PENDING_COMMAND_TIMEOUT_MS }
+        if (expired.isEmpty()) return
+        pendingCommands.removeAll(expired)
+        cancelPendingTimer()
+        for ((_, result, _) in expired) {
+            result.error(
+                "SERVICE_BIND_TIMEOUT",
+                "Soulseek service did not bind within ${PENDING_COMMAND_TIMEOUT_MS / 1000}s",
+                mapOf("retryable" to true)
+            )
+        }
+        // Если остались живые команды — перепланируем таймер на ближайшую.
+        if (pendingCommands.isNotEmpty()) schedulePendingTimer()
+    }
+
+    /** Исполняет все отложенные команды (вызывается из onServiceConnected). */
+    private fun executePendingCommands() {
+        if (pendingCommands.isEmpty()) return
+        val pending = ArrayList(pendingCommands)
+        pendingCommands.clear()
+        cancelPendingTimer()
+        for ((call, result, _) in pending) {
+            handleMethodCall(call, result)
+        }
+    }
+
+    /** Завершает все отложенные команды ошибкой (onNullBinding / detach). */
+    private fun failPendingCommands(code: String, message: String) {
+        mainHandler.post {
+            if (pendingCommands.isEmpty()) return@post
+            val pending = ArrayList(pendingCommands)
+            pendingCommands.clear()
+            cancelPendingTimer()
+            for ((_, result, _) in pending) {
+                result.error(code, message, mapOf("retryable" to true))
+            }
+        }
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -292,6 +438,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     val cacheKey = call.argument<String>("cacheKey")
                         ?: run { result.error("INVALID_ARGS", "cacheKey is required", null); return }
                     val fileExtension = call.argument<String>("fileExtension") ?: "dat"
+                    // NEW-3: метаданные для человекочитаемого кэш-листа.
+                    val title = call.argument<String>("title")
+                    val artist = call.argument<String>("artist")
+                    val durationSeconds = call.argument<Number>("durationSeconds")?.toInt()
 
                     // Acquire locks для активной передачи.
                     serviceBinder?.acquireLocks()
@@ -302,7 +452,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                         remoteFilename = remoteFilename,
                         sizeBytes = sizeBytes,
                         cacheKey = cacheKey,
-                        fileExtension = fileExtension
+                        fileExtension = fileExtension,
+                        title = title,
+                        artist = artist,
+                        durationSeconds = durationSeconds
                     )
                     // ret может быть путём (cache hit) или downloadId.
                     val map = mapOf(
@@ -373,7 +526,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                             "localPath" to it.localPath,
                             "sizeBytes" to it.sizeBytes,
                             "complete" to it.complete,
-                            "pinned" to it.pinned
+                            "pinned" to it.pinned,
+                            "title" to it.title,
+                            "artist" to it.artist,
+                            "durationSeconds" to it.durationSeconds
                         )
                     })
                 }
@@ -421,6 +577,35 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     result.success(removed)
                 }
 
+                // P1-каскад: полный список кэш-записей из нативной БД,
+                // чтобы Flutter не зависел от Dart-индекса knownCacheKeys.
+                "getCacheEntries" -> {
+                    val cache = serviceBinder?.cacheManager
+                        ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
+                    val entries = cache.getAllCacheEntries()
+                    val mapped = entries.map {
+                        mapOf(
+                            "cacheKey" to it.cacheKey,
+                            "localPath" to it.localPath,
+                            "sizeBytes" to it.sizeBytes,
+                            "complete" to it.complete,
+                            "pinned" to it.pinned,
+                            "title" to it.title,
+                            "artist" to it.artist,
+                            "durationSeconds" to it.durationSeconds
+                        )
+                    }
+                    result.success(mapped)
+                }
+
+                // P2: актуальный статус коннекта при (повторном) входе на
+                // страницу настроек — без ожидания нового connection-события.
+                "getConnectionState" -> {
+                    val mgr = serviceBinder?.transferManager
+                        ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
+                    result.success(mgr.connectionState.name)
+                }
+
                 else -> result.notImplemented()
             }
         } catch (e: SoulseekServiceException) {
@@ -447,12 +632,18 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             ctx.startService(startIntent)
         }
         // Привязываемся (если ещё не привязаны).
-        if (!isBound) {
+        if (!isBound && !bindPending) {
             val bindIntent = Intent(ctx, SoulseekForegroundService::class.java)
-            isBound = ctx.bindService(
+            val ok = ctx.bindService(
                 bindIntent, serviceConnection, Context.BIND_AUTO_CREATE
             )
-            Log.i(TAG, "bindService result: $isBound")
+            isBound = ok
+            // P3: bindService=true означает лишь, что запрос принят — binder
+            // придёт асинхронно через onServiceConnected. Помечаем окно
+            // ожидания, чтобы команды этого интервала становились в очередь,
+            // а не падали «Service not bound».
+            bindPending = ok
+            Log.i(TAG, "bindService result: $ok (pending=$bindPending)")
         }
     }
 
@@ -463,6 +654,7 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             isBound = false
             serviceBinder = null
         }
+        bindPending = false
         val stopIntent = Intent(ctx, SoulseekForegroundService::class.java).apply {
             putExtra(SoulseekForegroundService.EXTRA_COMMAND, SoulseekForegroundService.COMMAND_STOP)
         }

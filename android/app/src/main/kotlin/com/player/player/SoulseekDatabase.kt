@@ -23,7 +23,15 @@ class SoulseekDatabase(context: Context) :
 
     companion object {
         private const val DB_NAME = "soulseek.db"
-        private const val DB_VERSION = 1
+
+        /**
+         * v2 (NEW-3): в cache_entries добавлены колонки title / artist /
+         * duration_seconds — кэш-лист показывает хэш-имена файлов, а не
+         * человекочитаемые метаданные. Заполняются из TransferContext при
+         * completeTransfer; для старых записей остаются NULL (UI фолбэк на
+         * basename).
+         */
+        private const val DB_VERSION = 2
 
         const val TABLE_TRANSFERS = "transfers"
         const val TABLE_CACHE_ENTRIES = "cache_entries"
@@ -50,6 +58,11 @@ class SoulseekDatabase(context: Context) :
         const val COL_COMPLETE = "complete"
         const val COL_LAST_ACCESS_AT = "last_access_at"
         const val COL_PINNED = "pinned"
+
+        // Колонки cache_entries (v2, NEW-3 — человекочитаемые метаданные)
+        const val COL_TITLE = "title"
+        const val COL_ARTIST = "artist"
+        const val COL_DURATION_SECONDS = "duration_seconds"
 
         // Колонки settings
         const val COL_KEY = "key"
@@ -91,7 +104,10 @@ class SoulseekDatabase(context: Context) :
                 $COL_EXTENSION TEXT,
                 $COL_COMPLETE INTEGER NOT NULL DEFAULT 0,
                 $COL_LAST_ACCESS_AT INTEGER NOT NULL,
-                $COL_PINNED INTEGER NOT NULL DEFAULT 0
+                $COL_PINNED INTEGER NOT NULL DEFAULT 0,
+                $COL_TITLE TEXT,
+                $COL_ARTIST TEXT,
+                $COL_DURATION_SECONDS INTEGER
             )
             """.trimIndent()
         )
@@ -120,10 +136,19 @@ class SoulseekDatabase(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // v1 → future: миграции будут добавлены по мере роста версии.
-        // Пока что в v1 ничего нет — таблицы создаются в onCreate.
-        if (oldVersion < newVersion) {
-            // no-op для v1
+        // v1 → v2 (NEW-3): человекочитаемые метаданные в cache_entries.
+        // ALTER TABLE … ADD COLUMN сохраняет существующие строки: старые
+        // записи получают NULL — UI показывает фолбэк (basename файла).
+        if (oldVersion < 2) {
+            db.execSQL(
+                "ALTER TABLE $TABLE_CACHE_ENTRIES ADD COLUMN $COL_TITLE TEXT"
+            )
+            db.execSQL(
+                "ALTER TABLE $TABLE_CACHE_ENTRIES ADD COLUMN $COL_ARTIST TEXT"
+            )
+            db.execSQL(
+                "ALTER TABLE $TABLE_CACHE_ENTRIES ADD COLUMN $COL_DURATION_SECONDS INTEGER"
+            )
         }
     }
 
@@ -252,7 +277,10 @@ class SoulseekDatabase(context: Context) :
         val extension: String?,
         val complete: Boolean,
         val lastAccessAt: Long,
-        val pinned: Boolean
+        val pinned: Boolean,
+        val title: String? = null,
+        val artist: String? = null,
+        val durationSeconds: Int? = null
     )
 
     fun upsertCacheEntry(row: CacheEntryRow) {
@@ -264,6 +292,9 @@ class SoulseekDatabase(context: Context) :
             put(COL_COMPLETE, if (row.complete) 1 else 0)
             put(COL_LAST_ACCESS_AT, row.lastAccessAt)
             put(COL_PINNED, if (row.pinned) 1 else 0)
+            put(COL_TITLE, row.title)
+            put(COL_ARTIST, row.artist)
+            put(COL_DURATION_SECONDS, row.durationSeconds)
         }
         writableDatabase.insertWithOnConflict(
             TABLE_CACHE_ENTRIES, null, cv, SQLiteDatabase.CONFLICT_REPLACE
@@ -345,7 +376,13 @@ class SoulseekDatabase(context: Context) :
                 null else c.getString(c.getColumnIndexOrThrow(COL_EXTENSION)),
             complete = c.getInt(c.getColumnIndexOrThrow(COL_COMPLETE)) == 1,
             lastAccessAt = c.getLong(c.getColumnIndexOrThrow(COL_LAST_ACCESS_AT)),
-            pinned = c.getInt(c.getColumnIndexOrThrow(COL_PINNED)) == 1
+            pinned = c.getInt(c.getColumnIndexOrThrow(COL_PINNED)) == 1,
+            title = if (c.isNull(c.getColumnIndexOrThrow(COL_TITLE)))
+                null else c.getString(c.getColumnIndexOrThrow(COL_TITLE)),
+            artist = if (c.isNull(c.getColumnIndexOrThrow(COL_ARTIST)))
+                null else c.getString(c.getColumnIndexOrThrow(COL_ARTIST)),
+            durationSeconds = if (c.isNull(c.getColumnIndexOrThrow(COL_DURATION_SECONDS)))
+                null else c.getInt(c.getColumnIndexOrThrow(COL_DURATION_SECONDS))
         )
 
     // ───────────────────────────────────────────────────────────────────
