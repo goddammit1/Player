@@ -132,7 +132,15 @@ class SoulseekForegroundService : Service() {
         val initialNotification = notificationHelper!!.buildNotification(
             ConnectionState.DISCONNECTED, emptyList()
         )
-        startForegroundCompat(initialNotification)
+
+        // Инициализация сети — только после успешного перехода в foreground.
+        // При отказе (нет type-specific permission / запрет фонового старта) —
+        // контролируемая остановка без сетевой инициализации и зависших команд.
+        if (!startForegroundCompat(initialNotification)) {
+            notificationHelper?.cancel()
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         // Инициализация компонентов (один раз).
         if (!initialized) {
@@ -242,10 +250,15 @@ class SoulseekForegroundService : Service() {
 
     /**
      * startForeground с учётом версии Android.
-     * На Android 14+ (API 34) необходимо явно указать foregroundServiceType.
+     * На Android 14+ (API 34) необходимо явно указать foregroundServiceType:
+     * FOREGROUND_SERVICE_TYPE_DATA_SYNC or FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+     * (обе permission объявлены в манифесте без ограничения maxSdkVersion).
+     *
+     * @return true — сервис действительно в foreground;
+     *         false — контролируемый отказ, вызывающий должен остановить сервис.
      */
-    private fun startForegroundCompat(notification: android.app.Notification) {
-        try {
+    private fun startForegroundCompat(notification: android.app.Notification): Boolean {
+        return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                     SoulseekNotification.NOTIFICATION_ID,
@@ -262,10 +275,21 @@ class SoulseekForegroundService : Service() {
             } else {
                 startForeground(SoulseekNotification.NOTIFICATION_ID, notification)
             }
+            true
+        } catch (e: SecurityException) {
+            // Отсутствует type-specific разрешение (например FOREGROUND_SERVICE_DATA_SYNC
+            // на API 34+). Продолжать сетевую работу под видом успешного FGS нельзя —
+            // контролируемый отказ.
+            Log.e(TAG, "startForeground denied, missing FGS permission: ${e.message}", e)
+            false
+        } catch (e: android.app.ForegroundServiceStartNotAllowedException) {
+            // Запрет фонового старта (API 31+): сервис запущен из недопустимого контекста.
+            Log.e(TAG, "startForeground not allowed (background start restriction): ${e.message}", e)
+            false
         } catch (e: Exception) {
-            // StartForegroundException (Android 12+ ForegroundServiceStartNotAllowedException)
-            // — не падаем, логируем; сервис продолжит работу в фоне.
+            // Прочие отказы (недопустимый тип, сбой системы и т.п.) — тоже без сети.
             Log.e(TAG, "startForeground failed: ${e.message}", e)
+            false
         }
     }
 
