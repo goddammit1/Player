@@ -499,6 +499,9 @@ void main() {
         'sizeBytes': 50000000,
         'complete': true,
         'pinned': false,
+        'title': 'Song',
+        'artist': 'Artist',
+        'durationSeconds': 240,
       });
 
       expect(entry.cacheKey, 'key123');
@@ -506,6 +509,38 @@ void main() {
       expect(entry.sizeBytes, 50000000);
       expect(entry.complete, isTrue);
       expect(entry.pinned, isFalse);
+      expect(entry.title, 'Song');
+      expect(entry.artist, 'Artist');
+      expect(entry.durationSeconds, 240);
+    });
+
+    test('NEW-3: fromMap parses metadata fields (v2 records)', () {
+      final entry = SoulseekCacheEntry.fromMap({
+        'cacheKey': 'k2',
+        'localPath': '/cache/x.mp3',
+        'sizeBytes': 1000,
+        'complete': true,
+        'pinned': true,
+        'title': 'Название',
+        'artist': 'Исполнитель',
+        'durationSeconds': 195,
+      });
+
+      expect(entry.title, 'Название');
+      expect(entry.artist, 'Исполнитель');
+      expect(entry.durationSeconds, 195);
+    });
+
+    test('NEW-3: fromMap metadata null for pre-v2 records', () {
+      final entry = SoulseekCacheEntry.fromMap({
+        'cacheKey': 'k',
+        'localPath': '/p',
+        'sizeBytes': 100,
+      });
+
+      expect(entry.title, isNull);
+      expect(entry.artist, isNull);
+      expect(entry.durationSeconds, isNull);
     });
 
     test('fromMap defaults complete/pinned to false when missing', () {
@@ -527,6 +562,48 @@ void main() {
       expect(entry.sizeBytes, 0);
       expect(entry.complete, isFalse);
       expect(entry.pinned, isFalse);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  SoulseekException.isServiceBindRace (P3)
+  // ═══════════════════════════════════════════════════════════════════
+  group('SoulseekException.isServiceBindRace', () {
+    test('SERVICE_BIND_TIMEOUT → true', () {
+      const e = SoulseekException('SERVICE_BIND_TIMEOUT', 'bind timed out');
+      expect(e.isServiceBindRace, isTrue);
+    });
+
+    test('SERVICE_UNAVAILABLE → true', () {
+      const e = SoulseekException('SERVICE_UNAVAILABLE', 'null binding');
+      expect(e.isServiceBindRace, isTrue);
+    });
+
+    test('NOT_CONNECTED "Service not bound" → true', () {
+      const e = SoulseekException('NOT_CONNECTED', 'Service not bound');
+      expect(e.isServiceBindRace, isTrue);
+    });
+
+    test('NOT_CONNECTED "service NOT BOUND" (case-insensitive) → true', () {
+      const e = SoulseekException('NOT_CONNECTED', 'Service NOT BOUND yet');
+      expect(e.isServiceBindRace, isTrue);
+    });
+
+    test('NOT_CONNECTED with other message → false', () {
+      const e = SoulseekException('NOT_CONNECTED', 'Soulseek client offline');
+      expect(e.isServiceBindRace, isFalse);
+    });
+
+    test('other codes → false', () {
+      expect(
+        const SoulseekException('INVALID_ARGS', 'Service not bound-ish')
+            .isServiceBindRace,
+        isFalse,
+      );
+      expect(
+        const SoulseekException('INTERNAL_ERROR', 'boom').isServiceBindRace,
+        isFalse,
+      );
     });
   });
 

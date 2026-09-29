@@ -160,6 +160,17 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     return result ?? false;
   }
 
+  /// P2: актуальное состояние коннекта из нативного transferManager.
+  ///
+  /// Вызывается при входе на страницу настроек: connectionEvents приходят
+  /// только при изменениях, поэтому повторное открытие страницы иначе
+  /// показывало бы устаревший Disconnected при живом соединении.
+  Future<SoulseekConnectionState> getConnectionState() async {
+    _requireAndroid();
+    final result = await _invoke<String>('getConnectionState', null);
+    return SoulseekConnectionState.fromString(result);
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //  Search
   // ═══════════════════════════════════════════════════════════════════
@@ -215,6 +226,9 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     required int sizeBytes,
     required String cacheKey,
     String fileExtension = 'dat',
+    String? title,
+    String? artist,
+    int? durationSeconds,
   }) async {
     _requireAndroid();
     final result = await _invoke<Map>('startDownload', {
@@ -224,6 +238,9 @@ class SoulseekPlatformChannel implements SoulseekChannel {
       'sizeBytes': sizeBytes,
       'cacheKey': cacheKey,
       'fileExtension': fileExtension,
+      'title': ?title,
+      'artist': ?artist,
+      'durationSeconds': ?durationSeconds,
     });
     if (result == null) {
       throw const SoulseekException('EMPTY_RESPONSE', 'startDownload returned null');
@@ -299,6 +316,18 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     });
     if (result == null) return null;
     return SoulseekCacheEntry.fromMap(result.cast<String, dynamic>());
+  }
+
+  /// P1-каскад: полный список завершённых кэш-записей из нативной БД
+  /// (LRU-порядок, только файлы, существующие на диске).
+  @override
+  Future<List<SoulseekCacheEntry>> getCacheEntries() async {
+    _requireAndroid();
+    final result = await _invoke<List>('getCacheEntries', null);
+    if (result == null) return const [];
+    return result
+        .map((m) => SoulseekCacheEntry.fromMap((m as Map).cast<String, dynamic>()))
+        .toList(growable: false);
   }
 
   /// Удаляет кэш-файл и запись в БД для [cacheKey].
