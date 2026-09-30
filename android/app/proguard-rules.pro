@@ -58,3 +58,28 @@
 
 # --- Soulseek wrapper ACW stub (JNI-referenced from Kotlin, but keep for safety) ---
 -keep class soulseek.wrapper.** { *; }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CRITICAL: flutter_secure_storage (com.it_nomads.fluttersecurestorage) 9.2.4
+# does NOT ship consumer ProGuard rules, so protection must live here.
+#
+# R8 full mode (default since AGP 8.x with android.enableR8.fullMode=true)
+# performs horizontal class merging: it merged StorageCipher18Implementation /
+# RSACipher18Implementation / StorageCipherFactory into the io.flutter.FlutterInjector
+# cluster (see build/app/outputs/mapping/release/mapping.txt) and REMOVED the
+# KeyCipher / StorageCipher interfaces plus the implementation constructors
+# (see usage.txt).  At runtime the EncryptedSharedPreferences init then fails,
+# the plugin swallows the error and falls back to a no-cipher path, which
+# crashes write() with an NPE:
+#   "Attempt to invoke virtual method 'byte[] io.flutter.FlutterInjector.encrypt(byte[])'
+#    on a null object reference"
+#
+# Keeping the whole package (classes + interfaces + members) prevents both
+# removal and merging.  androidx.security.crypto (EncryptedSharedPreferences /
+# MasterKey) and its dependency com.google.crypto.tink are part of the same
+# ESP path and suffer from the same full-mode merging, so they are kept too.
+# ──────────────────────────────────────────────────────────────────────────────
+-keep class com.it_nomads.fluttersecurestorage.** { *; }
+-keep interface com.it_nomads.fluttersecurestorage.** { *; }
+-keep class androidx.security.crypto.** { *; }
+-keep class com.google.crypto.tink.** { *; }
