@@ -6,10 +6,13 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/playlist_cache_service.dart';
 import 'package:player/core/youtube_cache.dart';
 import 'package:player/models/track.dart';
+import 'package:player/sources/soulseek_models.dart';
+import 'package:player/sources/soulseek_source.dart';
 import 'package:player/sources/source_registry.dart';
 import 'package:player/sources/track_source.dart';
 
@@ -368,6 +371,126 @@ void main() {
       isTrue,
     );
   });
+
+  // ═════════════════════════════════════════════════════════════════
+  //  Soulseek source-aware branch (local path instead of HTTP URL)
+  // ═════════════════════════════════════════════════════════════════
+
+  /// Regression: `SoulseekSource.resolveStreamUrl` returns a LOCAL path of
+  /// the native soulseek_cache, not an HTTP URL. The service must not route
+  /// such tracks into the dio pipeline (dio would fail on a non-http URL)
+  /// and must count the completed native download as `downloaded`.
+  test('soulseek track: native download, no dio request, no YoutubeCache pin',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final channel = _FakeSoulseekChannel()
+      ..transferInfo = SoulseekTransferInfo(
+        downloadId: 'dl_ck_dl',
+        state: SoulseekTransferState.completed,
+        localPath: '/data/user/0/soulseek_cache/ck_dl.flac',
+      );
+    addTearDown(channel.close);
+    registry.register(SoulseekSource(channel: channel));
+
+    final t = Track(
+      id: 'ck_dl',
+      sourceId: SoulseekSource.sourceId,
+      title: 'Track ck_dl',
+      artist: 'Artist',
+      extra: <String, dynamic>{
+        'peerUsername': 'peer1',
+        'remoteFilename': 'Artist - Title.flac',
+        'sizeBytes': 50000000,
+        'cacheKey': 'ck_dl',
+        'extension': 'flac',
+      },
+    );
+
+    final progress = <PlaylistCacheProgress>[];
+    final result = await buildService()
+        .cacheTracks([t], onProgress: progress.add);
+
+    expect(result.downloaded, 1);
+    expect(result.failed, 0);
+    // The soulseek branch must not touch the dio pipeline at all.
+    expect(adapter.requestCount, 0);
+    expect(channel.startDownloadCalls, hasLength(1));
+    // Soulseek files live in the native cache: nothing in YoutubeCache.
+    expect(await fileOf(t).exists(), isFalse);
+    // ignore: invalid_use_of_visible_for_testing_member
+    expect(YoutubeCache.instance.isPinned(cacheIdOf(t)), isFalse);
+    // Progress semantics match the http sources: final snapshot completes.
+    expect(progress.last.completed, 1);
+    expect(progress.last.currentProgress, 1.0);
+  });
+
+  test('soulseek track already in native cache counts as skippedCached',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final channel = _FakeSoulseekChannel()
+      ..cacheEntry = SoulseekCacheEntry(
+        cacheKey: 'ck_cached',
+        localPath: '/data/user/0/soulseek_cache/ck_cached.flac',
+        sizeBytes: 50000000,
+        complete: true,
+        pinned: false,
+      );
+    addTearDown(channel.close);
+    registry.register(SoulseekSource(channel: channel));
+
+    final t = Track(
+      id: 'ck_cached',
+      sourceId: SoulseekSource.sourceId,
+      title: 'Track ck_cached',
+      artist: 'Artist',
+      extra: <String, dynamic>{
+        'peerUsername': 'peer1',
+        'remoteFilename': 'Artist - Title.flac',
+        'sizeBytes': 50000000,
+        'cacheKey': 'ck_cached',
+        'extension': 'flac',
+      },
+    );
+
+    final result = await buildService().cacheTracks([t]);
+
+    expect(result.skippedCached, 1);
+    expect(result.downloaded, 0);
+    expect(result.failed, 0);
+    expect(adapter.requestCount, 0);
+    // Cache hit: the native download was never started.
+    expect(channel.startDownloadCalls, isEmpty);
+  });
+
+  /// Regression: a track from the soulseek cache list only carries
+  /// `extra.cacheKey` (no peerUsername/remoteFilename/sizeBytes). If the
+  /// native file was deleted, `resolveStreamUrl` throws a StateError —
+  /// the service must count it as failed (with a logged cause) instead of
+  /// crashing the batch.
+  test('soulseek cache-list track without metadata triad counts as failed',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final channel = _FakeSoulseekChannel();
+    addTearDown(channel.close);
+    registry.register(SoulseekSource(channel: channel));
+
+    final t = Track(
+      id: 'ck_orphan',
+      sourceId: SoulseekSource.sourceId,
+      title: 'Track ck_orphan',
+      artist: 'Unknown',
+      extra: <String, dynamic>{'cacheKey': 'ck_orphan'},
+    );
+
+    final result = await buildService().cacheTracks([t]);
+
+    expect(result.failed, 1);
+    expect(result.downloaded, 0);
+    expect(result.skippedCached, 0);
+    expect(adapter.requestCount, 0);
+    // The native download was never attempted (nothing to download from).
+    expect(channel.startDownloadCalls, isEmpty);
+  });
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -407,6 +530,85 @@ class _FakeSource extends TrackSource {
   @override
   Future<AudioSource> createAudioSource(Track track) =>
       throw UnimplementedError('not needed in tests');
+}
+
+/// Minimal [SoulseekChannel] fake for the soulseek branch of
+/// [PlaylistCacheService.cacheTracks]. Pattern: `_TestChannel` in
+/// soulseek_source_test.dart (DI via the [SoulseekSource] constructor).
+class _FakeSoulseekChannel implements SoulseekChannel {
+  @override
+  bool isAvailable = true;
+
+  /// Entry returned by `getCacheEntry` (null → native cache miss).
+  SoulseekCacheEntry? cacheEntry;
+
+  /// Snapshot returned by `getTransfer` (immediate completion of
+  /// `_waitForDownloadComplete` via probeOnce, no polling needed).
+  SoulseekTransferInfo? transferInfo;
+
+  /// Recorded `startDownload` invocations.
+  final List<Map<String, dynamic>> startDownloadCalls = [];
+
+  final StreamController<SoulseekTransferEvent> _transferController =
+      StreamController<SoulseekTransferEvent>.broadcast();
+
+  @override
+  Future<List<SoulseekSearchResult>> search({
+    required String requestId,
+    required String query,
+    required int timeoutMs,
+    required int idleTimeoutMs,
+    required int responseLimit,
+    required int fileLimit,
+    required SoulseekSearchFilters filters,
+  }) async =>
+      const [];
+
+  @override
+  Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey) async =>
+      cacheEntry;
+
+  @override
+  Future<List<SoulseekCacheEntry>> getCacheEntries() async => const [];
+
+  @override
+  Future<SoulseekDownloadResult> startDownload({
+    required String downloadId,
+    required String peerUsername,
+    required String remoteFilename,
+    required int sizeBytes,
+    required String cacheKey,
+    required String fileExtension,
+    String? title,
+    String? artist,
+    int? durationSeconds,
+  }) async {
+    startDownloadCalls.add({
+      'downloadId': downloadId,
+      'peerUsername': peerUsername,
+      'remoteFilename': remoteFilename,
+      'sizeBytes': sizeBytes,
+      'cacheKey': cacheKey,
+      'fileExtension': fileExtension,
+    });
+    return SoulseekDownloadResult(
+      downloadId: downloadId,
+      result: downloadId,
+      cacheHit: false,
+    );
+  }
+
+  @override
+  Future<SoulseekTransferInfo?> getTransfer(String downloadId) async =>
+      transferInfo;
+
+  @override
+  Stream<SoulseekTransferEvent> get transferEvents =>
+      _transferController.stream;
+
+  void close() {
+    _transferController.close();
+  }
 }
 
 /// Scripted [HttpClientAdapter]: each queued item corresponds to one

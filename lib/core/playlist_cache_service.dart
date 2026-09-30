@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/track.dart';
+import '../sources/soulseek_source.dart';
 import '../sources/source_registry.dart';
 import 'youtube_cache.dart';
 
@@ -100,6 +102,9 @@ class PlaylistCacheService {
   ///   filtered out up front and counted in
   ///   [PlaylistCacheResult.skippedDisabled]; the progress `total` only
   ///   covers the remaining queue;
+  /// - soulseek tracks are handled source-aware (see [_cacheSoulseekTrack]):
+  ///   their `resolveStreamUrl` returns a LOCAL path of the native
+  ///   soulseek_cache, not an HTTP URL, so dio.download must not be used;
   /// - tracks already present in the cache are skipped without network
   ///   access, but re-pinned and touched (counts as
   ///   [PlaylistCacheResult.skippedCached]);
@@ -151,6 +156,29 @@ class PlaylistCacheService {
       }
 
       emit(track.title, null);
+
+      // Source-aware branch: soulseek tracks live in the native
+      // soulseek_cache managed by SoulseekCacheManager, not in
+      // [YoutubeCache]. resolveStreamUrl returns a local file path (the
+      // native download has already completed by the time it returns), so
+      // downloading it via dio would throw. Mirror the single-track flow
+      // (PLAYER-DL-01 in track_settings_sheet.dart): cache check via
+      // getCacheEntry, then native startDownload + wait for completion.
+      if (track.sourceId == SoulseekSource.sourceId) {
+        final outcome = await _cacheSoulseekTrack(track);
+        switch (outcome) {
+          case _SoulseekOutcome.cached:
+            skippedCached++;
+            emit(track.title, 1.0);
+          case _SoulseekOutcome.downloaded:
+            downloaded++;
+            emit(track.title, 1.0);
+          case _SoulseekOutcome.failed:
+            failed++;
+            emit(track.title, null);
+        }
+        continue;
+      }
 
       final cacheId = YoutubeCache.cacheIdFor(
         sourceId: track.sourceId,
@@ -222,6 +250,59 @@ class PlaylistCacheService {
     );
   }
 
+  /// Source-aware caching of a soulseek track (PLAYER-DL-01 pattern).
+  ///
+  /// Soulseek files live in the native soulseek_cache, not in
+  /// [YoutubeCache] — no dio download and no YoutubeCache pin here (the
+  /// native cache manages its own lifecycle/LRU).
+  ///
+  /// - Native cache hit (`getCacheEntry(cacheKey).complete`) →
+  ///   [_SoulseekOutcome.cached];
+  /// - otherwise `resolveStreamUrl` starts the native download and waits
+  ///   for completion (`_waitForDownloadComplete`: transfer events +
+  ///   polling fallback + timeout) → [_SoulseekOutcome.downloaded];
+  /// - any error — including tracks from the cache list that only carry
+  ///   `extra.cacheKey` without the peerUsername/remoteFilename/sizeBytes
+  ///   triad and whose native file was deleted (`StateError` from
+  ///   cacheKey computation) — is logged and mapped to
+  ///   [_SoulseekOutcome.failed] with a real cause, the batch goes on.
+  Future<_SoulseekOutcome> _cacheSoulseekTrack(Track track) async {
+    final source = _registry.get(SoulseekSource.sourceId);
+    if (source is! SoulseekSource) {
+      if (kDebugMode) {
+        debugPrint(
+          '[PlaylistCache] soulseek source is not registered — skipping '
+          '"${track.globalId}"',
+        );
+      }
+      return _SoulseekOutcome.failed;
+    }
+
+    try {
+      // 1. Already in the native cache? No network access.
+      final cacheKey = source.cacheKeyFor(track);
+      if (cacheKey != null) {
+        final entry = await source.getCacheEntry(cacheKey);
+        if (entry != null && entry.complete) {
+          return _SoulseekOutcome.cached;
+        }
+      }
+
+      // 2. Native download + wait for completion (resolveStreamUrl
+      //    encapsulates startDownload and _waitForDownloadComplete; for
+      //    cache-list tracks it returns the local path on a cache hit).
+      await source.resolveStreamUrl(track);
+      return _SoulseekOutcome.downloaded;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          '[PlaylistCache] soulseek caching failed for "${track.globalId}": $e',
+        );
+      }
+      return _SoulseekOutcome.failed;
+    }
+  }
+
   static Future<void> _deletePart(String partPath) async {
     try {
       final part = File(partPath);
@@ -229,3 +310,6 @@ class PlaylistCacheService {
     } catch (_) {}
   }
 }
+
+/// Outcome of caching a single soulseek track.
+enum _SoulseekOutcome { cached, downloaded, failed }
