@@ -235,6 +235,13 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
     // ───────────────────────────────────────────────────────────────────
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        // Фаза B (разрыв №3): синк настроек не должен поднимать foreground
+        // service (общий путь ниже при отсутствии binder запускает его).
+        // Обрабатываем ранней веткой — пишем в soulseek.db напрямую.
+        if (call.method == "updateNativeSettings") {
+            handleUpdateNativeSettings(call, result)
+            return
+        }
         // P2: запрос статуса коннекта не должен иметь побочного эффекта
         // запуска foreground service — если сервис не привязан, соединения
         // нет, возвращаем DISCONNECTED сразу.
@@ -367,7 +374,7 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     val db = serviceBinder?.database
                     val account = call.argument<Map<String, Any>>("account") ?: emptyMap()
                     db?.putSetting(SettingsKeys.USERNAME, account["username"] as? String ?: "")
-                    db?.putSettingInt(SettingsKeys.LISTEN_PORT, (account["listenPort"] as? Number)?.toInt() ?: 50000)
+                    db?.putSettingInt(SettingsKeys.LISTEN_PORT, (account["listenPort"] as? Number)?.toInt() ?: 24150)
                     result.success(true)
                 }
 
@@ -590,6 +597,76 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         } catch (e: Exception) {
             Log.e(TAG, "handleMethodCall error for ${call.method}", e)
             result.error("INTERNAL_ERROR", e.message, null)
+        }
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  Settings sync (Фаза B, разрыв №3)
+    // ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Фаза B (разрыв №3): синк настроек из Dart-БД в нативную soulseek.db.
+     *
+     * Вызывается ранней веткой [onMethodCall] — НЕ запускает foreground
+     * service: Dart зовёт синк на старте приложения, когда сервис ещё не
+     * нужен. Если сервис уже привязан — пишем через его БД и применяем
+     * лимит кэша на лету; иначе открываем собственный SQLiteOpenHelper
+     * (тот же файл soulseek.db) и закрываем после записи.
+     *
+     * Единицы: cacheLimitMb приходит в мегабайтах, soulseek.db хранит
+     * max_cache_size в БАЙТАХ (см. сид в SoulseekDatabase.onCreate) —
+     * конвертация MB × 1024 × 1024; 0 = unlimited (cleanup трактует
+     * <= 0 как отсутствие лимита).
+     */
+    private fun handleUpdateNativeSettings(call: MethodCall, result: MethodChannel.Result) {
+        val ctx = applicationContext ?: run {
+            result.error("NO_CONTEXT", "Application context is null", null)
+            return
+        }
+        ioScope.launch {
+            try {
+                val listenPort = call.argument<Number>("listenPort")?.toInt()
+                val cacheLimitMb = call.argument<Number>("cacheLimitMb")?.toInt()
+                val maxParallel = call.argument<Number>("maxParallelDownloads")?.toInt()
+                val username = call.argument<String>("username")
+
+                val boundDb = serviceBinder?.database
+                val db = boundDb ?: SoulseekDatabase(ctx)
+                try {
+                    listenPort?.let { db.putSettingInt(SettingsKeys.LISTEN_PORT, it) }
+                    cacheLimitMb?.let {
+                        db.putSettingLong(
+                            SettingsKeys.MAX_CACHE_SIZE,
+                            it.toLong() * 1024L * 1024L
+                        )
+                    }
+                    maxParallel?.let {
+                        db.putSettingInt(SettingsKeys.MAX_CONCURRENT_DOWNLOADS, it)
+                    }
+                    username?.takeIf { it.isNotEmpty() }?.let {
+                        db.putSetting(SettingsKeys.USERNAME, it)
+                    }
+
+                    // Живой сервис: применяем лимит кэша немедленно (LRU
+                    // eviction при снижении лимита). Параллелизм (Semaphore)
+                    // не ресайзится на лету — подхватится при следующем
+                    // старте сервиса из soulseek.db.
+                    if (boundDb != null) {
+                        cacheLimitMb?.let {
+                            serviceBinder?.cacheManager
+                                ?.updateMaxCacheSizeBytes(it.toLong() * 1024L * 1024L)
+                        }
+                    }
+                } finally {
+                    if (boundDb == null) db.close()
+                }
+                result.success(true)
+            } catch (e: Exception) {
+                // Best-effort: Dart-сторона сохраняет значения в своей БД
+                // независимо; ошибка синка не должна ломать UI.
+                Log.e(TAG, "updateNativeSettings failed", e)
+                result.success(false)
+            }
         }
     }
 

@@ -28,6 +28,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/database/app_database.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
@@ -115,11 +116,11 @@ class SoulseekSource implements TrackSource {
   @visibleForTesting
   Duration downloadTimeout = const Duration(minutes: 10);
 
-  /// NEW-2: таймаут поиска из настроек (SoulseekPrefs.searchTimeoutSec).
+  /// NEW-2: таймаут поиска из настроек (soulseek_search_timeout_sec, БД).
   /// Это жёсткий общий бюджет: C# bridge останавливает поиск по его
   /// истечении и возвращает накопленное. Обычно поиск завершается раньше —
   /// по [searchIdleTimeoutMs] или [searchFileLimit]. Загружается лениво из
-  /// SharedPreferences при первом поиске; настройка применяется со следующего поиска
+  /// SQLite при первом поиске; настройка применяется со следующего поиска
   /// после смены. Читается SearchController для внешнего таймаута.
   int searchTimeoutMs = 10000;
 
@@ -143,12 +144,24 @@ class SoulseekSource implements TrackSource {
     if (_searchTimeoutLoaded) return;
     _searchTimeoutLoaded = true;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final sec = prefs.getInt(_searchTimeoutKey);
+      final raw =
+          await AppDatabase.instance.getSetting(_searchTimeoutKey);
+      final sec = raw == null ? null : int.tryParse(raw);
       if (sec != null && sec > 0) searchTimeoutMs = sec * 1000;
     } catch (_) {
       // best-effort: остаётся дефолт 10 c.
     }
+  }
+
+  /// Применяет таймаут поиска из настроек (секунды → миллисекунды).
+  ///
+  /// Вызывается SoulseekSettingsRepository.applyToSource на старте
+  /// приложения и со страницы настроек; сбрасывает ленивую загрузку,
+  /// чтобы следующее использование взяло новое значение.
+  void applySearchTimeoutSec(int sec) {
+    if (sec <= 0) return;
+    searchTimeoutMs = sec * 1000;
+    _searchTimeoutLoaded = true;
   }
 
   /// Активные подписки на event stream — для отмены в [dispose].

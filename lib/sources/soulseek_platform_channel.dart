@@ -108,13 +108,59 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   //  Account / Connection
   // ═══════════════════════════════════════════════════════════════════
 
+  /// Фаза B (разрыв №3): проталкивает настройки из Dart-БД в нативную
+  /// soulseek.db, чтобы foreground service работал с теми же значениями,
+  /// что показывает UI:
+  ///  - [listenPort] → `listen_port`;
+  ///  - [cacheLimitMb] → `max_cache_size` (натив хранит байты, конвертация
+  ///    MB → bytes на Kotlin-стороне; 0 = unlimited);
+  ///  - [maxParallelDownloads] → `max_concurrent_downloads`;
+  ///  - [username] → `username` (non-secret).
+  ///
+  /// Натив пишет в БД без старта foreground service; если сервис уже
+  /// работает — применяет лимит кэша на лету.
+  ///
+  /// Безопасен: на не-Android — no-op (false + лог); ошибки платформы НЕ
+  /// бросаются наружу — возвращается false (синк best-effort, настройки
+  /// уже сохранены в Dart-БД вызывающим кодом).
+  Future<bool> updateNativeSettings({
+    int? listenPort,
+    int? cacheLimitMb,
+    int? maxParallelDownloads,
+    String? username,
+  }) async {
+    if (!isAvailable) {
+      debugPrint(
+        '[Soulseek] updateNativeSettings skipped: '
+        'not available on this platform',
+      );
+      return false;
+    }
+    final args = <String, dynamic>{
+      'listenPort': ?listenPort,
+      'cacheLimitMb': ?cacheLimitMb,
+      'maxParallelDownloads': ?maxParallelDownloads,
+      'username': ?username,
+    };
+    try {
+      final result = await _invoke<bool>('updateNativeSettings', args);
+      return result ?? false;
+    } on SoulseekException catch (e) {
+      debugPrint(
+        '[Soulseek] updateNativeSettings failed: ${e.code} ${e.message}',
+      );
+      return false;
+    }
+  }
+
   /// Сохраняет учётные данные и параметры listener (без подключения).
   ///
   /// [username] — имя пользователя Soulseek.
-  /// [listenPort] — порт для входящих peer-соединений (по умолчанию 50000).
+  /// [listenPort] — порт для входящих peer-соединений (по умолчанию 24150,
+  /// как SoulseekSettingsRepository.defaultListenPort).
   Future<bool> configureAccount({
     required String username,
-    int listenPort = 50000,
+    int listenPort = 24150,
   }) async {
     _requireAndroid();
     final result = await _invoke<bool>('configureAccount', {
@@ -133,7 +179,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   Future<SoulseekConnectionInfo> connect({
     required String username,
     required String password,
-    int listenPort = 50000,
+    int listenPort = 24150,
     bool enableListener = true,
     int messageTimeoutMs = 30000,
   }) async {

@@ -16,7 +16,9 @@ import 'core/platform/player_service_factory.dart';
 import 'core/backup/playlist_backup.dart';
 import 'core/repositories/playlist_repository.dart';
 import 'core/providers.dart';
+import 'core/soulseek_settings_repository.dart';
 import 'core/youtube_cache.dart';
+import 'sources/soulseek_source.dart';
 import 'sources/source_registry.dart';
 import 'core/notifications/playlist_cache_notifier.dart';
 import 'ui/desktop/desktop_frame.dart' show DesktopFrame;
@@ -100,11 +102,31 @@ Future<void> main() async {
       // === SOULSEEK FEATURE FLAG ===
       // Загружаем флаг ДО registerDefaults, чтобы решение о включении
       // Soulseek в searchable-список принималось на основе сохранённого
-      // значения, а не дефолтного false.
+      // значения (теперь в SQLite, см. SoulseekSettingsRepository),
+      // а не дефолтного false.
       await SourceRegistry.loadSoulseekEnabled();
       // =============================
 
       SourceRegistry.instance.registerDefaults();
+
+      // === SOULSEEK: ПРИМЕНЕНИЕ ФИЛЬТРОВ НА СТАРТЕ (разрыв №2) ===
+      // SoulseekSource создаётся с пустыми searchFilters; раньше фильтры
+      // применялись только при открытии страницы настроек. Теперь
+      // применяем их сразу после registerDefaults — фильтры работают
+      // после рестарта без открытия страницы настроек.
+      await _applySoulseekSettingsOnStartup();
+      // ==========================================================
+
+      // === SOULSEEK: СИНК В НАТИВ (Фаза B, разрыв №3) ===
+      // Проталкиваем listen port / лимит кэша / параллелизм / username
+      // из Dart-БД в нативную soulseek.db (без старта сервиса), чтобы
+      // foreground service при следующем запуске работал со значениями
+      // из UI. Не блокируем старт: fire-and-forget, ошибки глотаются
+      // внутри syncToNative.
+      if (Platform.isAndroid) {
+        unawaited(SoulseekSettingsRepository.instance.syncToNative());
+      }
+      // ==================================================
 
       if (Platform.isAndroid) {
         await AndroidPlaylistCacheNotifier().init();
@@ -176,6 +198,27 @@ Future<void> _migrateToSqliteIfNeeded() async {
 
   if (migrated) {
     debugPrint('[Migration] SharedPreferences → SQLite done.');
+  }
+
+  // Фаза v3 (soulseek): после одноразового переноса soulseek_* ключей из
+  // SharedPreferences в БД удаляем legacy-ключи из SP, чтобы значения
+  // не разъезжались. Пароля в SP нет; soulseek_cache_index не трогаем.
+  await SoulseekSettingsRepository.purgeLegacySoulseekPrefs();
+}
+
+/// Загружает настройки Soulseek из БД и применяет фильтры/таймаут к
+/// зарегистрированному SoulseekSource (вызывается из main после
+/// registerDefaults). Устраняет разрыв №2: фильтры работают после
+/// рестарта без открытия страницы настроек.
+Future<void> _applySoulseekSettingsOnStartup() async {
+  try {
+    final source = SourceRegistry.instance.get('soulseek');
+    if (source is! SoulseekSource) return;
+    final settings = await SoulseekSettingsRepository.instance.loadAll();
+    await SoulseekSettingsRepository.instance
+        .applyToSource(source, settings: settings);
+  } catch (e) {
+    debugPrint('[Soulseek] startup settings apply failed: $e');
   }
 }
 
