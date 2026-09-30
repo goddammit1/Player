@@ -75,6 +75,18 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   StreamSubscription<SoulseekConnectionEvent>? _connectionSub;
   bool _connecting = false;
 
+  // Дефект №5: поколение статуса соединения. Инкрементируется перед каждой
+  // командой (connect/disconnect) и каждым push-событием; ответ команды
+  // применяется только если поколение не изменилось — поздний устаревший
+  // ответ не может перезаписать более свежее событие.
+  int _connectionGeneration = 0;
+
+  // Команда connect (включая retry-цикл) ещё выполняется. Пока она в полёте,
+  // push-событие DISCONNECTED не терминально: при первом bind'е натив шлёт
+  // snapshot DISCONNECTED (клиента ещё нет), а между retry-попытками bridge
+  // пересоздаёт клиент. Итог определяет ответ команды.
+  bool _connectInFlight = false;
+
   // ── Доступные форматы для multi-select ──
   static const List<String> _allFormats = [
     'flac', 'wav', 'alac', 'mp3', 'aac', 'ogg',
@@ -158,16 +170,38 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         SoulseekPlatformChannel.instance.connectionEvents.listen(
       (event) {
         if (!mounted) return;
+        // Snapshot при bind'е / промежуточный дисконнект между попытками
+        // не должен сбрасывать «Connecting…» и разблокировать кнопку —
+        // иначе первое нажатие выглядит так, будто ничего не произошло.
+        if (_connectInFlight &&
+            event.state == SoulseekConnectionState.disconnected) {
+          return;
+        }
+        // Push-событие — самый свежий источник: делает устаревшими все
+        // ответы команд, отправленные до него (дефект №5).
+        _connectionGeneration++;
         setState(() {
           _connectionState = event.state;
           _connectionMessage = event.message;
-          if (event.state != SoulseekConnectionState.connecting) {
-            _connecting = false;
+          // Дефект №6: CONNECTED теперь означает завершённый логин
+          // (Connected+LoggedIn), CONNECTING — промежуточное состояние.
+          // _connecting сбрасываем только на терминальных для команды
+          // состояниях: CONNECTED / DISCONNECTED / FAILED (и RECONNECTING —
+          // исходная команда connect уже не «в процессе»).
+          switch (event.state) {
+            case SoulseekConnectionState.connected:
+            case SoulseekConnectionState.disconnected:
+            case SoulseekConnectionState.failed:
+            case SoulseekConnectionState.reconnecting:
+              _connecting = false;
+            case SoulseekConnectionState.connecting:
+              break;
           }
         });
       },
       onError: (Object e) {
         if (!mounted) return;
+        _connectionGeneration++;
         setState(() {
           _connectionState = SoulseekConnectionState.failed;
           _connectionMessage = e.toString();
@@ -179,6 +213,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     // P2: connectionEvents приходят только при ИЗМЕНЕНИЯХ. При повторном
     // входе на страницу живое соединение иначе отображалось бы устаревшим
     // Disconnected — перезапрашиваем актуальный статус у натива.
+    // Дефект №3: с bind'ом snapshot теперь приходит и через event channel.
     _queryConnectionState();
   }
 
@@ -187,7 +222,11 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       final state = await SoulseekPlatformChannel.instance
           .getConnectionState();
       if (!mounted) return;
-      // Не затираем прогресс текущего подключения.
+      // Дефект №3: null = native не знает состояния (binder не привязан,
+      // сервис может работать) — не перезаписываем локальный статус.
+      if (state == null) return;
+      // Не затираем прогресс текущего подключения и не конкурируем со
+      // свежими push-событиями (дефект №5).
       if (_connecting) return;
       setState(() => _connectionState = state);
     } catch (_) {
@@ -247,6 +286,11 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       return;
     }
 
+    // Дефект №5: фиксируем поколение — результат команды применяем, только
+    // если после её старта не приходило более свежих push-событий.
+    final generation = ++_connectionGeneration;
+
+    _connectInFlight = true;
     setState(() {
       _connecting = true;
       _connectionState = SoulseekConnectionState.connecting;
@@ -292,20 +336,36 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       }
     }
 
+    _connectInFlight = false;
     if (!mounted) return;
 
+    // Дефект №5: если после старта команды пришло push-событие, его статус
+    // новее — ответ команды статус не перезаписывает.
+    final stale = generation != _connectionGeneration;
+
+    // Команда завершилась — кнопка разблокируется в любом случае (иначе
+    // при stale-ответе и последнем событии CONNECTING она залипала бы).
     if (info != null) {
       final connected = info;
       setState(() {
-        _connectionState = connected.state;
-        _connectionMessage = null;
+        // Промежуточный CONNECTING от push-события успешный ответ уточняет.
+        if (!stale ||
+            _connectionState == SoulseekConnectionState.connecting) {
+          _connectionState = connected.state;
+          _connectionMessage = null;
+        }
         _connecting = false;
       });
     } else {
       final e = lastError ?? const SoulseekException('CONNECT_FAILED', 'Connect failed');
       setState(() {
-        _connectionState = SoulseekConnectionState.failed;
-        _connectionMessage = e.message;
+        // DISCONNECTED-события во время команды игнорировались, поэтому
+        // провал показываем сами — если только более свежее событие не
+        // сообщило о реальном соединении (дефект №5).
+        if (_connectionState != SoulseekConnectionState.connected) {
+          _connectionState = SoulseekConnectionState.failed;
+          _connectionMessage = e.message;
+        }
         _connecting = false;
       });
       showSnack(context, 'Connection failed: ${e.message}');
@@ -334,13 +394,17 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   Future<void> _disconnect() async {
     if (!_isAvailable) return;
+    // Дефект №5: ответ disconnect не перезаписывает более свежие события.
+    final generation = ++_connectionGeneration;
     try {
       await SoulseekPlatformChannel.instance.disconnect();
       if (mounted) {
-        setState(() {
-          _connectionState = SoulseekConnectionState.disconnected;
-          _connectionMessage = null;
-        });
+        if (generation == _connectionGeneration) {
+          setState(() {
+            _connectionState = SoulseekConnectionState.disconnected;
+            _connectionMessage = null;
+          });
+        }
         showSnack(context, 'Disconnected');
       }
     } catch (e) {

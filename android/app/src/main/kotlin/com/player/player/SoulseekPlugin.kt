@@ -59,6 +59,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
 
         /** P3: максимум ожидания onServiceConnected для команд в очереди. */
         private const val PENDING_COMMAND_TIMEOUT_MS = 10_000L
+
+        /** Дефект №3: ответ getConnectionState, когда состояние неизвестно
+         *  (binder нет и bind не инициирован — сервис может работать). */
+        private const val CONNECTION_STATE_UNKNOWN = "UNKNOWN"
     }
 
     private var applicationContext: Context? = null
@@ -100,6 +104,17 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         }
     }
 
+    /**
+     * Дефект №3: snapshot текущего connection state менеджера как
+     * connection-событие. Connection-события приходят только при ИЗМЕНЕНИЯХ,
+     * поэтому после (re)bind'а / новой подписки Flutter сам о существующем
+     * соединении не узнал бы.
+     */
+    private fun sendConnectionSnapshot() {
+        val mgr = serviceBinder?.transferManager ?: return
+        sendEvent(SoulseekConnectionEvent(state = mgr.connectionState).toJson().toString())
+    }
+
     // Pending commands, выполненные ДО того как сервис привязан.
     // startService триггерит bind; команды ждут в очереди.
     //
@@ -123,6 +138,11 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             serviceBinder?.setEventListener { json ->
                 sendEvent(json)
             }
+
+            // Дефект №3: сразу после установки listener отправляем snapshot
+            // текущего connection state — синхронизировано с последующими
+            // событиями (они пойдут через тот же listener/main-handler).
+            sendConnectionSnapshot()
 
             // Выполняем ожидающие команды.
             executePendingCommands()
@@ -221,6 +241,11 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                 sendEvent(snapshot)
             }
         }
+
+        // Дефект №3: snapshot и connection state, если binder уже есть, —
+        // повторная подписка сразу видит актуальный статус соединения,
+        // не ожидая следующего события изменения.
+        sendConnectionSnapshot()
     }
 
     override fun onCancel(arguments: Any?) {
@@ -242,11 +267,15 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             handleUpdateNativeSettings(call, result)
             return
         }
-        // P2: запрос статуса коннекта не должен иметь побочного эффекта
-        // запуска foreground service — если сервис не привязан, соединения
-        // нет, возвращаем DISCONNECTED сразу.
-        if (call.method == "getConnectionState" && serviceBinder == null) {
-            result.success(ConnectionState.DISCONNECTED.name)
+        // Дефект №3: отсутствие binder у нового экземпляра плагина не
+        // доказывает отсутствия соединения — foreground service может
+        // продолжать работать (пересоздание Flutter engine). Если bind уже
+        // инициирован, команда ниже встанет в pending-очередь и получит
+        // реальное состояние после onServiceConnected. Если привязки нет
+        // вовсе — отдаём UNKNOWN: Dart трактует его как unknown и не
+        // перезаписывает локальный статус ложным DISCONNECTED.
+        if (call.method == "getConnectionState" && serviceBinder == null && !bindPending) {
+            result.success(CONNECTION_STATE_UNKNOWN)
             return
         }
         // P3: bind инициирован, но binder ещё не доставлен (окно между
@@ -275,10 +304,21 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
 
     /** Ставит команду в очередь ожидания bind'а и запускает таймаут-таймер. */
     private fun queuePendingCommand(call: MethodCall, result: MethodChannel.Result) {
-        mainHandler.post {
-            pendingCommands.add(Triple(call, result, System.currentTimeMillis()))
-            schedulePendingTimer()
+        // onMethodCall и onServiceConnected оба исполняются на main thread.
+        // Раньше команда добавлялась через mainHandler.post — если сообщение
+        // onServiceConnected уже стояло в очереди looper'а раньше этого post,
+        // оно выполнялось первым, дренировало ПУСТУЮ очередь, и команда
+        // (connect) зависала до SERVICE_BIND_TIMEOUT. Добавляем синхронно;
+        // если binder успел подключиться — исполняем сразу.
+        val enqueue = {
+            if (serviceBinder != null) {
+                handleMethodCall(call, result)
+            } else {
+                pendingCommands.add(Triple(call, result, System.currentTimeMillis()))
+                schedulePendingTimer()
+            }
         }
+        if (Looper.myLooper() == Looper.getMainLooper()) enqueue() else mainHandler.post { enqueue() }
     }
 
     /** Периодически проверяет очередь: зависшие команды завершаются ошибкой. */
