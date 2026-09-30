@@ -4,12 +4,18 @@
 // им запросы, поэтому косвенно они покрываются app_database_test.dart.
 // Здесь добавляем точечное прямое покрытие двух ключевых DAO без сети:
 // SearchHistoryDao (история поиска) и SettingsDao (key-value настройки).
+// Плюс PlaybackDao (SESSION-01): roundtrip сессии в toMap-формате,
+// legacy-записи track_id/extra_json, per-entry skip битых записей.
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:player/core/database/app_database.dart';
+import 'package:player/core/database/playback_dao.dart';
 import 'package:player/core/database/playlist_dao.dart';
 import 'package:player/core/database/search_history_dao.dart';
 import 'package:player/core/database/settings_dao.dart';
+import 'package:player/core/player_conversions.dart';
 import 'package:player/models/playlist.dart';
 import 'package:player/models/track.dart';
 import '../setup/test_harness.dart';
@@ -111,6 +117,173 @@ void main() {
       expect(await SettingsDao.instance.getSetting(db, 'theme'), 'dark');
       expect(await SettingsDao.instance.getSetting(
           db, 'artwork_v3_artist_title'), isNull);
+    });
+  });
+
+  group('PlaybackDao (SESSION-01)', () {
+    test('savePlaybackSession → loadPlaybackSession roundtrip (toMap формат)',
+        () async {
+      final db = await AppDatabase.instance.database;
+      final tracks = [
+        const Track(
+            id: 'a', sourceId: 'soulseek', title: 'Alpha', artist: 'A'),
+        const Track(
+            id: 'b', sourceId: 'youtube', title: 'Beta', artist: 'B'),
+      ];
+      await PlaybackDao.instance.savePlaybackSession(
+        db,
+        queueRows: tracks.map(PlayerConversions.trackToRow).toList(),
+        currentIndex: 1,
+        positionMs: 42000,
+      );
+
+      final session = await PlaybackDao.instance.loadPlaybackSession(db);
+      expect(session, isNotNull);
+      expect(session!.queue.length, 2);
+      expect(session.queue.first.id, 'a');
+      expect(session.queue.first.sourceId, 'soulseek');
+      expect(session.queue[1].id, 'b');
+      expect(session.currentIndex, 1);
+      expect(session.positionMs, 42000);
+    });
+
+    test('trackToRow пишет toMap-совместимый формат (id/extra как Map)', () {
+      const track = Track(
+        id: 'res_1',
+        sourceId: 'soulseek',
+        title: 'T',
+        artist: 'A',
+        qualityScore: 320,
+        qualityLabel: 'MP3 320',
+        extra: {'cacheKey': 'ck', 'bitrate': 320},
+      );
+      final row = PlayerConversions.trackToRow(track);
+
+      expect(row['id'], 'res_1');
+      expect(row.containsKey('track_id'), isFalse);
+      expect(row.containsKey('extra_json'), isFalse);
+      expect(row['extra'], isA<Map>());
+      // Читается стандартным fromMap без fallback-ключей.
+      final restored = Track.fromMap(row);
+      expect(restored.id, 'res_1');
+      expect(restored.extra['cacheKey'], 'ck');
+    });
+
+    test('legacy-записи (track_id/extra_json) читаются', () async {
+      final db = await AppDatabase.instance.database;
+      await PlaybackDao.instance.savePlaybackSession(
+        db,
+        queueRows: [
+          {
+            'track_id': 'legacy_1',
+            'source_id': 'soulseek',
+            'title': 'Old',
+            'artist': 'Writer',
+            'duration_ms': 100000,
+            'artwork_url': null,
+            'quality_score': 320,
+            'quality_label': 'MP3 320',
+            'track_global_id': 'soulseek:legacy_1',
+            'extra_json': '{"cacheKey":"abc","peerUsername":"p"}',
+          },
+        ],
+        currentIndex: 0,
+        positionMs: 0,
+      );
+
+      final session = await PlaybackDao.instance.loadPlaybackSession(db);
+      expect(session, isNotNull);
+      expect(session!.queue.single.id, 'legacy_1');
+      expect(session.queue.single.extra['cacheKey'], 'abc');
+      expect(session.queue.single.qualityScore, 320);
+    });
+
+    test('битая запись без id пропускается, остальные восстанавливаются',
+        () async {
+      final db = await AppDatabase.instance.database;
+      await PlaybackDao.instance.savePlaybackSession(
+        db,
+        queueRows: [
+          const Track(id: 'ok1', sourceId: 'youtube', title: 'A', artist: 'A')
+              .toMap(),
+          // Битая: нет ни id, ни track_id.
+          {'source_id': 'youtube', 'title': 'Broken', 'artist': 'X'},
+          const Track(id: 'ok2', sourceId: 'youtube', title: 'B', artist: 'B')
+              .toMap(),
+        ],
+        currentIndex: 2,
+        positionMs: 0,
+      );
+
+      final session = await PlaybackDao.instance.loadPlaybackSession(db);
+      expect(session, isNotNull);
+      expect(session!.queue.map((t) => t.id).toList(), ['ok1', 'ok2']);
+      // Битая запись стояла до current_index=2 → индекс смещён на 1.
+      expect(session.currentIndex, 1);
+    });
+
+    test('битая запись после current_index не смещает индекс', () async {
+      final db = await AppDatabase.instance.database;
+      await PlaybackDao.instance.savePlaybackSession(
+        db,
+        queueRows: [
+          const Track(id: 'ok1', sourceId: 'youtube', title: 'A', artist: 'A')
+              .toMap(),
+          const Track(id: 'ok2', sourceId: 'youtube', title: 'B', artist: 'B')
+              .toMap(),
+          {'source_id': 'youtube', 'title': 'Broken', 'artist': 'X'},
+        ],
+        currentIndex: 0,
+        positionMs: 0,
+      );
+
+      final session = await PlaybackDao.instance.loadPlaybackSession(db);
+      expect(session, isNotNull);
+      expect(session!.queue.map((t) => t.id).toList(), ['ok1', 'ok2']);
+      expect(session.currentIndex, 0);
+    });
+
+    test('не-Map элемент очереди пропускается без падения', () async {
+      final db = await AppDatabase.instance.database;
+      // Руками пишем queue_json с невалидным элементом.
+      final raw = jsonEncode([
+        'just a string',
+        {'id': 'ok', 'source_id': 'youtube', 'title': 'T', 'artist': 'A'},
+      ]);
+      await db.update(
+        'playback_state',
+        {'queue_json': raw, 'current_index': 0, 'position_ms': 0},
+        where: 'id = 1',
+      );
+
+      final session = await PlaybackDao.instance.loadPlaybackSession(db);
+      expect(session, isNotNull);
+      expect(session!.queue.single.id, 'ok');
+    });
+
+    test('пустая очередь → null', () async {
+      final db = await AppDatabase.instance.database;
+      await PlaybackDao.instance.savePlaybackSession(
+        db,
+        queueRows: [],
+        currentIndex: -1,
+        positionMs: 0,
+      );
+      expect(await PlaybackDao.instance.loadPlaybackSession(db), isNull);
+    });
+
+    test('все записи битые → null', () async {
+      final db = await AppDatabase.instance.database;
+      await PlaybackDao.instance.savePlaybackSession(
+        db,
+        queueRows: [
+          {'source_id': 'youtube', 'title': 'Broken', 'artist': 'X'},
+          {'track_global_id': 'youtube:also_broken'},
+        ],
+        currentIndex: 0,
+        positionMs: 0,
+      );
+      expect(await PlaybackDao.instance.loadPlaybackSession(db), isNull);
     });
   });
 

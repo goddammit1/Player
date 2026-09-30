@@ -1,3 +1,7 @@
+// lib/models/track.dart
+
+import 'dart:convert';
+
 /// Унифицированная модель трека.
 ///
 /// Любой источник (YouTube, SoundCloud, VK и т.д.) возвращает [Track]
@@ -76,19 +80,58 @@ class Track {
         'extra': extra,
       };
 
+  /// Null-safe парсинг карты в [Track].
+  ///
+  /// SESSION-01: раньше `m['id'] as String` падал с
+  /// `type 'Null' is not a subtype of type 'String'` на записях, сохранённых
+  /// мобильным писателем с ключами `track_id`/`extra_json`. Теперь:
+  /// - `id` читается с fallback на legacy-ключ `track_id` (формат мобильного
+  ///   писателя до фикса); пустой `id` — невалидная запись, вызывающий код
+  ///   её пропускает (per-entry skip в `PlaybackDao.loadPlaybackSession`);
+  /// - отображаемые поля (`title`/`artist`) дефолтируются в '';
+  /// - `extra` принимает и Map, и legacy JSON-строку `extra_json`;
+  /// - числовые поля толерантны к num (JSON даёт int/double).
   factory Track.fromMap(Map<String, dynamic> m) => Track(
-        id: m['id'] as String,
-        sourceId: m['source_id'] as String,
-        title: m['title'] as String,
-        artist: m['artist'] as String,
+        id: _stringOrNull(m['id']) ?? _stringOrNull(m['track_id']) ?? '',
+        sourceId: _stringOrNull(m['source_id']) ?? _stringOrNull(m['sourceId']) ?? '',
+        title: _stringOrNull(m['title']) ?? '',
+        artist: _stringOrNull(m['artist']) ?? '',
         duration: m['duration_ms'] != null
             ? Duration(milliseconds: (m['duration_ms'] as num).toInt())
             : null,
-        artworkUrl: m['artwork_url'] as String?,
-        qualityScore: m['quality_score'] as int?,
-        qualityLabel: m['quality_label'] as String?,
-        extra: (m['extra'] as Map?)?.cast<String, dynamic>() ?? const {},
+        artworkUrl: _stringOrNull(m['artwork_url']) ?? _stringOrNull(m['artworkUrl']),
+        qualityScore: _intOrNull(m['quality_score']) ?? _intOrNull(m['qualityScore']),
+        qualityLabel: _stringOrNull(m['quality_label']) ??
+            _stringOrNull(m['qualityLabel']),
+        extra: _extraFromMap(m['extra']) ??
+            _extraFromJsonString(m['extra_json']) ??
+            const {},
       );
+
+  static String? _stringOrNull(dynamic v) => v is String ? v : null;
+
+  static int? _intOrNull(dynamic v) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return null;
+  }
+
+  /// `extra` в новом формате — Map (как пишет `toMap()`).
+  static Map<String, dynamic>? _extraFromMap(dynamic v) {
+    if (v is Map) return v.cast<String, dynamic>();
+    return null;
+  }
+
+  /// `extra` в legacy-формате мобильного писателя — JSON-строка.
+  static Map<String, dynamic>? _extraFromJsonString(dynamic v) {
+    if (v is String && v.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(v);
+        if (decoded is Map) return decoded.cast<String, dynamic>();
+      } catch (_) {}
+    }
+    return null;
+  }
 
   @override
   bool operator ==(Object other) =>

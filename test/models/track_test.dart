@@ -169,5 +169,131 @@ void main() {
       final track = Track.fromMap(map);
       expect(track.extra, isEmpty);
     });
+
+    // ---- SESSION-01: null-safe + legacy-ключи ----
+    group('SESSION-01: fromMap null-safety + legacy keys', () {
+      test('null title/artist default to empty string, not crash', () {
+        final track = Track.fromMap({
+          'id': 'id',
+          'source_id': 'src',
+          'title': null,
+          'artist': null,
+        });
+        expect(track.title, '');
+        expect(track.artist, '');
+      });
+
+      test('missing id → empty id (запись невалидна, DAO её пропустит)', () {
+        final track = Track.fromMap({'source_id': 'src', 'title': 'T'});
+        expect(track.id, isEmpty);
+      });
+
+      test('null id does not throw Null is not a subtype of String', () {
+        final track = Track.fromMap({
+          'id': null,
+          'source_id': 'src',
+          'title': 'T',
+          'artist': 'A',
+        });
+        expect(track.id, isEmpty);
+      });
+
+      test('legacy key track_id used when id missing (мобильный писатель)',
+          () {
+        final track = Track.fromMap({
+          'track_id': 'legacy_id',
+          'source_id': 'soulseek',
+          'title': 'T',
+          'artist': 'A',
+        });
+        expect(track.id, 'legacy_id');
+      });
+
+      test('id preferred over legacy track_id when both present', () {
+        final track = Track.fromMap({
+          'id': 'new_id',
+          'track_id': 'legacy_id',
+          'source_id': 'src',
+        });
+        expect(track.id, 'new_id');
+      });
+
+      test('legacy extra_json (JSON string) is decoded into extra', () {
+        final track = Track.fromMap({
+          'id': 'id',
+          'source_id': 'soulseek',
+          'title': 'T',
+          'artist': 'A',
+          'extra_json': '{"cacheKey":"abc","bitrate":320}',
+        });
+        expect(track.extra['cacheKey'], 'abc');
+        expect(track.extra['bitrate'], 320);
+      });
+
+      test('legacy extra_json malformed JSON → empty extra, no crash', () {
+        final track = Track.fromMap({
+          'id': 'id',
+          'source_id': 'src',
+          'extra_json': '{not valid json',
+        });
+        expect(track.extra, isEmpty);
+      });
+
+      test('full legacy row (mobile writer pre-fix) parses correctly', () {
+        // Формат старого PlayerConversions.trackToRow: track_id + extra_json.
+        final track = Track.fromMap({
+          'track_id': 'res_1_2',
+          'source_id': 'soulseek',
+          'title': 'Title',
+          'artist': 'Artist',
+          'duration_ms': 213000,
+          'artwork_url': null,
+          'quality_score': 320,
+          'quality_label': 'MP3 320',
+          'track_global_id': 'soulseek:res_1_2',
+          'extra_json':
+              '{"peerUsername":"peer","remoteFilename":"a.mp3","sizeBytes":5}',
+        });
+        expect(track.id, 'res_1_2');
+        expect(track.sourceId, 'soulseek');
+        expect(track.qualityScore, 320);
+        expect(track.qualityLabel, 'MP3 320');
+        expect(track.duration, const Duration(milliseconds: 213000));
+        expect(track.extra['peerUsername'], 'peer');
+        expect(track.extra['sizeBytes'], 5);
+      });
+
+      test('roundtrip toMap/fromMap preserves soulseek quality fields', () {
+        const original = Track(
+          id: 'res_9',
+          sourceId: 'soulseek',
+          title: 'T',
+          artist: 'A',
+          qualityScore: 1411,
+          qualityLabel: 'FLAC 24/96',
+          extra: {
+            'cacheKey': 'abc123',
+            'bitrate': 1411,
+            'sampleRate': 96000,
+            'bitDepth': 24,
+            'extension': 'flac',
+          },
+        );
+        final restored = Track.fromMap(original.toMap());
+        expect(restored.qualityScore, 1411);
+        expect(restored.qualityLabel, 'FLAC 24/96');
+        expect(restored.extra['cacheKey'], 'abc123');
+        expect(restored.extra['bitDepth'], 24);
+      });
+
+      test('fromMap tolerates double quality_score from JSON', () {
+        final track = Track.fromMap({
+          'id': 'id',
+          'source_id': 'src',
+          'quality_score': 320.0,
+        });
+        expect(track.qualityScore, 320);
+      });
+    });
   });
 }
