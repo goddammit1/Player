@@ -39,7 +39,11 @@ android {
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        // Релиз 3.0.0 — бета-сборка. Flutter транслирует pubspec
+        // «3.0.0+31» в versionName=«3.0.0», но бета-суффикс должен быть
+        // виден пользователю: в About-странице и в строке «Installed:»
+        // диалога обновлений. Для стабильного 3.0.0 вернуть flutter.versionName.
+        versionName = "3.0.0-beta"
     }
 
     signingConfigs {
