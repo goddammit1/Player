@@ -18,12 +18,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../models/track.dart';
 import '../../sources/soulseek_models.dart';
 import '../../sources/soulseek_platform_channel.dart';
 import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import 'snack.dart';
+import 'track_settings_sheet.dart';
 
 /// Показывает нижний лист управления кэшем Soulseek.
 Future<void> showSoulseekCacheSheet(BuildContext context) {
@@ -93,7 +95,13 @@ class _CacheSheetState extends ConsumerState<_CacheSheet> {
     }
 
     for (final entry in entries) {
-      items.add(_CacheItem(cacheKey: entry.cacheKey, entry: entry));
+      items.add(_CacheItem(
+        cacheKey: entry.cacheKey,
+        entry: entry,
+        // CACHE-UI-01: Track из записи кэша — extra.cacheKey даёт
+        // мгновенный cache hit в resolveStreamUrl (без повторной загрузки).
+        track: source.trackFromCacheEntry(entry),
+      ));
       if (entry.complete) totalBytes += entry.sizeBytes;
     }
 
@@ -115,6 +123,37 @@ class _CacheSheetState extends ConsumerState<_CacheSheet> {
   }
 
   // ── Действия ──
+
+  /// CACHE-UI-01: тап по complete-плитке → воспроизведение из кэша.
+  ///
+  /// Очередь = все complete-треки кэш-листа (в текущем порядке отображения),
+  /// старт с выбранного — консистентно со страницей поиска. Track несёт
+  /// `extra.cacheKey`, поэтому resolveStreamUrl возвращает localPath из
+  /// native-кэша мгновенно, без сети.
+  void _playFromCache(_CacheItem item, int index) {
+    if (!item.entry.complete) return;
+
+    final queue = _items
+        .where((i) => i.entry.complete)
+        .map((i) => i.track)
+        .toList(growable: false);
+
+    // Индекс внутри complete-подмножества.
+    final playIndex = _items
+        .sublist(0, index + 1)
+        .where((i) => i.entry.complete)
+        .length - 1;
+
+    final player = ref.read(playerServiceProvider);
+    player.setQueue(queue, startIndex: playIndex);
+  }
+
+  /// CACHE-UI-01: long-press → контекстное меню (add to playlist, play next,
+  /// details, download-status) — тот же sheet, что и у плиток поиска.
+  void _showTrackSettings(_CacheItem item) {
+    if (!item.entry.complete) return;
+    showTrackSettingsSheet(context, track: item.track);
+  }
 
   Future<void> _togglePin(_CacheItem item) async {
     try {
@@ -356,6 +395,8 @@ class _CacheSheetState extends ConsumerState<_CacheSheet> {
         return _CacheTile(
           item: item,
           colors: colors,
+          onTap: () => _playFromCache(item, index),
+          onLongPress: () => _showTrackSettings(item),
           onTogglePin: () => _togglePin(item),
           onDelete: () => _delete(item),
         );
@@ -413,7 +454,15 @@ class _CacheItem {
   final String cacheKey;
   final SoulseekCacheEntry entry;
 
-  const _CacheItem({required this.cacheKey, required this.entry});
+  /// CACHE-UI-01: Track для воспроизведения/контекстных действий
+  /// (построен через SoulseekSource.trackFromCacheEntry).
+  final Track track;
+
+  const _CacheItem({
+    required this.cacheKey,
+    required this.entry,
+    required this.track,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -424,12 +473,16 @@ class _CacheTile extends StatelessWidget {
   const _CacheTile({
     required this.item,
     required this.colors,
+    this.onTap,
+    this.onLongPress,
     required this.onTogglePin,
     required this.onDelete,
   });
 
   final _CacheItem item;
   final dynamic colors;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final VoidCallback onTogglePin;
   final VoidCallback onDelete;
 
@@ -445,119 +498,130 @@ class _CacheTile extends StatelessWidget {
     final artist = entry.artist;
     final durationText = _durationText(entry.durationSeconds);
 
+    // CACHE-UI-01: complete-плитки кликабельны (тап → play, long-press →
+    // контекстные действия); incomplete — пассивны, как и раньше.
+    final tappable = entry.complete && (onTap != null || onLongPress != null);
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          // Иконка статуса
-          Icon(
-            entry.complete
-                ? (entry.pinned
-                    ? Icons.push_pin_rounded
-                    : Icons.check_circle_outline_rounded)
-                : Icons.downloading_rounded,
-            color: entry.pinned
-                ? colors.accent as Color
-                : entry.complete
-                    ? Colors.greenAccent
-                    : colors.textTertiary as Color,
-            size: 22,
-          ),
-          const SizedBox(width: 12),
-          // Заголовок/артист + размер/длительность
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Row(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: InkWell(
+        onTap: tappable ? onTap : null,
+        onLongPress: tappable ? onLongPress : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            children: [
+              // Иконка статуса
+              Icon(
+                entry.complete
+                    ? (entry.pinned
+                        ? Icons.push_pin_rounded
+                        : Icons.check_circle_outline_rounded)
+                    : Icons.downloading_rounded,
+                color: entry.pinned
+                    ? colors.accent as Color
+                    : entry.complete
+                        ? Colors.greenAccent
+                        : colors.textTertiary as Color,
+                size: 22,
+              ),
+              const SizedBox(width: 12),
+              // Заголовок/артист + размер/длительность
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Flexible(
-                      child: Text(
-                        artist != null && artist.isNotEmpty
-                            ? artist
-                            : _basename(entry.localPath),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: colors.textSecondary,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    if (durationText != null) ...[
-                      const SizedBox(width: 6),
-                      Text(
-                        '· $durationText',
-                        style: TextStyle(
-                          color: colors.textTertiary,
-                          fontSize: 12,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(width: 8),
                     Text(
-                      _humanBytes(entry.sizeBytes),
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: colors.textSecondary,
-                        fontSize: 12,
-                        fontFeatures: const [FontFeature.tabularFigures()],
+                        color: colors.textPrimary,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    if (!entry.complete) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.orangeAccent.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          'incomplete',
-                          style: TextStyle(
-                            color: Colors.orangeAccent,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            artist != null && artist.isNotEmpty
+                                ? artist
+                                : _basename(entry.localPath),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                        if (durationText != null) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '· $durationText',
+                            style: TextStyle(
+                              color: colors.textTertiary,
+                              fontSize: 12,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
+                        const SizedBox(width: 8),
+                        Text(
+                          _humanBytes(entry.sizeBytes),
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 12,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        if (!entry.complete) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.orangeAccent.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'incomplete',
+                              style: TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ],
                 ),
-              ],
-            ),
+              ),
+              // Pin toggle
+              _IconButton(
+                icon: entry.pinned
+                    ? Icons.push_pin_rounded
+                    : Icons.push_pin_outlined,
+                colors: colors,
+                onTap: onTogglePin,
+                active: entry.pinned,
+              ),
+              // Delete
+              _IconButton(
+                icon: Icons.delete_outline_rounded,
+                colors: colors,
+                onTap: onDelete,
+                destructive: true,
+              ),
+            ],
           ),
-          // Pin toggle
-          _IconButton(
-            icon: entry.pinned
-                ? Icons.push_pin_rounded
-                : Icons.push_pin_outlined,
-            colors: colors,
-            onTap: onTogglePin,
-            active: entry.pinned,
-          ),
-          // Delete
-          _IconButton(
-            icon: Icons.delete_outline_rounded,
-            colors: colors,
-            onTap: onDelete,
-            destructive: true,
-          ),
-        ],
+        ),
       ),
     );
   }

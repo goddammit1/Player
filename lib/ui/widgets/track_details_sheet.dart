@@ -30,10 +30,48 @@ class _TrackDetailsSheetState extends ConsumerState<_TrackDetailsSheet> {
   int? _bitrate;
   bool _loading = true;
 
+  /// QUALITY-01: fallback-метка качества («FLAC 24/96», «MP3 320») —
+  /// показывается вместо «unavailable», когда точный битрейт неизвестен
+  /// (типично для lossless: C# bridge не всегда даёт BitRate-атрибут).
+  String? _qualityLabel;
+
   @override
   void initState() {
     super.initState();
+    _qualityLabel = _labelFromTrack(widget.track);
     _loadBitrate();
+  }
+
+  /// Метка из трека: явный qualityLabel либо построенный из extra
+  /// (extension/bitrate/sampleRate/bitDepth).
+  String? _labelFromTrack(Track t) {
+    final label = t.qualityLabel;
+    if (label != null && label.isNotEmpty) return label;
+
+    // extra мог принести атрибуты без готовой метки (кэш-треки) —
+    // строим «FLAC 24/96»-подобную строку из компонентов.
+    final ext = t.extra['extension'] as String?;
+    if (ext == null || ext.isEmpty) return null;
+    int? bitrate;
+    if (t.extra['bitrate'] is int && t.extra['bitrate'] as int > 0) {
+      bitrate = t.extra['bitrate'] as int;
+    }
+    final bitDepth = t.extra['bitDepth'] as int?;
+    final sampleRate = t.extra['sampleRate'] as int?;
+
+    if (bitrate == null && bitDepth == null && sampleRate == null) {
+      return ext.toUpperCase();
+    }
+    if (bitDepth != null && sampleRate != null) {
+      final khz = sampleRate >= 1000
+          ? (sampleRate % 1000 == 0
+              ? '${sampleRate ~/ 1000}'
+              : (sampleRate / 1000).toStringAsFixed(1))
+          : '$sampleRate';
+      return '${ext.toUpperCase()} $bitDepth/$khz';
+    }
+    if (bitDepth != null) return '${ext.toUpperCase()} ${bitDepth}bit';
+    return '${ext.toUpperCase()} $bitrate';
   }
 
   Future<void> _loadBitrate() async {
@@ -142,7 +180,14 @@ class _TrackDetailsSheetState extends ConsumerState<_TrackDetailsSheet> {
                 value: t.duration != null ? _fmt(t.duration!) : '—',
                 colors: colors,
               ),
-              _BitrateRow(loading: _loading, bitrate: _bitrate, colors: colors),
+              // QUALITY-01: при недоступном точном битрейте показываем
+              // метку качества («FLAC 24/96») вместо «unavailable».
+              _BitrateRow(
+                loading: _loading,
+                bitrate: _bitrate,
+                qualityLabel: _qualityLabel,
+                colors: colors,
+              ),
             ],
           ),
         ),
@@ -197,10 +242,12 @@ class _BitrateRow extends StatelessWidget {
   const _BitrateRow({
     required this.loading,
     required this.bitrate,
+    this.qualityLabel,
     required this.colors,
   });
   final bool loading;
   final int? bitrate;
+  final String? qualityLabel;
   final dynamic colors;
 
   @override
@@ -215,7 +262,8 @@ class _BitrateRow extends StatelessWidget {
           color: colors.textPrimary,
         ),
       );
-    } else if (bitrate == null || bitrate! <= 0) {
+    } else if ((bitrate == null || bitrate! <= 0) &&
+        (qualityLabel == null || qualityLabel!.isEmpty)) {
       trailing = Text(
         'unavailable',
         style: TextStyle(
@@ -224,9 +272,18 @@ class _BitrateRow extends StatelessWidget {
           fontWeight: FontWeight.w600,
         ),
       );
-    } else {
+    } else if (bitrate != null && bitrate! > 0) {
       trailing = Text(
         '$bitrate kbps',
+        style: TextStyle(
+          color: colors.textPrimary,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    } else {
+      trailing = Text(
+        qualityLabel!,
         style: TextStyle(
           color: colors.textPrimary,
           fontSize: 14,
