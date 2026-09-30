@@ -178,8 +178,10 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// Выполняет поиск по запросу с фильтрами.
   ///
   /// [requestId] — уникальный ID запроса (генерируется вызывающим кодом).
-  /// [timeoutMs] — таймаут поиска (по умолчанию 15000 мс).
-  /// [responseLimit] — максимальное количество ответов (по умолчанию 250).
+  /// [timeoutMs] — жёсткий общий бюджет поиска (по умолчанию 10000 мс).
+  /// [idleTimeoutMs] — «окно тишины» после первого ответа (по умолчанию 2500 мс).
+  /// [responseLimit] — максимальное количество ответов (по умолчанию 100).
+  /// [fileLimit] — досрочное завершение по числу файлов (по умолчанию 200).
   /// [filters] — поисковые фильтры (расширения, размер, битрейт и т.д.).
   ///
   /// Возвращает список результатов поиска.
@@ -187,8 +189,10 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   Future<List<SoulseekSearchResult>> search({
     required String requestId,
     required String query,
-    int timeoutMs = 15000,
-    int responseLimit = 250,
+    int timeoutMs = 10000,
+    int idleTimeoutMs = 2500,
+    int responseLimit = 100,
+    int fileLimit = 200,
     SoulseekSearchFilters filters = SoulseekSearchFilters.empty,
   }) async {
     _requireAndroid();
@@ -199,7 +203,9 @@ class SoulseekPlatformChannel implements SoulseekChannel {
       'requestId': requestId,
       'query': q,
       'timeoutMs': timeoutMs,
+      'idleTimeoutMs': idleTimeoutMs,
       'responseLimit': responseLimit,
+      'fileLimit': fileLimit,
       'filters': filters.toMap(),
     });
     if (result == null) return const [];

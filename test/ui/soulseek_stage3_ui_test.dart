@@ -71,7 +71,9 @@ class _TestChannel implements SoulseekChannel {
     required String requestId,
     required String query,
     required int timeoutMs,
+    required int idleTimeoutMs,
     required int responseLimit,
+    required int fileLimit,
     required SoulseekSearchFilters filters,
   }) async => const [];
 
