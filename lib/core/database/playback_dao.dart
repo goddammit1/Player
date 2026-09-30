@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../models/track.dart';
@@ -54,15 +55,43 @@ class PlaybackDao {
       return null;
     }
 
-    final queue = raw.cast<Map<String, dynamic>>().map((r) {
-      return Track.fromMap(r);
-    }).toList();
+    // SESSION-01: разбор per-entry — одна битая запись не должна ронять
+    // восстановление всей очереди.
+    final queue = <Track>[];
+    var skipped = 0;
+    var skippedBeforeCurrent = 0;
+    final savedIndex = (row['current_index'] as int?) ?? -1;
+
+    for (final entry in raw) {
+      final indexBefore = queue.length + skipped;
+      try {
+        if (entry is! Map) {
+          throw const FormatException('queue entry is not a Map');
+        }
+        final track = Track.fromMap(entry.cast<String, dynamic>());
+        if (track.id.isEmpty) {
+          throw const FormatException('queue entry has empty id');
+        }
+        queue.add(track);
+      } catch (e) {
+        skipped++;
+        if (savedIndex >= 0 && indexBefore < savedIndex) {
+          skippedBeforeCurrent++;
+        }
+        if (kDebugMode) {
+          debugPrint('[PlaybackDao] skipping broken queue entry '
+              '#$indexBefore: $e');
+        }
+      }
+    }
 
     if (queue.isEmpty) return null;
 
     return (
       queue: queue,
-      currentIndex: (row['current_index'] as int?) ?? -1,
+      // Если до сохранённого индекса были пропущены записи — смещаем его,
+      // чтобы текущий трек остался тем же (выше вызывающий код clamp-ит).
+      currentIndex: savedIndex - skippedBeforeCurrent,
       positionMs: (row['position_ms'] as int?) ?? 0,
     );
   }
