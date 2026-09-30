@@ -5,6 +5,19 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [3.0.1] - 2026-10-01
+
+### Fixed
+
+- **Хотфикс: сбой сохранения учётных данных Soulseek** (`Failed to save
+  credentials (secure storage)`) в Android release-сборке — NPE
+  `io.flutter.FlutterInjector.encrypt`. R8 full mode (AGP 8.x) horizontal
+  class merging разрушал flutter_secure_storage 9.2.4 (мержил cipher-классы
+  плагина в кластер `io.flutter.FlutterInjector`, удалял интерфейсы и
+  конструкторы). Добавлены ProGuard keep-правила для
+  `com.it_nomads.fluttersecurestorage` / `androidx.security.crypto` /
+  `com.google.crypto.tink`.
+
 ## [3.0.0-beta] - 2026-09-30
 
 > ⚠ Бета-версия. Это крупное обновление с полной интеграцией Soulseek P2P.
