@@ -1,7 +1,7 @@
 name: player
 description: "Music player with multi-source parsing"
 publish_to: 'none'
-version: 2.5.2+30
+version: 3.0.0+31
 
 environment:
   sdk: ^3.11.4
