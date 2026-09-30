@@ -10,6 +10,7 @@
 // разблокировки и занимает время).
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'database/app_database.dart';
@@ -91,6 +92,70 @@ class SoulseekCredentials {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Диагностика: проверка secure storage через тот же [FlutterSecureStorage]
+  /// (те же AndroidOptions), что и у учётных данных.
+  ///
+  /// Пишет, читает и удаляет служебный ключ с константным значением.
+  /// Учётные данные не читаются: в отчёт попадает только факт их наличия
+  /// (containsKey), значения — никогда.
+  static Future<String> diagnosticRoundTrip() async {
+    const probeKey = '__diagnostics_probe__';
+    const probeValue = 'probe';
+    final out = StringBuffer();
+
+    Future<bool> step(String name, Future<String?> Function() op) async {
+      try {
+        final detail = await op();
+        out.writeln('[OK]   $name${detail == null ? '' : ': $detail'}');
+        return true;
+      } catch (e) {
+        out.writeln('[FAIL] $name');
+        out.writeln(_describeError(e));
+        return false;
+      }
+    }
+
+    await step('stored credentials', () async {
+      final hasUsername = await _storage.containsKey(key: _keyUsername);
+      final hasPassword = await _storage.containsKey(key: _keyPassword);
+      return 'username ${hasUsername ? 'present' : 'absent'}, '
+          'password ${hasPassword ? 'present' : 'absent'}';
+    });
+    final written = await step('write probe', () async {
+      await _storage.write(key: probeKey, value: probeValue);
+      return null;
+    });
+    if (written) {
+      await step('read probe back', () async {
+        final value = await _storage.read(key: probeKey);
+        if (value != probeValue) {
+          throw StateError(
+            value == null ? 'read returned null' : 'read returned a different value',
+          );
+        }
+        return null;
+      });
+    }
+    await step('delete probe', () async {
+      await _storage.delete(key: probeKey);
+      return null;
+    });
+    return out.toString();
+  }
+
+  /// PlatformException плагина несёт Java-стек в `details`.
+  static String _describeError(Object e) {
+    final text = e is PlatformException
+        ? 'PlatformException(${e.code}): ${e.message}\n${e.details ?? ''}'
+        : e.toString();
+    final lines = text.trimRight().split('\n');
+    const maxLines = 30;
+    return [
+      for (final line in lines.take(maxLines)) '       $line',
+      if (lines.length > maxLines) '       … ${lines.length - maxLines} more lines',
+    ].join('\n');
   }
 
   /// Удаляет и username, и password из всех хранилищ.

@@ -5,6 +5,24 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [Unreleased]
+
+### Added
+
+- **Диагностика secure storage** (Soulseek → Troubleshooting → Secure
+  storage diagnostics): отчёт для разработчика с кнопками Copy / Share —
+  проверка Android Keystore, ключей flutter_secure_storage и
+  EncryptedSharedPreferences по шагам с полными исключениями, плюс
+  выдержка из логов плагина. Учётных данных отчёт не содержит.
+
+### Changed
+
+- Уточнение к 3.0.1: keep-правила R8 не устраняют сбой `Failed to save
+  credentials (secure storage)`. Сборка без них работает на реальном
+  устройстве; NPE `FlutterInjector.encrypt` означает, что на устройстве
+  пользователя падает инициализация Keystore / сохранённых ключей. Правила
+  оставлены как безвредные, причину покажет отчёт диагностики.
+
 ## [3.0.1] - 2026-10-01
 
 ### Fixed

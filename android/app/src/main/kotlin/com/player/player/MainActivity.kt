@@ -30,6 +30,7 @@ import java.io.File
  */
 class MainActivity : AudioServiceActivity() {
     private var updateChannel: MethodChannel? = null
+    private var diagnosticsChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -38,6 +39,12 @@ class MainActivity : AudioServiceActivity() {
         // EventChannel "soulseek/events"). Plugin сам управляет lifecycle
         // через FlutterPlugin.onAttachedToEngine / onDetachedFromEngine.
         flutterEngine.plugins.add(SoulseekPlugin())
+
+        // Отчёт о состоянии secure storage (настройки Soulseek → Troubleshooting).
+        diagnosticsChannel = SecureStorageDiagnostics.register(
+            flutterEngine.dartExecutor.binaryMessenger,
+            this
+        )
 
         updateChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

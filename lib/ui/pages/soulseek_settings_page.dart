@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../core/secure_storage_diagnostics.dart';
 import '../../core/soulseek_credentials.dart';
 import '../../core/soulseek_settings_repository.dart';
 import '../../sources/soulseek_models.dart';
@@ -695,6 +696,16 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         ),
         const SizedBox(height: 8),
 
+        // === TROUBLESHOOTING ===
+        _Section(
+          title: 'Troubleshooting',
+          colors: colors,
+          children: [
+            _buildTroubleshootingSection(colors),
+          ],
+        ),
+        const SizedBox(height: 8),
+
         // === DANGER ZONE ===
         _Section(
           title: 'Danger zone',
@@ -1159,6 +1170,38 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           );
         }
       },
+    );
+  }
+
+  // ── TROUBLESHOOTING ──
+
+  Widget _buildTroubleshootingSection(dynamic colors) {
+    return ListTile(
+      leading: Icon(Icons.bug_report_outlined, color: colors.textPrimary),
+      title: Text(
+        'Secure storage diagnostics',
+        style: TextStyle(
+          color: colors.textPrimary,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      subtitle: Text(
+        'Report for the developer if credentials fail to save. '
+        'Contains no passwords.',
+        style: TextStyle(color: colors.textSecondary, fontSize: 13),
+      ),
+      trailing: Icon(
+        Icons.chevron_right_rounded,
+        color: colors.textTertiary,
+        size: 20,
+      ),
+      onTap: () => showAppReportDialog(
+        context: context,
+        title: 'Diagnostics',
+        subtitle: 'Send this report to the developer',
+        report: SecureStorageDiagnostics.buildReport(),
+        shareSubject: 'Player: secure storage diagnostics',
+      ),
     );
   }
 
