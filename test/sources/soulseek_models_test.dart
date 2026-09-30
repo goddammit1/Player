@@ -266,6 +266,29 @@ void main() {
           SoulseekConnectionState.failed,
         );
       });
+
+      group('Дефект №6: Connected без LoggedIn — не connected', () {
+        test('CONNECTED, LOGGINGIN → connecting', () {
+          expect(
+            SoulseekConnectionState.fromString('CONNECTED, LOGGINGIN'),
+            SoulseekConnectionState.connecting,
+          );
+        });
+
+        test('CONNECTED, LOGGINGIN → connecting', () {
+          expect(
+            SoulseekConnectionState.fromString('Connected, LoggingIn'),
+            SoulseekConnectionState.connecting,
+          );
+        });
+
+        test('CONNECTED, LOGGEDIN → connected', () {
+          expect(
+            SoulseekConnectionState.fromString('CONNECTED, LOGGEDIN'),
+            SoulseekConnectionState.connected,
+          );
+        });
+      });
     });
 
     test('unknown string → disconnected', () {
@@ -273,6 +296,34 @@ void main() {
         SoulseekConnectionState.fromString('WEIRD'),
         SoulseekConnectionState.disconnected,
       );
+    });
+
+    group('Дефект №3: tryParse различает unknown и disconnected', () {
+      test('null → disconnected (не unknown)', () {
+        expect(
+          SoulseekConnectionState.tryParse(null),
+          SoulseekConnectionState.disconnected,
+        );
+      });
+
+      test('native UNKNOWN → null (не перезаписывать локальный статус)', () {
+        expect(SoulseekConnectionState.tryParse('UNKNOWN'), isNull);
+      });
+
+      test('нераспознанная строка → null', () {
+        expect(SoulseekConnectionState.tryParse('WEIRD'), isNull);
+      });
+
+      test('валидные значения парсятся как fromString', () {
+        expect(
+          SoulseekConnectionState.tryParse('CONNECTED, LOGGEDIN'),
+          SoulseekConnectionState.connected,
+        );
+        expect(
+          SoulseekConnectionState.tryParse('DISCONNECTED'),
+          SoulseekConnectionState.disconnected,
+        );
+      });
     });
   });
 

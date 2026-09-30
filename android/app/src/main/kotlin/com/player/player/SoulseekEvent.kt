@@ -115,11 +115,22 @@ object BridgeStateMapper {
 
     fun mapConnectionState(raw: String?): ConnectionState {
         if (raw.isNullOrEmpty()) return ConnectionState.DISCONNECTED
+        // C# SoulseekClientStates — flags: строка может быть комбинацией
+        // ("Connected, LoggingIn", "Connected, LoggedIn"). Дефект №6: парсим
+        // флаги явно — пользовательский CONNECTED означает ГОТОВНОСТЬ, т.е.
+        // Connected+LoggedIn (SoulseekBridge.cs IsReady требует оба).
+        // "Connected" без LoggedIn (в т.ч. с LoggingIn/LoggedOut) — клиент
+        // ещё НЕ готов → CONNECTING, не CONNECTED.
+        val loggedIn = raw.contains("LoggedIn")
+        val loggingIn = raw.contains("LoggingIn")
+        val connected = raw.contains("Connected")
+        val connecting = raw.contains("Connecting")
+        val disconnecting = raw.contains("Disconnecting")
         return when {
-            raw.contains("LoggedIn") -> ConnectionState.CONNECTED
-            raw.contains("Connected") -> ConnectionState.CONNECTED
-            raw.contains("Connecting") || raw.contains("LoggingIn") -> ConnectionState.CONNECTING
-            raw.contains("Disconnecting") -> ConnectionState.RECONNECTING
+            loggedIn && connected -> ConnectionState.CONNECTED
+            loggedIn -> ConnectionState.CONNECTED
+            disconnecting -> ConnectionState.RECONNECTING
+            connected || connecting || loggingIn -> ConnectionState.CONNECTING
             else -> ConnectionState.DISCONNECTED
         }
     }

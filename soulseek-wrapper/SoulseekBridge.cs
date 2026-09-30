@@ -1181,9 +1181,26 @@ namespace Soulseek.Wrapper
         private static bool IsRetryableConnection(Exception ex)
         {
             // Сетевые/DNS ошибки — retryable. Логин-отказ — нет.
-            return ex is TimeoutException
-                || ex is SocketException
-                || ex is AddressException;
+            // Soulseek.NET заворачивает сетевые сбои: SocketException →
+            // ConnectionException → SoulseekClientException("Failed to connect"),
+            // поэтому проверяем всю цепочку InnerException, а не только верхний тип.
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (e is LoginRejectedException)
+                {
+                    return false;
+                }
+
+                if (e is TimeoutException
+                    || e is SocketException
+                    || e is AddressException
+                    || e is ConnectionException)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static bool IsRetryableTransfer(Exception ex)

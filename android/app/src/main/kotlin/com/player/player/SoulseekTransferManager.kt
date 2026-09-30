@@ -28,6 +28,9 @@ class SoulseekTransferManager(
     private val cacheManager: SoulseekCacheManager,
     private val eventSink: (String) -> Unit,
     private val onActiveTransfersChanged: () -> Unit = {},
+    /** Дефект №1: уведомление о смене connection state — сервис по нему
+     *  обновляет notification (тот же источник состояния, что и Flutter-событие). */
+    private val onConnectionStateChanged: (ConnectionState) -> Unit = {},
     /** Фаза B (разрыв №3): лимит параллельных загрузок из soulseek.db
      *  (max_concurrent_downloads; синкается из Dart-настроек). Semaphore
      *  не ресайзится на лету — значение фиксируется при создании менеджера
@@ -260,7 +263,18 @@ class SoulseekTransferManager(
 
     /** Устанавливает текущее состояние соединения (для retry-логики). */
     fun setConnectionState(state: ConnectionState) {
+        setConnectionStateInternal(state)
+    }
+
+    /**
+     * Единая точка смены connection state: нормализованное состояние manager'а
+     * питает и Flutter-событие, и notification (через [onConnectionStateChanged]).
+     * Callback срабатывает только при фактическом изменении состояния.
+     */
+    private fun setConnectionStateInternal(state: ConnectionState) {
+        if (connectionState == state) return
         connectionState = state
+        onConnectionStateChanged(state)
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -454,7 +468,7 @@ class SoulseekTransferManager(
             SoulseekEvents.BRIDGE_DISCONNECTED -> {
                 val rawState = obj.optString("state", null)
                 val state = BridgeStateMapper.mapConnectionState(rawState)
-                connectionState = state
+                setConnectionStateInternal(state)
                 eventSink(
                     SoulseekConnectionEvent(
                         state = state,
