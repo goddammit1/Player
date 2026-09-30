@@ -269,6 +269,90 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  //  trackFromCacheEntry (Этап 2: фабрика Track из кэш-записи)
+  // ═══════════════════════════════════════════════════════════════════
+  group('trackFromCacheEntry', () {
+    SoulseekCacheEntry entry({
+      String cacheKey = 'ck_abc',
+      String localPath = '/data/cache/ck_abc.flac',
+      String? extension = 'flac',
+      String? title = 'Song',
+      String? artist = 'Artist',
+      int? durationSeconds = 240,
+    }) {
+      return SoulseekCacheEntry(
+        cacheKey: cacheKey,
+        localPath: localPath,
+        sizeBytes: 50000000,
+        complete: true,
+        pinned: false,
+        title: title,
+        artist: artist,
+        durationSeconds: durationSeconds,
+        extension: extension,
+      );
+    }
+
+    test('заполняет поля из метаданных записи', () {
+      final track = source.trackFromCacheEntry(entry());
+      expect(track.id, 'ck_abc');
+      expect(track.sourceId, SoulseekSource.sourceId);
+      expect(track.title, 'Song');
+      expect(track.artist, 'Artist');
+      expect(track.duration, const Duration(seconds: 240));
+      expect(track.globalId, 'soulseek:ck_abc');
+    });
+
+    test('extra содержит cacheKey → resolveStreamUrl даёт cache hit', () async {
+      channel.cacheEntry = entry();
+      final track = source.trackFromCacheEntry(entry());
+
+      expect(track.extra['cacheKey'], 'ck_abc');
+      // Cache hit: startDownload не вызывается, путь возвращён мгновенно.
+      final path = await source.resolveStreamUrl(track);
+      expect(path, '/data/cache/ck_abc.flac');
+      expect(channel.startDownloadCalls, isEmpty);
+    });
+
+    test('fallback на basename когда title/artist null (pre-v2 записи)', () {
+      final track = source.trackFromCacheEntry(
+        entry(title: null, artist: null, localPath: '/cache/x/01 - Song.flac'),
+      );
+      expect(track.title, '01 - Song');
+      expect(track.artist, 'Unknown');
+    });
+
+    test('qualityLabel из extension записи', () {
+      final flac = source.trackFromCacheEntry(entry(extension: 'flac'));
+      expect(flac.qualityLabel, 'FLAC');
+
+      final mp3 = source.trackFromCacheEntry(
+        entry(extension: 'mp3', localPath: '/c/ck.mp3'),
+      );
+      expect(mp3.qualityLabel, 'MP3');
+    });
+
+    test('extension выводится из localPath, если поле null', () {
+      final track = source.trackFromCacheEntry(
+        entry(extension: null, localPath: r'C:\cache\ck_abc.flac'),
+      );
+      expect(track.qualityLabel, 'FLAC');
+      expect(track.extra['extension'], 'flac');
+    });
+
+    test('duration null когда durationSeconds неизвестен', () {
+      final track = source.trackFromCacheEntry(entry(durationSeconds: null));
+      expect(track.duration, isNull);
+    });
+
+    test('пустой title в записи → fallback на basename', () {
+      final track =
+          source.trackFromCacheEntry(entry(title: '', localPath: '/c/song.mp3'));
+      expect(track.title, 'song');
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   //  extractTitle
   // ═══════════════════════════════════════════════════════════════════
   group('extractTitle', () {
@@ -690,7 +774,12 @@ void main() {
       final tracks = await source.search('comfortably numb');
       expect(tracks.length, 1);
       final track = tracks[0];
-      expect(track.id, 'r1');
+      // HISTORY-DUP-01: id = cacheKey (стабильный между поисками), не resultId.
+      expect(
+        track.id,
+        SoulseekSource.computeCacheKey('user1',
+            'Pink Floyd - Comfortably Numb.flac', 50000000),
+      );
       expect(track.sourceId, 'soulseek');
       expect(track.title, 'Comfortably Numb');
       expect(track.artist, 'Pink Floyd');
@@ -715,7 +804,12 @@ void main() {
       ];
       final tracks = await source.search('query');
       expect(tracks.length, 1);
-      expect(tracks[0].id, 'r1');
+      // HISTORY-DUP-01: id = cacheKey, а не resultId.
+      expect(
+        tracks[0].id,
+        SoulseekSource.computeCacheKey(
+            'user1', 'Artist - Track.flac', 50000000),
+      );
     });
 
     test('deduplicates by filename + size', () async {
@@ -738,9 +832,66 @@ void main() {
       ];
       final tracks = await source.search('query');
       expect(tracks.length, 2);
+      // HISTORY-DUP-01: id = cacheKey, дедупликация по filename+size
+      // оставляет разные cacheKey у разных файлов.
       final ids = tracks.map((t) => t.id).toSet();
-      expect(ids.contains('r1'), isTrue);
-      expect(ids.contains('r3'), isTrue);
+      expect(
+        ids.contains(
+            SoulseekSource.computeCacheKey('user1', 'Artist - Title.flac', 50000000)),
+        isTrue,
+      );
+      expect(
+        ids.contains(
+            SoulseekSource.computeCacheKey('user1', 'Artist - Title.flac', 60000000)),
+        isTrue,
+      );
+    });
+
+    test('HISTORY-DUP-01: трек из поиска и из кэш-шторки — один globalId',
+        () async {
+      const username = 'user1';
+      const filename = 'Artist - Title.flac';
+      const size = 50000000;
+      final cacheKey = SoulseekSource.computeCacheKey(username, filename, size);
+
+      // Из поиска (раньше id = resultId).
+      channel.searchResults = [
+        _searchResult(
+            resultId: 'r1', username: username, filename: filename, sizeBytes: size),
+      ];
+      final fromSearch = (await source.search('query')).single;
+
+      // Из кэш-шторки (id = cacheKey).
+      final fromCache = source.trackFromCacheEntry(SoulseekCacheEntry(
+        cacheKey: cacheKey,
+        localPath: '/data/cache/$cacheKey.flac',
+        sizeBytes: size,
+        complete: true,
+        pinned: false,
+      ));
+
+      // Один файл → один globalId → история не плодит дубликаты.
+      expect(fromSearch.id, cacheKey);
+      expect(fromSearch.id, fromCache.id);
+      expect(fromSearch.globalId, fromCache.globalId);
+    });
+
+    test('HISTORY-DUP-01: повторный поиск того же файла даёт тот же id',
+        () async {
+      // resultId меняется от поиска к поиску (UUID поиска), файл тот же.
+      channel.searchResults = [
+        _searchResult(
+            resultId: 'aaa', filename: 'Artist - Title.flac', sizeBytes: 50000000),
+      ];
+      final first = (await source.search('query')).single;
+
+      channel.searchResults = [
+        _searchResult(
+            resultId: 'bbb', filename: 'Artist - Title.flac', sizeBytes: 50000000),
+      ];
+      final second = (await source.search('query again')).single;
+
+      expect(first.id, second.id);
     });
 
     test('respects limit parameter', () async {

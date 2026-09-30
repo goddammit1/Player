@@ -502,7 +502,10 @@ void main() {
         'title': 'Song',
         'artist': 'Artist',
         'durationSeconds': 240,
+        'extension': 'flac',
       });
+
+      expect(entry.extension, 'flac');
 
       expect(entry.cacheKey, 'key123');
       expect(entry.localPath, '/cache/abc.flac');
@@ -541,6 +544,38 @@ void main() {
       expect(entry.title, isNull);
       expect(entry.artist, isNull);
       expect(entry.durationSeconds, isNull);
+    });
+
+    test('Этап 2.3: fromMap parses extension field', () {
+      final entry = SoulseekCacheEntry.fromMap({
+        'cacheKey': 'k',
+        'localPath': '/p/x.mp3',
+        'sizeBytes': 100,
+        'extension': 'mp3',
+      });
+
+      expect(entry.extension, 'mp3');
+    });
+
+    test('Этап 2.3: extension null for старых записей без поля', () {
+      final entry = SoulseekCacheEntry.fromMap({
+        'cacheKey': 'k',
+        'localPath': '/p',
+        'sizeBytes': 100,
+      });
+
+      expect(entry.extension, isNull);
+    });
+
+    test('Этап 2.3: extension нормализуется (trim + lower + без точки)', () {
+      final entry = SoulseekCacheEntry.fromMap({
+        'cacheKey': 'k',
+        'localPath': '/p',
+        'sizeBytes': 100,
+        'extension': ' .FLAC ',
+      });
+
+      expect(entry.extension, 'flac');
     });
 
     test('fromMap defaults complete/pinned to false when missing', () {

@@ -198,6 +198,45 @@ class SoulseekSource implements TrackSource {
   /// Возвращает список всех известных cache keys (для UI cache sheet).
   List<String> get knownCacheKeys => _knownCacheKeys.toList();
 
+  /// Поток transfer-событий нативного канала — для подписки UI
+  /// (PLAYER-DL-01: статус загрузки на тайле Download в плеере).
+  ///
+  /// Тонкая точка интеграции: source-aware UI-код подписывается через
+  /// `SourceRegistry.instance.get('soulseek') as SoulseekSource`, не
+  /// трогая платформенный канал напрямую (в тестах канал подменяется
+  /// через конструктор).
+  Stream<SoulseekTransferEvent> get transferEvents => _channel.transferEvents;
+
+  /// Возвращает cacheKey трека, если он определим: `extra.cacheKey` или
+  /// пересчёт из триады peerUsername/remoteFilename/sizeBytes.
+  ///
+  /// PLAYER-DL-01: UI (тайл Download) отличает «Soulseek-трек с известным
+  /// cacheKey» от «данных недостаточно» (null → fallback на YoutubeCache).
+  String? cacheKeyFor(Track track) {
+    final existing = track.extra['cacheKey'] as String?;
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final peerUsername = track.extra['peerUsername'] as String?;
+    final remoteFilename = track.extra['remoteFilename'] as String?;
+    final sizeBytes = _asInt(track.extra['sizeBytes']);
+
+    if (peerUsername == null || remoteFilename == null || sizeBytes <= 0) {
+      return null;
+    }
+    return computeCacheKey(peerUsername, remoteFilename, sizeBytes);
+  }
+
+  /// Запись нативного кэша по [cacheKey] (PLAYER-DL-01: проверка статуса
+  /// «уже в кэше» тайлом Download). null — файла нет.
+  Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey) =>
+      _channel.getCacheEntry(cacheKey);
+
+  /// Информация о трансфере по [downloadId] (PLAYER-DL-01: снимок состояния
+  /// загрузки при открытии sheet'а — покрывает «лист открыли во время
+  /// загрузки»). null — трансфер неизвестен.
+  Future<SoulseekTransferInfo?> getTransfer(String downloadId) =>
+      _channel.getTransfer(downloadId);
+
   /// Удаляет [cacheKey] из индекса (вызывается UI cache sheet при
   /// обнаружении, что файл уже удалён нативно).
   void forgetCacheKey(String cacheKey) {
@@ -311,8 +350,12 @@ class SoulseekSource implements TrackSource {
         computeCacheKey(result.username, result.filename, result.sizeBytes);
 
     return Track(
-      // resultId из C# bridge уникален; fallback на cacheKey.
-      id: result.resultId.isNotEmpty ? result.resultId : cacheKey,
+      // HISTORY-DUP-01: стабильный id = cacheKey (детерминирован по
+      // peer+filename+size). resultId (UUID поиска) меняется от поиска к
+      // поиску, из-за чего один файл из кэш-шторки (id=cacheKey) и из
+      // поиска (id=resultId) давал разные globalId → дубликаты в истории
+      // и «засорение» плейлистов. С единым id трек дедуплицируется везде.
+      id: cacheKey,
       sourceId: sourceId,
       title: extractTitle(result.filename),
       artist: extractArtist(result.filename),
@@ -338,6 +381,52 @@ class SoulseekSource implements TrackSource {
         'queueLength': result.queueLength,
       },
     );
+  }
+
+  /// Строит [Track] из записи нативного кэша [SoulseekCacheEntry].
+  ///
+  /// CACHE-UI-01 (данные, без UI): ключевой момент — `extra.cacheKey`:
+  /// [`_getOrCreateCacheKey`] возвращает его без требования триады
+  /// peerUsername/remoteFilename/sizeBytes, а `resolveStreamUrl` первым
+  /// шагом делает `getCacheEntry(cacheKey)` → мгновенный cache hit по
+  /// `localPath` без повторной загрузки.
+  ///
+  /// Метка качества: из `extension` записи («FLAC»/«MP3») или из
+  /// `localPath` (fallback для старых записей без колонки extension);
+  /// точный битрейт кэш-запись не хранит — детали возьмут его из extra
+  /// трека, если он известен (например, трек добавлен из поиска).
+  Track trackFromCacheEntry(SoulseekCacheEntry entry) {
+    final extension =
+        (entry.extension ?? _extensionFromPath(entry.localPath)) ?? '';
+    final label = extension.isNotEmpty ? qualityLabel(extension, null, null, null) : null;
+
+    return Track(
+      // cacheKey — детерминированный идентификатор файла в нативном кэше.
+      id: entry.cacheKey,
+      sourceId: sourceId,
+      title: (entry.title != null && entry.title!.isNotEmpty)
+          ? entry.title!
+          : basenameWithoutExt(entry.localPath),
+      artist: (entry.artist != null && entry.artist!.isNotEmpty)
+          ? entry.artist!
+          : 'Unknown',
+      duration: entry.durationSeconds != null
+          ? Duration(seconds: entry.durationSeconds!)
+          : null,
+      qualityLabel: label,
+      extra: <String, dynamic>{
+        'cacheKey': entry.cacheKey,
+        if (extension.isNotEmpty) 'extension': extension,
+      },
+    );
+  }
+
+  /// Извлекает расширение из локального пути (последняя точка в basename).
+  String? _extensionFromPath(String path) {
+    final basename = path.replaceAll('\\', '/').split('/').last;
+    final dot = basename.lastIndexOf('.');
+    if (dot <= 0 || dot == basename.length - 1) return null;
+    return basename.substring(dot + 1).toLowerCase();
   }
 
   // ═══════════════════════════════════════════════════════════════════
