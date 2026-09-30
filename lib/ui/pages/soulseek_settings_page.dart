@@ -298,6 +298,12 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       _connectionMessage = null;
     });
 
+    // Сохраняем один раз, до цикла подключения. Сбой secure storage не
+    // блокирует подключение: креды и так уходят в натив только в памяти при
+    // каждом connect, а запасного хранилища нет намеренно — пароль живёт
+    // только в Keystore. Пользователь лишь узнаёт, что данные не запомнятся.
+    final saved = await _trySaveCredentials(username, password);
+
     // P3: первый коннект после старта сервиса иногда падает по
     // SocketException (DNS proxy errno=111) — C# bridge классифицирует
     // его как retryable. Пробуем подключиться до 3 раз с паузой 2 с,
@@ -331,7 +337,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         }
         await Future<void>.delayed(retryDelay);
       } catch (e) {
-        // Непредвиденная ошибка (secure storage и т.п.) — не ретраим.
+        // Непредвиденная ошибка платформы — не ретраим.
         lastError = SoulseekException('CONNECT_FAILED', e.toString());
         break;
       }
@@ -357,6 +363,13 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         }
         _connecting = false;
       });
+      if (!saved) {
+        showErrorSnack(
+          context,
+          "Connected, but credentials couldn't be saved on this device. "
+          'See Troubleshooting.',
+        );
+      }
     } else {
       final e = lastError ?? const SoulseekException('CONNECT_FAILED', 'Connect failed');
       setState(() {
@@ -373,17 +386,24 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  /// Одна попытка подключения: сохранить учётные данные, стартовать
-  /// сервис, вызвать connect. Бросает SoulseekException при неудаче.
+  /// Сохраняет учётные данные для connect. Возвращает false, если secure
+  /// storage недоступен — подключение при этом продолжается.
+  Future<bool> _trySaveCredentials(String username, String password) async {
+    try {
+      await SoulseekCredentials.save(username: username, password: password);
+      return true;
+    } catch (e) {
+      if (kDebugMode) debugPrint('[Soulseek] credentials not saved: $e');
+      return false;
+    }
+  }
+
+  /// Одна попытка подключения: стартовать сервис, вызвать connect.
+  /// Бросает SoulseekException при неудаче.
   Future<SoulseekConnectionInfo> _connectOnce(
     String username,
     String password,
   ) async {
-    await SoulseekCredentials.save(
-      username: username,
-      password: password,
-    );
-
     await SoulseekPlatformChannel.instance.startService();
 
     return SoulseekPlatformChannel.instance.connect(
