@@ -19,6 +19,11 @@ class AppRelease {
   final String notes;
   final String apkUrl;
   final String pageUrl;
+
+  /// Бета-релиз: версия манифеста (тег GitHub-релиза) содержит
+  /// prerelease-суффикс «-beta» / «-b» (в т.ч. с нумерацией «-beta.2»).
+  bool get isBeta =>
+      RegExp(r'-(?:beta|b)(?:\.|$)', caseSensitive: false).hasMatch(version);
 }
 
 class UpdateCheckResult {
@@ -120,7 +125,7 @@ class UpdateService {
       currentVersion: packageInfo.version,
       release: release,
       updateAvailable:
-          _compareVersions(release.version, packageInfo.version) > 0,
+          compareVersions(release.version, packageInfo.version) > 0,
     );
   }
 
@@ -197,24 +202,75 @@ class UpdateService {
         : InstallOutcome.started;
   }
 
-  static int _compareVersions(String left, String right) {
-    List<int> parse(String value) {
-      final clean = value
-          .replaceFirst(RegExp(r'^v', caseSensitive: false), '')
-          .split(RegExp(r'[-+]'))
-          .first;
-      final parts = clean.split('.');
-      return List<int>.generate(
+  /// Semver-совместимое сравнение версий с учётом prerelease-тегов:
+  /// `3.0.0-beta > 2.5.2`, `3.0.0 > 3.0.0-beta`,
+  /// `3.0.0-beta.2 > 3.0.0-beta.1`. Build-метаданные (`+31`)
+  /// игнорируются, ведущий `v` срезается.
+  static int compareVersions(String left, String right) {
+    final a = _ParsedVersion.parse(left);
+    final b = _ParsedVersion.parse(right);
+    for (var index = 0; index < 3; index++) {
+      if (a.core[index] != b.core[index]) {
+        return a.core[index].compareTo(b.core[index]);
+      }
+    }
+    // Одинаковые x.y.z: stable-версия старше любой prerelease-версии.
+    if (a.prerelease.isEmpty && b.prerelease.isEmpty) return 0;
+    if (a.prerelease.isEmpty) return 1;
+    if (b.prerelease.isEmpty) return -1;
+    return _comparePrerelease(a.prerelease, b.prerelease);
+  }
+
+  /// Сравнение prerelease-идентификаторов по правилам semver: числовые
+  /// сравниваются численно и младше строковых, строки — лексикографически;
+  /// при равном префиксе более длинный список идентификаторов старше.
+  static int _comparePrerelease(List<String> a, List<String> b) {
+    final common = a.length < b.length ? a.length : b.length;
+    for (var index = 0; index < common; index++) {
+      final left = a[index];
+      final right = b[index];
+      if (left == right) continue;
+      final leftNum = int.tryParse(left);
+      final rightNum = int.tryParse(right);
+      if (leftNum != null && rightNum != null) {
+        return leftNum.compareTo(rightNum);
+      }
+      if (leftNum != null) return -1;
+      if (rightNum != null) return 1;
+      return left.compareTo(right);
+    }
+    return a.length.compareTo(b.length);
+  }
+}
+
+class _ParsedVersion {
+  const _ParsedVersion(this.core, this.prerelease);
+
+  final List<int> core;
+  final List<String> prerelease;
+
+  factory _ParsedVersion.parse(String value) {
+    var clean = value
+        .trim()
+        .replaceFirst(RegExp(r'^v', caseSensitive: false), '');
+    // Build-метаданные («+31») не влияют на порядок версий.
+    final plus = clean.indexOf('+');
+    if (plus >= 0) clean = clean.substring(0, plus);
+    // Отделяем prerelease-часть («-beta.2») от основной версии.
+    var prerelease = const <String>[];
+    final dash = clean.indexOf('-');
+    if (dash >= 0) {
+      final tail = clean.substring(dash + 1).trim();
+      if (tail.isNotEmpty) prerelease = tail.split('.');
+      clean = clean.substring(0, dash);
+    }
+    final parts = clean.split('.');
+    return _ParsedVersion(
+      List<int>.generate(
         3,
         (index) => index < parts.length ? int.tryParse(parts[index]) ?? 0 : 0,
-      );
-    }
-
-    final a = parse(left);
-    final b = parse(right);
-    for (var index = 0; index < 3; index++) {
-      if (a[index] != b[index]) return a[index].compareTo(b[index]);
-    }
-    return 0;
+      ),
+      prerelease,
+    );
   }
 }
