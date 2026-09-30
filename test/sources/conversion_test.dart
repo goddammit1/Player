@@ -4,9 +4,14 @@
 // которая была вынесена из lib/ui/widgets/queue_sheet.dart, чтобы UI не
 // содержал конверсии моделей данных. Детерминированный тест: без сети,
 // без реального HTTP — только чистые данные.
+//
+// Плюс Этап 2 серии 02: roundtrip качества через MediaItem.extras
+// (PlayerConversions.toMediaItem → trackFromExtras) — QUALITY-01.
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:player/core/artwork_helper.dart';
+import 'package:player/core/player_conversions.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/conversion.dart';
 import 'package:player/core/youtube_cache.dart';
@@ -146,6 +151,108 @@ void main() {
 
       expect(queueTrack.globalId, bigPlayerTrack.globalId);
       expect(queueCacheId, bigPlayerCacheId);
+    });
+  });
+
+  group('QUALITY-01: toMediaItem → trackFromExtras roundtrip', () {
+    setUp(() {
+      // Отключаем lazy-read БД кастомных обложек (нет path_provider
+      // в чистых unit-тестах).
+      ArtworkHelper.disableDbReadsForTesting = true;
+    });
+    tearDown(() {
+      ArtworkHelper.disableDbReadsForTesting = false;
+    });
+
+    test('soulseek quality survives Track → MediaItem → Track', () {
+      const original = Track(
+        id: 'res_1_2',
+        sourceId: 'soulseek',
+        title: 'Title',
+        artist: 'Artist',
+        duration: Duration(seconds: 240),
+        qualityScore: 1411,
+        qualityLabel: 'FLAC 24/96',
+        extra: {
+          'cacheKey': 'ck123',
+          'bitrate': 1411,
+          'sampleRate': 96000,
+          'bitDepth': 24,
+          'extension': 'flac',
+          'peerUsername': 'peer',
+          'remoteFilename': 'Music/Title.flac',
+          'sizeBytes': 51000000,
+        },
+      );
+
+      final item = PlayerConversions.toMediaItem(original);
+      final restored = PlayerConversions.trackFromExtras(item);
+
+      expect(restored.id, 'res_1_2');
+      expect(restored.sourceId, 'soulseek');
+      expect(restored.title, 'Title');
+      expect(restored.artist, 'Artist');
+      expect(restored.duration, const Duration(seconds: 240));
+      expect(restored.qualityScore, 1411);
+      expect(restored.qualityLabel, 'FLAC 24/96');
+      expect(restored.extra['cacheKey'], 'ck123');
+      expect(restored.extra['bitrate'], 1411);
+      expect(restored.extra['sampleRate'], 96000);
+      expect(restored.extra['bitDepth'], 24);
+      expect(restored.extra['extension'], 'flac');
+    });
+
+    test('toMediaItem extras содержат качество (quality_score/label)', () {
+      const track = Track(
+        id: 'x',
+        sourceId: 'youtube',
+        title: 'T',
+        artist: 'A',
+        qualityScore: 95,
+        qualityLabel: 'HD',
+      );
+      final extras = PlayerConversions.toMediaItem(track).extras!;
+      expect(extras['quality_score'], 95);
+      expect(extras['qualityLabel'], 'HD');
+      expect(extras['quality_label'], 'HD');
+    });
+
+    test('track without quality → extras без null-мусора, restored null', () {
+      const track = Track(
+        id: 'plain',
+        sourceId: 'youtube',
+        title: 'T',
+        artist: 'A',
+      );
+      final item = PlayerConversions.toMediaItem(track);
+      expect(item.extras!.containsKey('quality_score'), isFalse);
+
+      final restored = PlayerConversions.trackFromExtras(item);
+      expect(restored.qualityScore, isNull);
+      expect(restored.qualityLabel, isNull);
+      // extra = сам extras map (с sourceId/trackId) — безопасно для
+      // источников, не читающих эти ключи.
+      expect(restored.extra['sourceId'], 'youtube');
+    });
+
+    test('trackFromExtras на MediaItem без extras не падает', () {
+      const item = MediaItem(id: 'x', title: 'T');
+      final restored = PlayerConversions.trackFromExtras(item);
+      expect(restored.id, 'x');
+      expect(restored.sourceId, '');
+      expect(restored.extra, isEmpty);
+    });
+
+    test('trackFromExtras prefers clean trackId over globalId', () {
+      final item = PlayerConversions.toMediaItem(const Track(
+        id: 'ABC',
+        sourceId: 'muzmo',
+        title: 'T',
+        artist: 'A',
+      ));
+      final restored = PlayerConversions.trackFromExtras(item);
+      expect(restored.id, 'ABC');
+      expect(restored.globalId, 'muzmo:ABC');
     });
   });
 }

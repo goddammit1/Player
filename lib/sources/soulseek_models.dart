@@ -389,6 +389,14 @@ class SoulseekCacheEntry {
   final String? artist;
   final int? durationSeconds;
 
+  /// Этап 2.3 плана серии 02: расширение файла без точки ("flac", "mp3").
+  ///
+  /// Колонка `extension` есть в native-БД с v2, но не пробрасывалась в
+  /// Dart. Нужно для метки качества кэш-треков («FLAC»/«MP3» в
+  /// [SoulseekSource.trackFromCacheEntry]); null для старых записей —
+  /// метка тогда строится из localPath либо отсутствует.
+  final String? extension;
+
   const SoulseekCacheEntry({
     required this.cacheKey,
     required this.localPath,
@@ -398,6 +406,7 @@ class SoulseekCacheEntry {
     this.title,
     this.artist,
     this.durationSeconds,
+    this.extension,
   });
 
   factory SoulseekCacheEntry.fromMap(Map<String, dynamic> m) {
@@ -410,6 +419,10 @@ class SoulseekCacheEntry {
       title: m['title'] as String?,
       artist: m['artist'] as String?,
       durationSeconds: _asIntOrNull(m['durationSeconds']),
+      extension: (m['extension'] as String?)
+          ?.trim()
+          .toLowerCase()
+          .replaceFirst('.', ''),
     );
   }
 }

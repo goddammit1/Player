@@ -69,7 +69,9 @@ class SoulseekCacheManager(
         /** NEW-3: человекочитаемые метаданные (NULL для старых записей). */
         val title: String? = null,
         val artist: String? = null,
-        val durationSeconds: Int? = null
+        val durationSeconds: Int? = null,
+        /** Этап 2.3 серии 02: расширение файла из БД (для метки качества на Dart). */
+        val extension: String? = null
     )
 
     /**
@@ -98,7 +100,8 @@ class SoulseekCacheManager(
                 pinned = row.pinned,
                 title = row.title,
                 artist = row.artist,
-                durationSeconds = row.durationSeconds
+                durationSeconds = row.durationSeconds,
+                extension = row.extension
             )
         }
         return null
@@ -127,7 +130,8 @@ class SoulseekCacheManager(
                     pinned = row.pinned,
                     title = row.title,
                     artist = row.artist,
-                    durationSeconds = row.durationSeconds
+                    durationSeconds = row.durationSeconds,
+                    extension = row.extension
                 )
             )
         }

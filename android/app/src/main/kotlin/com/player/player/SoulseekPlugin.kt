@@ -520,18 +520,7 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     val cacheKey = call.argument<String>("cacheKey")
                         ?: run { result.error("INVALID_ARGS", "cacheKey is required", null); return }
                     val entry = cache.getCacheEntry(cacheKey)
-                    result.success(entry?.let {
-                        mapOf(
-                            "cacheKey" to it.cacheKey,
-                            "localPath" to it.localPath,
-                            "sizeBytes" to it.sizeBytes,
-                            "complete" to it.complete,
-                            "pinned" to it.pinned,
-                            "title" to it.title,
-                            "artist" to it.artist,
-                            "durationSeconds" to it.durationSeconds
-                        )
-                    })
+                    result.success(entry?.let { mapCacheEntry(it) })
                 }
 
                 "setSharingDirectory" -> {
@@ -583,19 +572,7 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     val cache = serviceBinder?.cacheManager
                         ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
                     val entries = cache.getAllCacheEntries()
-                    val mapped = entries.map {
-                        mapOf(
-                            "cacheKey" to it.cacheKey,
-                            "localPath" to it.localPath,
-                            "sizeBytes" to it.sizeBytes,
-                            "complete" to it.complete,
-                            "pinned" to it.pinned,
-                            "title" to it.title,
-                            "artist" to it.artist,
-                            "durationSeconds" to it.durationSeconds
-                        )
-                    }
-                    result.success(mapped)
+                    result.success(entries.map { mapCacheEntry(it) })
                 }
 
                 // P2: актуальный статус коннекта при (повторном) входе на
@@ -615,6 +592,29 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             result.error("INTERNAL_ERROR", e.message, null)
         }
     }
+
+    // ───────────────────────────────────────────────────────────────────
+    //  Cache entry mapping
+    // ───────────────────────────────────────────────────────────────────
+
+    /**
+     * CacheEntryRow → MethodChannel Map. Этап 2.3 серии 02: пробрасывает
+     * `extension` (колонка есть в БД v2, но раньше не доезжала до Dart) —
+     * нужно для метки качества кэш-треков («FLAC»/«MP3») в
+     * SoulseekSource.trackFromCacheEntry.
+     */
+    private fun mapCacheEntry(it: SoulseekCacheManager.CacheEntry): Map<String, Any?> =
+        mapOf(
+            "cacheKey" to it.cacheKey,
+            "localPath" to it.localPath,
+            "sizeBytes" to it.sizeBytes,
+            "complete" to it.complete,
+            "pinned" to it.pinned,
+            "title" to it.title,
+            "artist" to it.artist,
+            "durationSeconds" to it.durationSeconds,
+            "extension" to it.extension
+        )
 
     // ───────────────────────────────────────────────────────────────────
     //  Service start / stop
