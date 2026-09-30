@@ -22,10 +22,13 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:player/core/database/app_database.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
+
+import '../setup/test_harness.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Fake channel
@@ -220,9 +223,14 @@ void main() {
   late _TestChannel channel;
   late SoulseekSource source;
 
+  TestHarness.ensureInitialized();
+
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
+    // SP-мок нужен только для soulseek_cache_index (индекс кэша,
+    // остаётся в SharedPreferences по решению Фазы A).
     SharedPreferences.setMockInitialValues({});
+    await TestHarness.setUpDb();
     channel = _TestChannel();
     source = SoulseekSource(channel: channel);
     // Позволяем _loadCacheIndex() завершиться.
@@ -232,6 +240,7 @@ void main() {
   tearDown(() async {
     await source.dispose();
     channel.close();
+    await TestHarness.tearDownDb();
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1352,17 +1361,15 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
   //  NEW-2: применяемый таймаут поиска из настроек
   // ═══════════════════════════════════════════════════════════════════
-  group('search timeout from prefs (NEW-2)', () {
-    test('default 10000 ms when pref not set', () async {
+  group('search timeout from settings DB (NEW-2)', () {
+    test('default 10000 ms when setting not set', () async {
       channel.searchResults = [_searchResult()];
       await source.search('query');
       expect(channel.lastSearchTimeoutMs, 10000);
     });
 
-    test('pref soulseek_search_timeout_sec=7 → 7000 ms', () async {
-      SharedPreferences.setMockInitialValues({
-        'soulseek_search_timeout_sec': 7,
-      });
+    test('setting soulseek_search_timeout_sec=7 → 7000 ms', () async {
+      await AppDatabase.instance.setSetting('soulseek_search_timeout_sec', '7');
       // Ленивая загрузка один раз на инстанс — пересоздаём source.
       source = SoulseekSource(channel: channel);
       await Future.delayed(Duration.zero);

@@ -176,10 +176,15 @@ class SoulseekForegroundService : Service() {
 
         // TransferManager: eventSink пересылает события в plugin (через binder).
         // Plugin подписывается через binder.setEventListener.
+        // Фаза B (разрыв №3): лимит параллелизма читается из soulseek.db
+        // (max_concurrent_downloads, синкается из Dart-настроек), а не
+        // хардкодом; listen_port дефолт выровнен с Dart (24150).
+        val maxConcurrent = db.getSettingInt(SettingsKeys.MAX_CONCURRENT_DOWNLOADS, 3)
         val mgr = SoulseekTransferManager(
             bridge = b,
             database = db,
             cacheManager = cache,
+            maxConcurrentDownloads = maxConcurrent,
             eventSink = { json ->
                 serviceScope.launch {
                     commandMutex.withLock {

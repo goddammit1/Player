@@ -27,13 +27,21 @@ class SoulseekTransferManager(
     private val database: SoulseekDatabase,
     private val cacheManager: SoulseekCacheManager,
     private val eventSink: (String) -> Unit,
-    private val onActiveTransfersChanged: () -> Unit = {}
+    private val onActiveTransfersChanged: () -> Unit = {},
+    /** Фаза B (разрыв №3): лимит параллельных загрузок из soulseek.db
+     *  (max_concurrent_downloads; синкается из Dart-настроек). Semaphore
+     *  не ресайзится на лету — значение фиксируется при создании менеджера
+     *  и подхватывается при следующем старте сервиса. */
+    maxConcurrentDownloads: Int = DEFAULT_MAX_CONCURRENT
 ) {
     companion object {
         private const val TAG = "SoulseekTransferMgr"
 
         /** Лимит параллельных transfer (2-3, настраивается). */
         private const val DEFAULT_MAX_CONCURRENT = 3
+
+        /** Фаза B: верхняя граница параллелизма (защита от кривых значений БД). */
+        private const val MAX_CONCURRENT_CAP = 8
 
         /** Максимальное число попыток для retryable-ошибок. */
         private const val MAX_RETRY_ATTEMPTS = 3
@@ -86,8 +94,8 @@ class SoulseekTransferManager(
     /** cacheKey → downloadId — объединение одновременных запросов одного файла. */
     private val cacheKeyToDownloadId = ConcurrentHashMap<String, String>()
 
-    /** Лимит параллельных активных загрузок. */
-    private val semaphore = Semaphore(DEFAULT_MAX_CONCURRENT)
+    /** Лимит параллельных активных загрузок (клэмпится в 1…MAX_CONCURRENT_CAP). */
+    private val semaphore = Semaphore(maxConcurrentDownloads.coerceIn(1, MAX_CONCURRENT_CAP))
 
     /** Scope для transfer-корутин; отменяется при shutdown. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

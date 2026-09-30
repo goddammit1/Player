@@ -1,19 +1,27 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:player/core/database/app_database.dart';
+import 'package:player/core/soulseek_settings_repository.dart';
 import 'package:player/sources/source_registry.dart';
 
+import '../setup/test_harness.dart';
+
 void main() {
+  TestHarness.ensureInitialized();
+
   group('SourceRegistry', () {
     setUp(() async {
-      TestWidgetsFlutterBinding.ensureInitialized();
+      await TestHarness.setUpDb();
       // Сбрасываем Soulseek feature flag в false (значение по умолчанию).
-      SharedPreferences.setMockInitialValues({});
+      await AppDatabase.instance.removeSetting(
+        SoulseekSettingsRepository.keyEnabled,
+      );
       await SourceRegistry.loadSoulseekEnabled();
     });
 
     tearDown(() async {
       await SourceRegistry.instance.disposeAll();
+      await TestHarness.tearDownDb();
     });
 
     test('registerDefaults registers muzmo, soundcloud, youtube, soulseek',
@@ -114,14 +122,13 @@ void main() {
       );
     });
 
-    test('loadSoulseekEnabled reads value from SharedPreferences', () async {
-      SharedPreferences.setMockInitialValues({'soulseek_enabled': true});
+    test('loadSoulseekEnabled reads value from DB', () async {
+      await SoulseekSettingsRepository.instance.setEnabled(true);
       await SourceRegistry.loadSoulseekEnabled();
       expect(SourceRegistry.isSoulseekEnabled, isTrue);
     });
 
     test('loadSoulseekEnabled defaults to false when key is missing', () async {
-      SharedPreferences.setMockInitialValues({});
       await SourceRegistry.loadSoulseekEnabled();
       expect(SourceRegistry.isSoulseekEnabled, isFalse);
     });

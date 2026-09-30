@@ -1,5 +1,4 @@
-import 'package:shared_preferences/shared_preferences.dart';
-
+import '../core/soulseek_settings_repository.dart';
 import '../core/youtube_cache.dart';
 import 'muzmo_source.dart';
 import 'soulseek_source.dart';
@@ -51,25 +50,22 @@ class SourceRegistry {
   //  Soulseek feature flag
   // ───────────────────────────────────────────────────────────────────
 
-  /// SharedPreferences-ключ для feature flag Soulseek.
-  static const String _soulseekPrefKey = 'soulseek_enabled';
-
   /// Текущее состояние feature flag. По умолчанию выключен.
   ///
-  /// Загружается из SharedPreferences через [loadSoulseekEnabled] при
-  /// старте приложения (до вызова [registerDefaults]).
+  /// Загружается из SQLite (через SoulseekSettingsRepository) через
+  /// [loadSoulseekEnabled] при старте приложения (до вызова
+  /// [registerDefaults]).
   static bool _soulseekEnabled = false;
 
   /// Возвращает текущее состояние feature flag Soulseek.
   static bool get isSoulseekEnabled => _soulseekEnabled;
 
-  /// Загружает feature flag из SharedPreferences. Должна вызываться
-  /// ДО [registerDefaults] (например, в main.dart перед инициализацией
-  /// реестра источников).
+  /// Загружает feature flag из SQLite (таблица `settings`). Должна
+  /// вызываться ДО [registerDefaults] (например, в main.dart перед
+  /// инициализацией реестра источников).
   static Future<void> loadSoulseekEnabled() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      _soulseekEnabled = prefs.getBool(_soulseekPrefKey) ?? false;
+      _soulseekEnabled = await SoulseekSettingsRepository.instance.isEnabled();
     } catch (_) {
       _soulseekEnabled = false;
     }
@@ -77,13 +73,13 @@ class SourceRegistry {
 
   /// Включает или выключает Soulseek для поиска.
   ///
-  /// Сохраняет значение в SharedPreferences и обновляет [_disabledForSearch]
-  /// в реестре. Может вызываться в рантайме (UI Фазы 4: переключатель).
+  /// Сохраняет значение в SQLite (через SoulseekSettingsRepository) и
+  /// обновляет [_disabledForSearch] в реестре. Может вызываться в
+  /// рантайме (UI Фазы 4: переключатель).
   static Future<void> setSoulseekEnabled(bool enabled) async {
     _soulseekEnabled = enabled;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_soulseekPrefKey, enabled);
+      await SoulseekSettingsRepository.instance.setEnabled(enabled);
     } catch (_) {}
     if (enabled) {
       instance._disabledForSearch.remove('soulseek');

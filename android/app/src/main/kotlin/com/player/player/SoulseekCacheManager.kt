@@ -27,7 +27,7 @@ import java.security.MessageDigest
 class SoulseekCacheManager(
     private val cacheDir: File,
     private val database: SoulseekDatabase,
-    private val maxCacheSizeBytes: Long
+    maxCacheSizeBytes: Long
 ) {
     companion object {
         private const val TAG = "SoulseekCacheManager"
@@ -236,6 +236,24 @@ class SoulseekCacheManager(
     fun isPinned(cacheKey: String): Boolean {
         val sanitized = sanitizeCacheKey(cacheKey) ?: return false
         return database.getCacheEntry(sanitized)?.pinned ?: false
+    }
+
+    /**
+     * Фаза B (разрыв №3): актуальный лимит кэша. @Volatile — обновляется
+     * из Dart через updateNativeSettings без пересоздания сервиса.
+     */
+    @Volatile
+    var maxCacheSizeBytes: Long = maxCacheSizeBytes
+        private set
+
+    /**
+     * Обновляет лимит кэша на лету (Фаза B: синк из Dart-настроек).
+     * При снижении лимита немедленно запускает cleanup, чтобы LRU
+     * eviction сработал без ожидания следующей загрузки.
+     */
+    fun updateMaxCacheSizeBytes(newLimitBytes: Long) {
+        maxCacheSizeBytes = newLimitBytes
+        if (newLimitBytes > 0L) cleanup()
     }
 
     /**

@@ -143,11 +143,16 @@ class AppDatabase {
   //  MIGRATION из SharedPreferences
   // ==============================================================
 
+  /// Флаг в таблице `settings` одноразовой миграции soulseek_* (v3).
+  static const String migrationV3SoulseekFlag = 'migration_v3_soulseek';
+
   /// Переносит данные из SharedPreferences в SQLite.
   ///
-  /// Двухфазная миграция:
+  /// Трёхфазная миграция:
   /// - v1: настройки + история поиска (ключи корректны)
   /// - v2: плейлисты + история прослушивания (исправленные ключи)
+  /// - v3: настройки Soulseek (soulseek_*) — перенос с дефолтами при
+  ///   отсутствии значения в SP (см. [_migrateSoulseekSettingsV3])
   ///
   /// Каждая фаза идемпотентна и проверяет свой флаг в таблице `settings`.
   /// Возвращает `true`, если была выполнена хотя бы одна фаза миграции.
@@ -174,7 +179,14 @@ class AppDatabase {
     );
     final needV2 = v2Done.isEmpty || v2Done.first['value'] != '1';
 
-    if (!needV1 && !needV2) return false;
+    // Фаза 3: настройки Soulseek (v3)
+    final v3Done = await db.rawQuery(
+      'SELECT value FROM settings WHERE key = ?',
+      [migrationV3SoulseekFlag],
+    );
+    final needV3 = v3Done.isEmpty || v3Done.first['value'] != '1';
+
+    if (!needV1 && !needV2 && !needV3) return false;
 
     // Фаза 1: настройки + поиск (v1) — только если ещё не выполнена
     if (needV1) {
@@ -322,8 +334,48 @@ class AppDatabase {
       });
     }
 
+    // Фаза 3: настройки Soulseek (v3). Пароль живёт в flutter_secure_storage
+    // и сюда не попадает; soulseek_cache_index — индекс кэша, не настройка.
+    // При отсутствии значения в SP материализуется дефолт из
+    // [_soulseekSettingKeys] (как в бывшем SoulseekPrefs).
+    if (needV3) {
+      await db.transaction((txn) async {
+        // INSERT OR IGNORE: пользователь мог уже изменить настройки в БД
+        // до миграции — не затираем значения из БД значениями из SP.
+        for (final entry in _soulseekSettingKeys.entries) {
+          final spValue = allSettings[entry.key] ?? entry.value;
+          await txn.rawInsert(
+            'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)',
+            [entry.key, spValue],
+          );
+        }
+        await txn.insert(
+          'settings',
+          {'key': migrationV3SoulseekFlag, 'value': '1'},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      });
+    }
+
     return true;
   }
+
+  /// Ключи настроек Soulseek, переносимые фазой v3, с дефолтами при
+  /// отсутствии значения в SharedPreferences.
+  ///
+  /// Дефолты совпадают с SoulseekSettingsRepository (бывший SoulseekPrefs).
+  static const Map<String, String> _soulseekSettingKeys = {
+    'soulseek_enabled': 'false',
+    'soulseek_listen_port': '24150',
+    'soulseek_cache_limit_mb': '1024',
+    'soulseek_max_parallel_downloads': '3',
+    'soulseek_prefer_lossless': 'false',
+    'soulseek_allowed_formats': 'flac,wav,alac,mp3,aac,ogg',
+    'soulseek_max_file_size_mb': '0',
+    'soulseek_search_timeout_sec': '10',
+    'soulseek_sharing_directory': '',
+    'soulseek_username_display': '',
+  };
 
   /// Рекурсивно обходит [extra] и заменяет все значения на JSON-совместимые
   /// примитивы (String/num/bool/null) либо их вложенные коллекции.
