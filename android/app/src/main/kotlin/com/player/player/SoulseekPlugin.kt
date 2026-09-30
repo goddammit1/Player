@@ -406,8 +406,8 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     val bridge = serviceBinder?.bridge
                         ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
                     val json = buildSearchJson(call)
-                    // searchAsync блокирует на весь таймаут поиска (до 15с) —
-                    // выполняем на IO dispatcher.
+                    // searchAsync блокирует до завершения поиска (не дольше
+                    // общего бюджета timeoutMs) — выполняем на IO dispatcher.
                     ioScope.launch {
                         val res = BridgeCallResult.parse(runCatching { bridge.searchAsync(json) }
                             .getOrElse { e ->
@@ -692,8 +692,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         val obj = JSONObject()
         obj.put("requestId", call.argument<String>("requestId") ?: "")
         obj.put("query", call.argument<String>("query") ?: "")
-        obj.put("timeoutMs", (call.argument<Number>("timeoutMs")?.toInt() ?: 15000))
-        obj.put("responseLimit", (call.argument<Number>("responseLimit")?.toInt() ?: 250))
+        obj.put("timeoutMs", (call.argument<Number>("timeoutMs")?.toInt() ?: 10000))
+        obj.put("idleTimeoutMs", (call.argument<Number>("idleTimeoutMs")?.toInt() ?: 2500))
+        obj.put("responseLimit", (call.argument<Number>("responseLimit")?.toInt() ?: 100))
+        obj.put("fileLimit", (call.argument<Number>("fileLimit")?.toInt() ?: 200))
 
         val filters = call.argument<Map<String, Any>>("filters")
         val filtersObj = JSONObject()

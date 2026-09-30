@@ -49,11 +49,16 @@ abstract class SoulseekChannel {
   bool get isAvailable;
 
   /// Выполняет поиск по запросу с фильтрами.
+  ///
+  /// [timeoutMs] — жёсткий общий бюджет; [idleTimeoutMs] — «окно тишины»
+  /// после первого ответа; [responseLimit]/[fileLimit] — досрочное завершение.
   Future<List<SoulseekSearchResult>> search({
     required String requestId,
     required String query,
     required int timeoutMs,
+    required int idleTimeoutMs,
     required int responseLimit,
+    required int fileLimit,
     required SoulseekSearchFilters filters,
   });
 
@@ -110,14 +115,26 @@ class SoulseekSource implements TrackSource {
   @visibleForTesting
   Duration downloadTimeout = const Duration(minutes: 10);
 
-  /// NEW-2: таймаут поиска из настроек (SoulseekPrefs.searchTimeoutSec),
-  /// применяется вместо хардкода 15 c. Управляет «окном тишины» C# bridge
-  /// (SearchInternal сбрасывает таймер на каждый ответ, поэтому это не
-  /// общий бюджет, а пауза после последнего пира). Загружается лениво из
-  /// SharedPreferences при первом поиске; настройка применяется со
-  /// следующего поиска после смены.
-  @visibleForTesting
-  int searchTimeoutMs = 15000;
+  /// NEW-2: таймаут поиска из настроек (SoulseekPrefs.searchTimeoutSec).
+  /// Это жёсткий общий бюджет: C# bridge останавливает поиск по его
+  /// истечении и возвращает накопленное. Обычно поиск завершается раньше —
+  /// по [searchIdleTimeoutMs] или [searchFileLimit]. Загружается лениво из
+  /// SharedPreferences при первом поиске; настройка применяется со следующего поиска
+  /// после смены. Читается SearchController для внешнего таймаута.
+  int searchTimeoutMs = 10000;
+
+  /// «Окно тишины»: после первого ответа поиск завершается, если новых
+  /// ответов нет дольше этого окна. Раньше таймер библиотеки сбрасывался на
+  /// каждый ответ без общего предела, и популярные запросы шли 25–30 c.
+  static const int searchIdleTimeoutMs = 2500;
+
+  /// Досрочное завершение по числу ответов пиров.
+  static const int searchResponseLimit = 100;
+
+  /// Досрочное завершение по числу аудиофайлов (после фильтров). В выдачу
+  /// идут максимум `limit` треков, так что сотни файлов с запасом хватает
+  /// на дедупликацию и ранжирование.
+  static const int searchFileLimit = 200;
 
   static const _searchTimeoutKey = 'soulseek_search_timeout_sec';
   bool _searchTimeoutLoaded = false;
@@ -130,7 +147,7 @@ class SoulseekSource implements TrackSource {
       final sec = prefs.getInt(_searchTimeoutKey);
       if (sec != null && sec > 0) searchTimeoutMs = sec * 1000;
     } catch (_) {
-      // best-effort: остаётся дефолт 15 c.
+      // best-effort: остаётся дефолт 10 c.
     }
   }
 
@@ -298,7 +315,7 @@ class SoulseekSource implements TrackSource {
 
     final requestId = const Uuid().v4();
 
-    // NEW-2: применяем настраиваемый таймаут из настроек (default 15 c).
+    // NEW-2: применяем настраиваемый таймаут из настроек (default 10 c).
     await _ensureSearchTimeoutLoaded();
 
     try {
@@ -306,7 +323,9 @@ class SoulseekSource implements TrackSource {
         requestId: requestId,
         query: q,
         timeoutMs: searchTimeoutMs,
-        responseLimit: 250,
+        idleTimeoutMs: searchIdleTimeoutMs,
+        responseLimit: searchResponseLimit,
+        fileLimit: searchFileLimit,
         filters: searchFilters,
       );
 
@@ -328,7 +347,8 @@ class SoulseekSource implements TrackSource {
         deduped.add(r);
       }
 
-      final tracks = deduped.take(limit).map(_resultToTrack).toList();
+      final tracks =
+          rankResults(deduped).take(limit).map(_resultToTrack).toList();
 
       if (kDebugMode) {
         debugPrint('[Soulseek] search "$q": ${results.length} raw, '
@@ -342,6 +362,29 @@ class SoulseekSource implements TrackSource {
     } on UnsupportedError {
       return const [];
     }
+  }
+
+  /// Ранжирует результаты по тому, как быстро пир отдаст файл: сначала
+  /// пиры со свободным слотом, затем с более короткой очередью, затем с
+  /// большей скоростью. При равенстве сохраняется порядок прихода ответов
+  /// (первыми отвечают самые отзывчивые пиры).
+  @visibleForTesting
+  static List<SoulseekSearchResult> rankResults(
+    List<SoulseekSearchResult> results,
+  ) {
+    final indexed = [for (var i = 0; i < results.length; i++) (i, results[i])];
+    indexed.sort((a, b) {
+      final ra = a.$2, rb = b.$2;
+      final slot = (rb.freeUploadSlots > 0 ? 1 : 0)
+          .compareTo(ra.freeUploadSlots > 0 ? 1 : 0);
+      if (slot != 0) return slot;
+      final queue = ra.queueLength.compareTo(rb.queueLength);
+      if (queue != 0) return queue;
+      final speed = rb.uploadSpeed.compareTo(ra.uploadSpeed);
+      if (speed != 0) return speed;
+      return a.$1.compareTo(b.$1);
+    });
+    return [for (final e in indexed) e.$2];
   }
 
   /// Маппинг [SoulseekSearchResult] → [Track].

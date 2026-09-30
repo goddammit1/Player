@@ -42,6 +42,9 @@ class _TestChannel implements SoulseekChannel {
 
   /// NEW-2: последний timeoutMs, переданный в search().
   int? lastSearchTimeoutMs;
+  int? lastIdleTimeoutMs;
+  int? lastResponseLimit;
+  int? lastFileLimit;
 
   // Конфигурация cache / download
   SoulseekCacheEntry? cacheEntry;
@@ -60,11 +63,16 @@ class _TestChannel implements SoulseekChannel {
     required String requestId,
     required String query,
     required int timeoutMs,
+    required int idleTimeoutMs,
     required int responseLimit,
+    required int fileLimit,
     required SoulseekSearchFilters filters,
   }) async {
     lastSearchQuery = query;
     lastSearchTimeoutMs = timeoutMs;
+    lastIdleTimeoutMs = idleTimeoutMs;
+    lastResponseLimit = responseLimit;
+    lastFileLimit = fileLimit;
     if (searchError != null) throw searchError!;
     return searchResults;
   }
@@ -754,6 +762,27 @@ void main() {
       expect(channel.lastSearchQuery, 'query');
     });
 
+    test('ranks free slot, then short queue, then speed; stable on ties',
+        () async {
+      channel.searchResults = [
+        _searchResult(resultId: 'busy', filename: 'a.flac',
+            freeUploadSlots: 0, queueLength: 0, uploadSpeed: 9000),
+        _searchResult(resultId: 'slow', filename: 'b.flac',
+            queueLength: 0, uploadSpeed: 100),
+        _searchResult(resultId: 'queued', filename: 'c.flac',
+            queueLength: 7, uploadSpeed: 9000),
+        _searchResult(resultId: 'fast', filename: 'd.flac',
+            queueLength: 0, uploadSpeed: 800),
+        _searchResult(resultId: 'fast2', filename: 'e.flac',
+            queueLength: 0, uploadSpeed: 800),
+      ];
+
+      final tracks = await source.search('query', limit: 3);
+
+      expect(tracks.map((t) => t.extra['remoteFilename']),
+          ['d.flac', 'e.flac', 'b.flac']);
+    });
+
     test('maps results to Track correctly', () async {
       channel.searchResults = [
         _searchResult(
@@ -1324,22 +1353,30 @@ void main() {
   //  NEW-2: применяемый таймаут поиска из настроек
   // ═══════════════════════════════════════════════════════════════════
   group('search timeout from prefs (NEW-2)', () {
-    test('default 15000 ms when pref not set', () async {
+    test('default 10000 ms when pref not set', () async {
       channel.searchResults = [_searchResult()];
       await source.search('query');
-      expect(channel.lastSearchTimeoutMs, 15000);
+      expect(channel.lastSearchTimeoutMs, 10000);
     });
 
-    test('pref soulseek_search_timeout_sec=10 → 10000 ms', () async {
+    test('pref soulseek_search_timeout_sec=7 → 7000 ms', () async {
       SharedPreferences.setMockInitialValues({
-        'soulseek_search_timeout_sec': 10,
+        'soulseek_search_timeout_sec': 7,
       });
       // Ленивая загрузка один раз на инстанс — пересоздаём source.
       source = SoulseekSource(channel: channel);
       await Future.delayed(Duration.zero);
       channel.searchResults = [_searchResult()];
       await source.search('query');
-      expect(channel.lastSearchTimeoutMs, 10000);
+      expect(channel.lastSearchTimeoutMs, 7000);
+    });
+
+    test('passes idle window and early-stop limits to channel', () async {
+      channel.searchResults = [_searchResult()];
+      await source.search('query');
+      expect(channel.lastIdleTimeoutMs, SoulseekSource.searchIdleTimeoutMs);
+      expect(channel.lastResponseLimit, SoulseekSource.searchResponseLimit);
+      expect(channel.lastFileLimit, SoulseekSource.searchFileLimit);
     });
   });
 
