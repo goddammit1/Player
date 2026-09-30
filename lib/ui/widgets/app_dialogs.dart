@@ -1,7 +1,9 @@
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/platform/haptic_helper.dart';
 import '../../core/providers.dart';
@@ -301,6 +303,153 @@ Future<void> showAppInfoDialog({
       },
     ),
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  4. REPORT DIALOG (Diagnostics: loading → text with Copy / Share)
+// ═══════════════════════════════════════════════════════════════════════════
+
+Future<void> showAppReportDialog({
+  required BuildContext context,
+  required String title,
+  String? subtitle,
+  required Future<String> report,
+  String? shareSubject,
+}) {
+  return _showConceptDialog<void>(
+    context: context,
+    builder: (_) => _AppReportDialog(
+      title: title,
+      subtitle: subtitle,
+      report: report,
+      shareSubject: shareSubject,
+    ),
+  );
+}
+
+class _AppReportDialog extends ConsumerStatefulWidget {
+  const _AppReportDialog({
+    required this.title,
+    this.subtitle,
+    required this.report,
+    this.shareSubject,
+  });
+
+  final String title;
+  final String? subtitle;
+  final Future<String> report;
+  final String? shareSubject;
+
+  @override
+  ConsumerState<_AppReportDialog> createState() => _AppReportDialogState();
+}
+
+class _AppReportDialogState extends ConsumerState<_AppReportDialog> {
+  String? _text;
+  bool _copied = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.report.then(
+      (text) {
+        if (mounted) setState(() => _text = text);
+      },
+      onError: (Object e) {
+        if (mounted) setState(() => _text = 'Failed to build report: $e');
+      },
+    );
+  }
+
+  Future<void> _copy() async {
+    final text = _text;
+    if (text == null) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    HapticHelper.success(ref: ref);
+    if (mounted) setState(() => _copied = true);
+  }
+
+  Future<void> _share() async {
+    final text = _text;
+    if (text == null) return;
+    HapticHelper.light(ref: ref);
+    await Share.share(text, subject: widget.shareSubject);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = ref.watch(animatedPaletteProvider);
+    final text = _text;
+    final ready = text != null;
+
+    return _DialogFrame(
+      title: widget.title,
+      subtitle: widget.subtitle,
+      colors: colors,
+      body: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.45,
+        ),
+        decoration: BoxDecoration(
+          color: colors.elevated,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: ready
+            ? SingleChildScrollView(
+                padding: const EdgeInsets.all(14),
+                child: SelectableText(
+                  text,
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 11,
+                    height: 1.35,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              )
+            : Padding(
+                padding: const EdgeInsets.all(24),
+                child: Center(
+                  child: CircularProgressIndicator(
+                    color: colors.accent,
+                    strokeWidth: 2.5,
+                  ),
+                ),
+              ),
+      ),
+      actions: [
+        Expanded(
+          child: _DialogButton(
+            label: 'Close',
+            backgroundColor: colors.elevated,
+            foregroundColor: colors.textPrimary,
+            onTap: () {
+              HapticHelper.light(ref: ref);
+              Navigator.of(context).pop();
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _DialogButton(
+            label: _copied ? 'Copied' : 'Copy',
+            backgroundColor: colors.elevated,
+            foregroundColor: ready ? colors.textPrimary : colors.textTertiary,
+            onTap: _copy,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _DialogButton(
+            label: 'Share',
+            backgroundColor: colors.elevatedHi,
+            foregroundColor: ready ? Colors.white : colors.textTertiary,
+            onTap: _share,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
