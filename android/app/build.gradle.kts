@@ -94,6 +94,11 @@ dependencies {
     // идут только метаданные и команды.
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
 
+    // MasterKey / EncryptedSharedPreferences для SecureStorageDiagnostics.
+    // Та же версия, что у flutter_secure_storage 9.2.4 — библиотека уже в
+    // APK через плагин, здесь она нужна только на compile classpath app.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // Kotlin Coroutines — нужна для Kotlin-стороны Platform Channel (Фаза 2):
     // мост между асинхронными вызовами SoulseekBridge (блокирующие C# методы) и корутинами.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
