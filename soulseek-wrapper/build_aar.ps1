@@ -28,17 +28,18 @@
   Build configuration: "Release" (default) or "Debug".
 
 .PARAMETER Abis
-  Android ABIs to target. Default: arm64-v8a, armeabi-v7a, x64.
-  Pass a single ABI for faster local iteration, e.g. -Abis arm64-v8a.
+  Android ABIs to target. Default: arm64-v8a (what the shipped AAR contains).
+  Also accepted: armeabi-v7a, x64 (packed as jni/x86_64, e.g. for emulators).
+  Note: each extra ABI adds a full copy of the .NET runtime to the fat release APK.
 
 .EXAMPLE
   .\build_aar.ps1
-  .\build_aar.ps1 -Configuration Debug -Abis arm64-v8a
+  .\build_aar.ps1 -Configuration Debug -Abis arm64-v8a,x64
 #>
 
 param(
     [string]$Configuration = "Release",
-    [string[]]$Abis = @("arm64-v8a", "armeabi-v7a", "x64")
+    [string[]]$Abis = @("arm64-v8a")
 )
 
 $ErrorActionPreference = "Stop"
@@ -365,14 +366,16 @@ foreach ($abi in $Abis) {
     $apkAbi = $ApkAbiMap[$abi]
     $soDir = Join-Path $apkExtractDir "lib\$apkAbi"
     if (Test-Path $soDir) {
-        $destAbiDir = Join-Path $jniDir $abi
+        # jni/<abi> must use the canonical Android ABI name (x86_64, not x64),
+        # otherwise AGP's mergeNativeLibs fails with "... is not an ABI".
+        $destAbiDir = Join-Path $jniDir $apkAbi
         New-Item -ItemType Directory -Path $destAbiDir -Force | Out-Null
         Get-ChildItem $soDir -Filter *.so | ForEach-Object {
             Copy-Item $_.FullName $destAbiDir -Force
             $copiedSo++
         }
         $soCount = (Get-ChildItem $destAbiDir -Filter *.so).Count
-        Write-Host "  jni/$abi : $soCount .so files (incl. libmonosgen-2.0.so runtime)" -ForegroundColor Gray
+        Write-Host "  jni/$apkAbi : $soCount .so files (incl. libmonosgen-2.0.so runtime)" -ForegroundColor Gray
     } else {
         Write-Host "  WARNING: no .so for $abi at $soDir (ABI not built by .NET Android)" -ForegroundColor Yellow
     }
