@@ -123,16 +123,17 @@ class SearchController extends StateNotifier<SearchState> {
   /// но и достаточно, чтобы медленный, но рабочий источник успел ответить.
   static const _sourceTimeout = Duration(seconds: 5);
 
-  /// NEW-2: Soulseek — P2P-поиск с «окном тишины» на стороне C# bridge
-  /// (минимум ~10–15 c, т.к. ответы пиров приходят волнами). Общий
-  /// [_sourceTimeout] в 5 c отрезал бы его результаты всегда, поэтому
-  /// для Soulseek выделяем расширенное окно. Результаты остальных
+  /// NEW-2: Soulseek — P2P-поиск, который C# bridge сам ограничивает
+  /// общим бюджетом [SoulseekSource.searchTimeoutMs] и возвращает всё
+  /// накопленное. Внешний таймаут берём с запасом на JNI/канал, иначе
+  /// он отрезал бы уже собранные результаты. Результаты остальных
   /// источников показываются сразу — Soulseek доклеится позже.
-  static const _soulseekSourceTimeout = Duration(seconds: 16);
+  static const _soulseekTimeoutMargin = Duration(seconds: 3);
 
   /// Возвращает пер-источниковый таймаут (NEW-2: расширенный для Soulseek).
-  Duration _timeoutFor(dynamic source) =>
-      source is SoulseekSource ? _soulseekSourceTimeout : _sourceTimeout;
+  Duration _timeoutFor(dynamic source) => source is SoulseekSource
+      ? Duration(milliseconds: source.searchTimeoutMs) + _soulseekTimeoutMargin
+      : _sourceTimeout;
 
   /// Поиск во всех зарегистрированных источниках сразу.
   ///

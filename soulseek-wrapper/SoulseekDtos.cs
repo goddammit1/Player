@@ -44,13 +44,30 @@ namespace Soulseek.Wrapper
         [JsonPropertyName("query")]
         public string Query { get; set; }
 
-        /// <summary>Таймаут поиска, мс. По умолчанию 15000 (от последнего ответа).</summary>
+        /// <summary>
+        ///   Жёсткий общий бюджет поиска, мс (от отправки запроса серверу).
+        ///   По истечении поиск останавливается и возвращает накопленное.
+        /// </summary>
         [JsonPropertyName("timeoutMs")]
-        public int TimeoutMs { get; set; } = 15000;
+        public int TimeoutMs { get; set; } = 10000;
 
-        /// <summary>Максимальное количество ответов (responses), по умолчанию 250.</summary>
+        /// <summary>
+        ///   «Окно тишины», мс: после ПЕРВОГО ответа поиск завершается, если
+        ///   новых ответов нет дольше этого окна. До первого ответа не действует.
+        /// </summary>
+        [JsonPropertyName("idleTimeoutMs")]
+        public int IdleTimeoutMs { get; set; } = 2500;
+
+        /// <summary>Максимальное количество ответов (responses), по умолчанию 100.</summary>
         [JsonPropertyName("responseLimit")]
-        public int ResponseLimit { get; set; } = 250;
+        public int ResponseLimit { get; set; } = 100;
+
+        /// <summary>
+        ///   Максимальное количество файлов (после фильтров), по достижении которого
+        ///   поиск завершается досрочно. По умолчанию 200.
+        /// </summary>
+        [JsonPropertyName("fileLimit")]
+        public int FileLimit { get; set; } = 200;
 
         [JsonPropertyName("filters")]
         public SearchFiltersDto Filters { get; set; }
