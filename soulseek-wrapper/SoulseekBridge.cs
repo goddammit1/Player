@@ -53,6 +53,17 @@ namespace Soulseek.Wrapper
 
         private static readonly string[] LosslessExtensions = { "flac", "alac", "wav", "ape", "wv", "dsd", "dsf", "dff" };
 
+        // Аудио-расширения по умолчанию: если фильтр расширений пуст, картинки/cue/log/nfo
+        // из папок альбомов отсекаются, чтобы не занимать fileLimit и не гонять их через JNI.
+        private static readonly HashSet<string> AudioExtensions = new HashSet<string>
+        {
+            "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac", "alac", "wav", "aif", "aiff",
+            "ape", "wv", "wma", "mpc", "dsf", "dff",
+        };
+
+        // Период проверки дедлайна / окна тишины в SearchCoreAsync.
+        private const int SearchWatchdogTickMs = 200;
+
         private SoulseekClient _client;
         private ISoulseekEventSink _eventSink;
 
@@ -209,24 +220,85 @@ namespace Soulseek.Wrapper
 
             var filters = req.Filters ?? new SearchFiltersDto();
 
-            // SearchOptions: searchTimeout (от последнего ответа), responseLimit, fileFilter, responseFilter.
+            int budgetMs = req.TimeoutMs > 0 ? req.TimeoutMs : 10000;
+            int idleMs = req.IdleTimeoutMs > 0 ? req.IdleTimeoutMs : 2500;
+            int fileLimit = req.FileLimit > 0 ? req.FileLimit : 200;
+
+            // Таймаут SearchInternal — «окно тишины», которое сбрасывается на КАЖДЫЙ ответ
+            // пира. На популярных запросах ответы идут непрерывно, и поиск тянулся до
+            // responseLimit (25–30 c). Поэтому завершение контролируем сами (см. watchdog
+            // ниже), а библиотечный таймаут оставляем страховкой = общий бюджет.
             var searchOptions = new SearchOptions(
-                searchTimeout: req.TimeoutMs > 0 ? req.TimeoutMs : 15000,
-                responseLimit: req.ResponseLimit > 0 ? req.ResponseLimit : 250,
+                searchTimeout: budgetMs,
+                responseLimit: req.ResponseLimit > 0 ? req.ResponseLimit : 100,
+                fileLimit: fileLimit,
                 removeSingleCharacterSearchTerms: true,
                 fileFilter: f => PassesFileFilter(f, filters),
                 responseFilter: r => PassesResponseFilter(r, filters));
 
-            // SearchAsync возвращает (Search Search, IReadOnlyCollection<SearchResponse> Responses).
-            var (search, responses) = await _client.SearchAsync(
-                query,
-                options: searchOptions).ConfigureAwait(false);
+            // Ответы копим в порядке прихода (ConcurrentBag в SearchToCollectionAsync
+            // порядок не сохраняет) — первыми идут самые отзывчивые пиры.
+            var responses = new ConcurrentQueue<SearchResponse>();
+            long lastResponseTicks = 0;
+
+            void OnResponse(SearchResponse response)
+            {
+                responses.Enqueue(response);
+                Interlocked.Exchange(ref lastResponseTicks, DateTime.UtcNow.Ticks);
+            }
+
+            using (var cts = new CancellationTokenSource())
+            {
+                var searchTask = _client.SearchAsync(
+                    query,
+                    OnResponse,
+                    options: searchOptions,
+                    cancellationToken: cts.Token);
+
+                // Watchdog: жёсткий общий бюджет + окно тишины, которое начинает действовать
+                // только после первого ответа (до него пиры по распределённой сети ещё
+                // получают запрос, и «тишина» ничего не значит).
+                var deadline = DateTime.UtcNow.AddMilliseconds(budgetMs);
+                long idleTicks = TimeSpan.FromMilliseconds(idleMs).Ticks;
+
+                while (!searchTask.IsCompleted)
+                {
+                    await Task.WhenAny(searchTask, Task.Delay(SearchWatchdogTickMs)).ConfigureAwait(false);
+                    if (searchTask.IsCompleted)
+                    {
+                        break;
+                    }
+
+                    var now = DateTime.UtcNow;
+                    long last = Interlocked.Read(ref lastResponseTicks);
+                    if (now >= deadline || (last != 0 && now.Ticks - last >= idleTicks))
+                    {
+                        cts.Cancel();
+                        break;
+                    }
+                }
+
+                try
+                {
+                    await searchTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    // Остановлено watchdog'ом — возвращаем накопленное.
+                }
+            }
 
             // Маппим responses → плоский список SearchResultDto (по одному DTO на файл).
+            // Библиотека проверяет fileLimit после добавления ответа, поэтому режем явно.
             var results = new List<SearchResultDto>();
             int responseIndex = 0;
             foreach (var response in responses)
             {
+                if (results.Count >= fileLimit)
+                {
+                    break;
+                }
+
                 foreach (var file in response.Files)
                 {
                     if (!PassesFileFilter(file, filters))
@@ -251,6 +323,11 @@ namespace Soulseek.Wrapper
                 }
 
                 responseIndex++;
+            }
+
+            if (results.Count > fileLimit)
+            {
+                results.RemoveRange(fileLimit, results.Count - fileLimit);
             }
 
             var data = JsonSerializer.Serialize(results, JsonOpts);
@@ -644,7 +721,7 @@ namespace Soulseek.Wrapper
                 Username = response.Username,
                 Filename = file.Filename,
                 SizeBytes = file.Size,
-                Extension = file.Extension,
+                Extension = ExtensionOf(file),
                 // File.BitRate, File.SampleRate, File.BitDepth, File.Length — уже извлечены из Attributes.
                 Bitrate = file.BitRate,
                 SampleRate = file.SampleRate,
@@ -656,21 +733,47 @@ namespace Soulseek.Wrapper
             };
         }
 
-        private static bool PassesFileFilter(SlskFile file, SearchFiltersDto filters)
+        /// <summary>
+        ///   Расширение файла в нижнем регистре без точки. Многие клиенты шлют пустое
+        ///   поле extension — тогда берём его из имени файла (пути вида "A\\B\\c.flac").
+        /// </summary>
+        private static string ExtensionOf(SlskFile file)
         {
-            if (filters == null)
+            var ext = (file.Extension ?? string.Empty).Trim().TrimStart('.');
+            if (ext.Length == 0 && !string.IsNullOrEmpty(file.Filename))
             {
-                return true;
+                var name = file.Filename;
+                int sep = Math.Max(name.LastIndexOf('\\'), name.LastIndexOf('/'));
+                int dot = name.LastIndexOf('.');
+                if (dot > sep && dot < name.Length - 1)
+                {
+                    ext = name.Substring(dot + 1);
+                }
             }
 
-            // Расширения
-            if (filters.Extensions != null && filters.Extensions.Count > 0)
+            return ext.ToLowerInvariant();
+        }
+
+        private static bool PassesFileFilter(SlskFile file, SearchFiltersDto filters)
+        {
+            var ext = ExtensionOf(file);
+
+            // Расширения: явный список из настроек, иначе — только аудио.
+            if (filters?.Extensions != null && filters.Extensions.Count > 0)
             {
-                var ext = (file.Extension ?? string.Empty).ToLowerInvariant().TrimStart('.');
                 if (!filters.Extensions.Contains(ext))
                 {
                     return false;
                 }
+            }
+            else if (!AudioExtensions.Contains(ext))
+            {
+                return false;
+            }
+
+            if (filters == null)
+            {
+                return true;
             }
 
             // Размер
@@ -696,7 +799,6 @@ namespace Soulseek.Wrapper
             // Lossless only
             if (filters.LosslessOnly)
             {
-                var ext = (file.Extension ?? string.Empty).ToLowerInvariant().TrimStart('.');
                 if (!LosslessExtensions.Contains(ext))
                 {
                     return false;
