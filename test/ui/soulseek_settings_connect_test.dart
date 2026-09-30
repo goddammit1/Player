@@ -300,6 +300,7 @@ void main() {
         expect(find.text('Connected'), findsOneWidget);
         expect(find.text('Connect'), findsOneWidget);
         expect(connectCalls, 1);
+        expect(find.textContaining("couldn't be saved"), findsNothing);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -331,6 +332,37 @@ void main() {
 
         expect(find.text('Connection failed'), findsOneWidget);
         expect(find.text('Connect'), findsOneWidget);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  // Сбой secure storage у пользователя 3.0.0-beta (NPE в плагине) раньше
+  // обрывал Connect ещё до вызова натива — Soulseek был недоступен совсем.
+  testWidgets(
+      'сбой записи в secure storage не блокирует подключение — '
+      'пользователь только предупреждается', (tester) async {
+    // Мок плагина пишет прямо в эту Map: неизменяемая → write() бросает,
+    // чтение (предзаполнение полей) работает.
+    FlutterSecureStorage.setMockInitialValues(Map.unmodifiable({
+      'soulseek_username': 'user',
+      'soulseek_password': 'pass',
+    }));
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await openPageAndTapConnect(tester);
+
+        connectReply.complete({'username': 'user', 'state': 'CONNECTED'});
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+
+        expect(find.text('Connected'), findsOneWidget);
+        expect(find.textContaining("couldn't be saved"), findsOneWidget);
+        expect(connectCalls, 1);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
