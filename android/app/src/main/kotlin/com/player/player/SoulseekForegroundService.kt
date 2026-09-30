@@ -9,7 +9,9 @@ import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -53,6 +55,9 @@ class SoulseekForegroundService : Service() {
 
         // WakeLock timeout — перевыбираем периодически, не держим бесконечно.
         private const val WAKE_LOCK_TIMEOUT_MS = 60_000L * 10L // 10 минут
+
+        // Throttle обновления notification, мс (с trailing-доставкой последнего значения).
+        private const val NOTIFICATION_THROTTLE_MS = 500L
     }
 
     private val binder = SoulseekServiceBinder()
@@ -128,9 +133,23 @@ class SoulseekForegroundService : Service() {
         Log.i(TAG, "onStartCommand: ${intent?.getStringExtra(EXTRA_COMMAND) ?: "null"}")
 
         // Notification создаётся ДО любой сетевой работы (требование Android 12+).
-        notificationHelper = SoulseekNotification(this)
+        // Дефект №2: при повторном startService (сервис уже инициализирован)
+        // публикуем ТЕКУЩЕЕ состояние transferManager, а не жёсткий DISCONNECTED —
+        // иначе повторный старт сбрасывает уведомление при живом соединении.
+        if (notificationHelper == null) {
+            notificationHelper = SoulseekNotification(this)
+        }
         val initialNotification = notificationHelper!!.buildNotification(
-            ConnectionState.DISCONNECTED, emptyList()
+            if (initialized) {
+                transferManager?.connectionState ?: ConnectionState.DISCONNECTED
+            } else {
+                ConnectionState.DISCONNECTED
+            },
+            if (initialized) {
+                transferManager?.getActiveTransfers() ?: emptyList()
+            } else {
+                emptyList()
+            }
         )
 
         // Инициализация сети — только после успешного перехода в foreground.
@@ -142,7 +161,8 @@ class SoulseekForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        // Инициализация компонентов (один раз).
+        // Инициализация компонентов (один раз). Повторный startService не
+        // трогает существующие bridge/менеджеры/listener'ы — соединение живёт.
         if (!initialized) {
             initializeComponents()
             initialized = true
@@ -193,6 +213,12 @@ class SoulseekForegroundService : Service() {
                 }
             },
             onActiveTransfersChanged = {
+                updateNotificationInternal()
+            },
+            // Дефект №1: смена connection state обновляет notification тем же
+            // путём, что и изменения трансферов — перечитываем нормализованное
+            // состояние manager (не привязано к активности загрузок).
+            onConnectionStateChanged = {
                 updateNotificationInternal()
             }
         )
@@ -305,15 +331,49 @@ class SoulseekForegroundService : Service() {
     @Volatile
     private var lastNotificationUpdateAt: Long = 0L
 
-    /** Throttled обновление notification (не чаще ~500мс). */
-    private fun updateNotificationInternal() {
-        val now = System.currentTimeMillis()
-        if (now - lastNotificationUpdateAt < 500L) return
-        lastNotificationUpdateAt = now
+    // Все обновления notification выполняются последовательно на main thread.
+    private val notificationHandler = Handler(Looper.getMainLooper())
 
+    /** Отложенный trailing-пост последнего отклонённого обновления. */
+    @Volatile
+    private var pendingNotificationUpdate: Runnable? = null
+
+    /**
+     * Throttled обновление notification (не чаще [NOTIFICATION_THROTTLE_MS]).
+     * Дефект №4: отклонённое из-за throttle обновление не теряется —
+     * планируется отложенная публикация последнего состояния (trailing),
+     * предыдущий отложенный пост отменяется. Финальный статус публикуется всегда.
+     */
+    private fun updateNotificationInternal() {
+        notificationHandler.post {
+            val now = System.currentTimeMillis()
+            if (now - lastNotificationUpdateAt < NOTIFICATION_THROTTLE_MS) {
+                // Throttle: отменяем предыдущий отложенный пост и планируем
+                // новый — опубликовано будет именно последнее состояние.
+                pendingNotificationUpdate?.let { notificationHandler.removeCallbacks(it) }
+                val delayed = Runnable {
+                    pendingNotificationUpdate = null
+                    lastNotificationUpdateAt = System.currentTimeMillis()
+                    publishNotification()
+                }
+                pendingNotificationUpdate = delayed
+                notificationHandler.postDelayed(
+                    delayed,
+                    NOTIFICATION_THROTTLE_MS - (now - lastNotificationUpdateAt)
+                )
+                return@post
+            }
+            lastNotificationUpdateAt = now
+            pendingNotificationUpdate?.let { notificationHandler.removeCallbacks(it) }
+            pendingNotificationUpdate = null
+            publishNotification()
+        }
+    }
+
+    /** Читает состояние manager и публикует notification (main thread). */
+    private fun publishNotification() {
         val transfers = transferManager?.getActiveTransfers() ?: emptyList()
         val connState = transferManager?.connectionState ?: ConnectionState.DISCONNECTED
-
         notificationHelper?.update(connState, transfers)
     }
 
