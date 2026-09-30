@@ -211,10 +211,14 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// Вызывается при входе на страницу настроек: connectionEvents приходят
   /// только при изменениях, поэтому повторное открытие страницы иначе
   /// показывало бы устаревший Disconnected при живом соединении.
-  Future<SoulseekConnectionState> getConnectionState() async {
+  ///
+  /// Дефект №3: натив возвращает "UNKNOWN", когда binder ещё не привязан,
+  /// а сервис может работать (пересоздание Flutter engine). Возвращает null
+  /// — вызывающий код не должен перезаписывать локальный статус.
+  Future<SoulseekConnectionState?> getConnectionState() async {
     _requireAndroid();
     final result = await _invoke<String>('getConnectionState', null);
-    return SoulseekConnectionState.fromString(result);
+    return SoulseekConnectionState.tryParse(result);
   }
 
   // ═══════════════════════════════════════════════════════════════════

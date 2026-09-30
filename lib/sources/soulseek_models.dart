@@ -99,7 +99,7 @@ enum SoulseekTransferState {
 }
 
 /// Состояние соединения с сервером Soulseek.
-/// Маппится из строк Kotlin [ConnectionState] или C# [SoulseekClientStates].
+/// Маппируется из строк Kotlin [ConnectionState] или C# [SoulseekClientStates].
 enum SoulseekConnectionState {
   disconnected,
   connecting,
@@ -108,30 +108,41 @@ enum SoulseekConnectionState {
   failed;
 
   /// Парсит строку состояния (case-insensitive).
-  static SoulseekConnectionState fromString(String? name) {
+  ///
+  /// Нераспознанные строки дают [SoulseekConnectionState.disconnected].
+  static SoulseekConnectionState fromString(String? name) =>
+      tryParse(name) ?? SoulseekConnectionState.disconnected;
+
+  /// Дефект №3: парсинг с различением «неизвестно» (null) и реального
+  /// disconnected. Возвращает null, если строка не распознана — вызывающий
+  /// код не должен перезаписывать локальный статус таким значением.
+  static SoulseekConnectionState? tryParse(String? name) {
     if (name == null || name.isEmpty) return SoulseekConnectionState.disconnected;
     final upper = name.toUpperCase();
     for (final s in SoulseekConnectionState.values) {
       if (s.name.toUpperCase() == upper) return s;
     }
-    // Fallback: substring matching для C# state names
-    if (upper.contains('LOGGEDIN') || upper.contains('LOGGED_IN')) {
-      return SoulseekConnectionState.connected;
-    }
-    if (upper.contains('CONNECTED') && !upper.contains('DIS')) {
-      return SoulseekConnectionState.connected;
-    }
+    // Fallback: substring matching для C# state names.
+    //
     // Важно: DISCONNECTING/RECONNECTING содержат подстроку "CONNECTING",
     // поэтому эти проверки должны идти раньше.
     if (upper.contains('DISCONNECTING') || upper.contains('RECONNECT')) {
       return SoulseekConnectionState.reconnecting;
     }
-    if (upper.contains('CONNECTING') || upper.contains('LOGGING')) {
+    if (upper.contains('DISCONNECT')) return SoulseekConnectionState.disconnected;
+    // Дефект №6: CONNECTED только при LoggedIn — готовность требует обоих
+    // флагов (см. SoulseekBridge.cs IsReady). "Connected, LoggingIn" и
+    // чистый "Connected" без LoggedIn — логин ещё не завершён → connecting.
+    if (upper.contains('LOGGEDIN') || upper.contains('LOGGED_IN')) {
+      return SoulseekConnectionState.connected;
+    }
+    if (upper.contains('CONNECTING') ||
+        upper.contains('LOGGING') ||
+        upper.contains('CONNECTED')) {
       return SoulseekConnectionState.connecting;
     }
-    if (upper.contains('DISCONNECT')) return SoulseekConnectionState.disconnected;
     if (upper.contains('FAIL')) return SoulseekConnectionState.failed;
-    return SoulseekConnectionState.disconnected;
+    return null;
   }
 }
 
