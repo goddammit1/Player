@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
+import 'package:meta/meta.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -46,7 +47,7 @@ class UpdateService {
   static const repository = 'goddammit1/Player';
   static const _installChannel = MethodChannel('player/app_update');
 
-  static final Dio _dio = Dio(
+  static final Dio _prodDio = Dio(
     BaseOptions(
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(minutes: 5),
@@ -57,6 +58,17 @@ class UpdateService {
       },
     ),
   );
+
+  static Dio? _testDio;
+
+  /// HTTP-клиент сервиса. В тестах подменяется через
+  /// [setDioForTesting], чтобы не ходить в реальный GitHub API.
+  static Dio get _dio => _testDio ?? _prodDio;
+
+  /// Подменяет HTTP-клиент для юнит-тестов [check] (mock-Dio);
+  /// `null` — вернуть продакшн-клиент.
+  @visibleForTesting
+  static void setDioForTesting(Dio? dio) => _testDio = dio;
 
   static Future<UpdateCheckResult> check() async {
     final packageInfo = await PackageInfo.fromPlatform();
@@ -77,12 +89,28 @@ class UpdateService {
       );
     }
 
-    final response = await _dio.get<Map<String, dynamic>>(
-      'https://api.github.com/repos/$repository/releases/latest',
+    // `releases/latest` never returns prereleases (nor drafts), so a
+    // release published as a GitHub prerelease was invisible to the
+    // updater. List recent releases instead: GitHub sorts them by
+    // creation date descending (prereleases included), and the first
+    // published (non-draft) entry is the newest release.
+    final response = await _dio.get<List<dynamic>>(
+      'https://api.github.com/repos/$repository/releases?per_page=10',
     );
-    final data = response.data;
-    if (response.statusCode != 200 || data == null) {
+    final releases = response.data;
+    if (response.statusCode != 200 || releases == null) {
       throw StateError('GitHub returned HTTP ${response.statusCode}.');
+    }
+
+    Map<String, dynamic>? data;
+    for (final entry in releases) {
+      if (entry is! Map) continue;
+      if (entry['draft'] == true) continue;
+      data = Map<String, dynamic>.from(entry);
+      break;
+    }
+    if (data == null) {
+      throw StateError('GitHub returned no published releases.');
     }
 
     final assets = data['assets'];
@@ -103,14 +131,14 @@ class UpdateService {
 
     if (apkUrl == null) {
       throw StateError(
-        'The latest GitHub release does not contain app-release.apk. '
+        'The newest GitHub release does not contain app-release.apk. '
         'Make sure the release artifact is named exactly app-release.apk.',
       );
     }
 
     final tag = data['tag_name']?.toString().trim() ?? '';
     if (tag.isEmpty) {
-      throw StateError('The latest GitHub release has no version tag.');
+      throw StateError('The newest GitHub release has no version tag.');
     }
 
     final release = AppRelease(
