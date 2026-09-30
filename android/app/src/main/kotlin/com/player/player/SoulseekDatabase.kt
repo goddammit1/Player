@@ -125,9 +125,13 @@ class SoulseekDatabase(context: Context) :
         )
 
         // Сидируем дефолтные настройки.
+        // Фаза B: listen_port приведён к 24150 (как Dart-дефолт
+        // SoulseekSettingsRepository.defaultListenPort). Для существующих
+        // установок значение уже записано — его переопределит синк из
+        // Dart (updateNativeSettings) при старте приложения.
         val now = System.currentTimeMillis()
         putSettingRaw(db, SettingsKeys.SOULSEEK_ENABLED, "false")
-        putSettingRaw(db, SettingsKeys.LISTEN_PORT, "50000")
+        putSettingRaw(db, SettingsKeys.LISTEN_PORT, "24150")
         putSettingRaw(db, SettingsKeys.MAX_CACHE_SIZE, "1073741824") // 1 GiB
         putSettingRaw(db, SettingsKeys.MAX_CONCURRENT_DOWNLOADS, "3")
         putSettingRaw(db, SettingsKeys.PREFER_LOSSLESS, "false")

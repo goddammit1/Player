@@ -4,13 +4,15 @@
 //
 // Пароль хранится ТОЛЬКО в flutter_secure_storage (Android Keystore) и
 // НИКОГДА не попадает в SharedPreferences, SQLite, логи или plain-text.
-// Username дополнительно дублируется в SharedPreferences, чтобы экран
-// настроек мог показывать его без обращения к Keystore (которое на
-// некоторых устройствах требует разблокировки и занимает время).
+// Username дополнительно дублируется в SQLite (ключ soulseek_username,
+// таблица settings), чтобы экран настроек мог показывать его без
+// обращения к Keystore (которое на некоторых устройствах требует
+// разблокировки и занимает время).
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+import 'database/app_database.dart';
 
 /// Результат загрузки учётных данных: username + password.
 typedef SoulseekCredentialPair = ({String username, String password});
@@ -30,8 +32,8 @@ class SoulseekCredentials {
   static const String _keyUsername = 'soulseek_username';
   static const String _keyPassword = 'soulseek_password';
 
-  // ── Ключ SharedPreferences (только username, для быстрого отображения) ──
-  static const String _prefKeyUsername = 'soulseek_username_display';
+  // ── Ключ SQLite (только username, для быстрого отображения) ──
+  static const String dbKeyUsername = 'soulseek_username';
 
   /// Загружает учётные данные из secure storage.
   ///
@@ -59,9 +61,9 @@ class SoulseekCredentials {
 
   /// Сохраняет учётные данные в secure storage.
   ///
-  /// Username дополнительно пишется в SharedPreferences для быстрого
-  /// отображения в UI без разблокировки Keystore. Пароль — только в
-  /// secure storage.
+  /// Username дополнительно пишется в SQLite (ключ [dbKeyUsername]) для
+  /// быстрого отображения в UI без разблокировки Keystore. Пароль —
+  /// только в secure storage.
   static Future<void> save({
     required String username,
     required String password,
@@ -70,24 +72,22 @@ class SoulseekCredentials {
       await _storage.write(key: _keyUsername, value: username);
       await _storage.write(key: _keyPassword, value: password);
 
-      // Дублируем username в SharedPreferences (безопасно: username —
-      // не секрет, его видно другим пользователям Soulseek в любом случае).
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefKeyUsername, username);
+      // Дублируем username в SQLite (безопасно: username — не секрет,
+      // его видно другим пользователям Soulseek в любом случае).
+      await AppDatabase.instance.setSetting(dbKeyUsername, username);
     } catch (e) {
       if (kDebugMode) debugPrint('[SoulseekCredentials] save failed: $e');
       rethrow;
     }
   }
 
-  /// Возвращает username из SharedPreferences (быстро, без Keystore).
+  /// Возвращает username из SQLite (быстро, без Keystore).
   ///
   /// Используется экраном настроек для предзаполнения поля username,
   /// пока пароль ещё не загружен. Возвращает `null`, если данных нет.
   static Future<String?> loadUsernameQuick() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getString(_prefKeyUsername);
+      return await AppDatabase.instance.getSetting(dbKeyUsername);
     } catch (_) {
       return null;
     }
@@ -99,8 +99,7 @@ class SoulseekCredentials {
       await _storage.delete(key: _keyUsername);
       await _storage.delete(key: _keyPassword);
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_prefKeyUsername);
+      await AppDatabase.instance.removeSetting(dbKeyUsername);
     } catch (e) {
       if (kDebugMode) debugPrint('[SoulseekCredentials] clear failed: $e');
       rethrow;
