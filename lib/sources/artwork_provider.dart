@@ -210,6 +210,25 @@ class ArtworkProvider {
     return null;
   }
 
+  /// ART-CACHE-01: синхронный lookup только по in-memory кэшу — без
+  /// SQLite и без сети. Для UI-шторок (track settings sheet): трек,
+  /// который уже играл в этой сессии, имеет найденный обложкой URL в
+  /// [_memCache] (его положил сюда [findArtwork] при воспроизведении),
+  /// поэтому шторка отдаёт его мгновенно, без await и побочных эффектов.
+  /// Если трек в сессии не играл — null (плейсхолдер), сеть из меню
+  /// не дёргаем.
+  String? getMemCachedArtworkUrl(String artist, String title) {
+    final key = _key(artist, title);
+    final mem = _memCache[key];
+    if (mem == null || mem.isEmpty) return null;
+    final memAt = _memStamp[key];
+    if (memAt == null ||
+        DateTime.now().difference(memAt).compareTo(foundUrlTtl) >= 0) {
+      return null;
+    }
+    return mem;
+  }
+
   /// True, если провайдерская обложка (Genius/iTunes) для [artist]/[title]
   /// «устарела» по TTL — т.е. при следующем обращении [findArtwork] её стоит
   /// перезапросить в сети.

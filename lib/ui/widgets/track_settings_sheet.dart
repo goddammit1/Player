@@ -13,6 +13,10 @@ import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
 import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
+import '../../sources/artwork_provider.dart';
+import '../../sources/soulseek_models.dart';
+import '../../sources/soulseek_platform_channel.dart';
+import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import 'artwork.dart';
 import '../desktop/desktop_layout.dart';
@@ -58,11 +62,40 @@ class _TrackSettingsSheet extends ConsumerStatefulWidget {
 }
 
 class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
+  /// ART-CACHE-01: Track, построенный из записи кэша Soulseek
+  /// (trackFromCacheEntry), не несёт artworkUrl — обложка подгружается
+  /// лениво только при воспроизведении (_warmArtwork в PlayerService),
+  /// поэтому в now_playing она есть, а в этом sheet'е — плейсхолдер.
+  ///
+  /// Достаём URL синхронно из in-memory TTL-кэша ArtworkProvider:
+  /// трек, который уже играл в этой сессии, имеет найденный URL в
+  /// mem-кэше (его положил findArtwork при воспроизведении) — шторка
+  /// показывает его мгновенно. Строго без SQLite и сети: если трек в
+  /// сессии не играл, остаётся плейсхолдер.
+  Track? _enrichedTrack;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveArtworkIfNeeded();
+  }
+
+  void _resolveArtworkIfNeeded() {
+    final t = widget.track;
+    if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) return;
+    final url =
+        ArtworkProvider.instance.getMemCachedArtworkUrl(t.artist, t.title);
+    if (url == null || url.isEmpty) return;
+    _enrichedTrack = t.copyWith(artworkUrl: url);
+  }
+
+  Track get _track => _enrichedTrack ?? widget.track;
+
   @override
   Widget build(BuildContext context) {
     final colors = ref.watch(animatedPaletteProvider);
     final player = ref.watch(playerServiceProvider);
-    final t = widget.track;
+    final t = _track;
 
     return SafeArea(
       top: false,
@@ -630,6 +663,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
   bool _checking = true;
   bool _downloading = false;
   double? _progress;
+  StreamSubscription<SoulseekTransferEvent>? _transferSub;
 
   @override
   void initState() {
@@ -637,13 +671,52 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     _checkCache();
   }
 
+  @override
+  void dispose() {
+    _transferSub?.cancel();
+    super.dispose();
+  }
+
   String _cacheId(Track track) =>
       YoutubeCache.cacheIdFor(sourceId: track.sourceId, trackId: track.id);
+
+  /// PLAYER-DL-01: Soulseek-источник, если трек из Soulseek.
+  SoulseekSource? get _soulseekSource {
+    if (widget.track.sourceId != SoulseekSource.sourceId) return null;
+    return SourceRegistry.instance.get(SoulseekSource.sourceId)
+        as SoulseekSource?;
+  }
+
+  /// PLAYER-DL-01: cacheKey для нативного кэша Soulseek (null — трек не
+  /// Soulseek или данных недостаточно → fallback на YoutubeCache-путь).
+  String? get _soulseekCacheKey {
+    final source = _soulseekSource;
+    if (source == null) return null;
+    return source.cacheKeyFor(widget.track);
+  }
 
   Future<void> _checkCache() async {
     setState(() => _checking = true);
     try {
-      _isCached = await YoutubeCache.instance.hasFile(_cacheId(widget.track));
+      // PLAYER-DL-01: source-aware проверка — Soulseek-треки живут в
+      // нативном кэше, а не в YoutubeCache.
+      final cacheKey = _soulseekCacheKey;
+      final source = _soulseekSource;
+      if (source != null && cacheKey != null) {
+        final entry = await source.getCacheEntry(cacheKey);
+        _isCached = entry != null && entry.complete;
+        if (mounted && !_isCached) {
+          // Снимок активной загрузки — sheet открыли во время трансфера.
+          final info = await source.getTransfer('dl_$cacheKey');
+          if (info != null && info.state.isActive) {
+            _downloading = true;
+            _progress = info.progress;
+            _listenTransfers(source, cacheKey);
+          }
+        }
+      } else {
+        _isCached = await YoutubeCache.instance.hasFile(_cacheId(widget.track));
+      }
     } catch (_) {
       _isCached = false;
     } finally {
@@ -651,7 +724,69 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     }
   }
 
+  /// PLAYER-DL-01: подписка на transfer-события по downloadId `dl_$cacheKey`.
+  void _listenTransfers(SoulseekSource source, String cacheKey) {
+    _transferSub?.cancel();
+    final downloadId = 'dl_$cacheKey';
+    _transferSub = source.transferEvents.listen(
+      (event) {
+        if (!mounted || event.downloadId != downloadId) return;
+        switch (event.state) {
+          case SoulseekTransferState.completed:
+            setState(() {
+              _isCached = true;
+              _downloading = false;
+              _progress = null;
+            });
+          case SoulseekTransferState.failed:
+          case SoulseekTransferState.cancelled:
+            setState(() {
+              _downloading = false;
+              _progress = null;
+            });
+            _showSnack(
+              'Download failed: ${event.message ?? event.errorCode ?? 'unknown error'}',
+            );
+          default:
+            // Промежуточные состояния — прогресс (null → indeterminate).
+            setState(() {
+              _downloading = true;
+              _progress = event.transfer.progress;
+            });
+        }
+      },
+      onError: (Object _) {
+        // Канал недоступен — оставляем текущее состояние, поллинг в
+        // _waitForDownloadComplete останется страховкой источника.
+      },
+    );
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: widget.colors.elevated,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   Future<void> _download() async {
+    // PLAYER-DL-01: Soulseek-треки качаются нативным механизмом (prefetch →
+    // startDownload с dedupe по downloadId), без dio-копии в YoutubeCache —
+    // одна загрузка, корректное расширение файла. Прогресс приходит из
+    // подписки transferEvents (см. _listenTransfers).
+    final soulseek = _soulseekSource;
+    final cacheKey = _soulseekCacheKey;
+    if (soulseek != null && cacheKey != null) {
+      await downloadSoulseek(soulseek, cacheKey);
+      return;
+    }
+
     setState(() {
       _downloading = true;
       _progress = 0.0;
@@ -723,7 +858,61 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     }
   }
 
+  /// Запускает нативную загрузку Soulseek и подписывается на прогресс.
+  Future<void> downloadSoulseek(SoulseekSource source, String cacheKey) async {
+    setState(() {
+      _downloading = true;
+      _progress = null;
+    });
+    _listenTransfers(source, cacheKey);
+    try {
+      await source.prefetch(widget.track);
+    } on Object catch (e) {
+      if (mounted) {
+        setState(() {
+          _downloading = false;
+          _progress = null;
+        });
+        _transferSub?.cancel();
+        _showSnack('Download failed: $e');
+      }
+    }
+  }
+
   Future<void> _deleteCache() async {
+    // PLAYER-DL-01: native-delete для Soulseek (removeCache + forgetCacheKey,
+    // паттерн кэш-листа) — YoutubeCache.evict не знает про native-кэш.
+    final soulseek = _soulseekSource;
+    final cacheKey = _soulseekCacheKey;
+    if (soulseek != null && cacheKey != null) {
+      setState(() => _checking = true);
+      try {
+        await SoulseekPlatformChannel.instance.removeCache(cacheKey);
+        soulseek.forgetCacheKey(cacheKey);
+        if (mounted) setState(() => _isCached = false);
+      } on UnsupportedError {
+        // Не Android — native-кэша нет, статуса тоже.
+        if (mounted) setState(() => _isCached = false);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete: $e'),
+              backgroundColor: widget.colors.elevated,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _checking = false);
+      }
+      return;
+    }
+
     setState(() => _checking = true);
     try {
       await YoutubeCache.instance.evict(_cacheId(widget.track));

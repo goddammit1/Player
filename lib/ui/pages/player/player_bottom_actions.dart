@@ -8,10 +8,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
+import '../../../core/player_conversions.dart';
 import '../../../core/providers/global_theme_provider.dart';
 import '../../../core/platform/haptic_helper.dart';
 import '../../../core/player_service_interface.dart';
-import '../../../models/track.dart';
 import '../../widgets/queue_sheet.dart';
 import '../../widgets/track_settings_sheet.dart';
 
@@ -131,15 +131,12 @@ class _PlayerBottomActionsState extends ConsumerState<PlayerBottomActions> {
   }
 
   void _showExtra(BuildContext context) {
+    // QUALITY-01: Track пересобирается через PlayerConversions.trackFromExtras
+    // — с полным качеством (qualityScore/qualityLabel) и extra
+    // (bitrate/sampleRate/bitDepth/extension/cacheKey/…). Ручная сборка
+    // теряла эти поля → «unavailable» в деталях и слепой Download-статус.
     final m = widget.item;
-    final track = Track(
-      id: m.extras?['trackId'] as String? ?? m.id,
-      sourceId: m.extras?['sourceId'] as String? ?? '',
-      title: m.title,
-      artist: m.artist ?? '',
-      duration: m.duration,
-      artworkUrl: m.artUri?.toString(),
-    );
+    final track = PlayerConversions.trackFromExtras(m);
 
     showTrackSettingsSheet(context, track: track, currentMediaItem: m);
   }
