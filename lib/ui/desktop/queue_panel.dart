@@ -251,6 +251,8 @@ class _QueueTileItem extends StatelessWidget {
         children: [
           Artwork(
             url: artworkUrl,
+            artist: artist,
+            title: title,
             size: 64,
             borderRadius: 22,
           ),

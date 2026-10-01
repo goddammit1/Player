@@ -788,6 +788,8 @@ class _TrackArtwork extends StatelessWidget {
               child: Artwork(
                 trackId: track.id,
                 url: track.artworkUrl,
+                artist: track.artist,
+                title: track.title,
                 size: _Dimens.trackArtwork,
                 borderRadius: 0,
                 aspectRatio: artAspectRatio(track),
