@@ -594,6 +594,10 @@ class SoulseekTransferManager(
                 onActiveTransfersChanged()
             }
 
+            // Потоковые результаты поиска — во Flutter как есть (Dart разбирает
+            // eventType "searchProgress" сам, состояния тут не хранится).
+            SoulseekEvents.BRIDGE_SEARCH_PROGRESS -> eventSink(json)
+
             else -> {
                 Log.w(TAG, "Unknown bridge event type: $eventType")
             }

@@ -226,6 +226,14 @@ namespace Soulseek.Wrapper
         /// <summary>Текст исключения, если событие вызвано ошибкой (Exception.Message).</summary>
         [JsonPropertyName("exceptionMessage")]
         public string ExceptionMessage { get; set; }
+
+        /// <summary>searchProgress: id поиска, к которому относятся результаты.</summary>
+        [JsonPropertyName("requestId")]
+        public string RequestId { get; set; }
+
+        /// <summary>searchProgress: новые результаты с прошлого события (дельта).</summary>
+        [JsonPropertyName("results")]
+        public List<SearchResultDto> Results { get; set; }
     }
 
     /// <summary>

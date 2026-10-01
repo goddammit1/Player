@@ -70,6 +70,9 @@ namespace Soulseek.Wrapper
         // downloadId → CancellationTokenSource для отмены.
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _downloadCts = new();
 
+        // requestId → CancellationTokenSource идущего поиска (cancelSearch).
+        private readonly ConcurrentDictionary<string, CancellationTokenSource> _searchCts = new();
+
         // downloadId → throttle-метка последнего прогресс-события (DateTime.UtcNow.Ticks).
         private readonly ConcurrentDictionary<string, long> _lastProgressTick = new();
 
@@ -236,18 +239,71 @@ namespace Soulseek.Wrapper
                 fileFilter: f => PassesFileFilter(f, filters),
                 responseFilter: r => PassesResponseFilter(r, filters));
 
-            // Ответы копим в порядке прихода (ConcurrentBag в SearchToCollectionAsync
-            // порядок не сохраняет) — первыми идут самые отзывчивые пиры.
-            var responses = new ConcurrentQueue<SearchResponse>();
+            // DTO собираем прямо в колбэке, в порядке прихода ответов — первыми идут
+            // самые отзывчивые пиры. Лимит проверяется на каждом файле, так что
+            // лишние DTO сверх fileLimit не создаются. LockedFiles не берём: без
+            // привилегий пир их не отдаст, и такой трек падал бы при воспроизведении.
+            var results = new List<SearchResultDto>();
+            var resultsLock = new object();
+            int responseCount = 0;
             long lastResponseTicks = 0;
+            long firstResponseTicks = 0;
+            var startedAt = DateTime.UtcNow;
 
             void OnResponse(SearchResponse response)
             {
-                responses.Enqueue(response);
-                Interlocked.Exchange(ref lastResponseTicks, DateTime.UtcNow.Ticks);
+                lock (resultsLock)
+                {
+                    int responseIndex = responseCount++;
+                    foreach (var file in response.Files)
+                    {
+                        if (results.Count >= fileLimit)
+                        {
+                            break;
+                        }
+
+                        if (PassesFileFilter(file, filters))
+                        {
+                            results.Add(MapSearchResult(req.RequestId, responseIndex, response, file));
+                        }
+                    }
+                }
+
+                long now = DateTime.UtcNow.Ticks;
+                Interlocked.CompareExchange(ref firstResponseTicks, now, 0);
+                Interlocked.Exchange(ref lastResponseTicks, now);
             }
 
-            using (var cts = new CancellationTokenSource())
+            // Потоковая выдача: на каждом тике watchdog'а новые DTO уходят событием
+            // searchProgress, чтобы UI показывал первые треки, не дожидаясь конца.
+            int emittedCount = 0;
+
+            void EmitProgress()
+            {
+                List<SearchResultDto> fresh;
+                lock (resultsLock)
+                {
+                    if (results.Count <= emittedCount)
+                    {
+                        return;
+                    }
+
+                    fresh = results.GetRange(emittedCount, results.Count - emittedCount);
+                    emittedCount = results.Count;
+                }
+
+                EmitEvent(new SoulseekEventDto
+                {
+                    EventType = "searchProgress",
+                    RequestId = req.RequestId,
+                    Results = fresh,
+                });
+            }
+
+            var cts = new CancellationTokenSource();
+            _searchCts[req.RequestId] = cts;
+            string stopReason = null;
+            try
             {
                 var searchTask = _client.SearchAsync(
                     query,
@@ -258,7 +314,7 @@ namespace Soulseek.Wrapper
                 // Watchdog: жёсткий общий бюджет + окно тишины, которое начинает действовать
                 // только после первого ответа (до него пиры по распределённой сети ещё
                 // получают запрос, и «тишина» ничего не значит).
-                var deadline = DateTime.UtcNow.AddMilliseconds(budgetMs);
+                var deadline = startedAt.AddMilliseconds(budgetMs);
                 long idleTicks = TimeSpan.FromMilliseconds(idleMs).Ticks;
 
                 while (!searchTask.IsCompleted)
@@ -269,10 +325,19 @@ namespace Soulseek.Wrapper
                         break;
                     }
 
+                    if (cts.IsCancellationRequested)
+                    {
+                        stopReason = "cancelled";
+                        break;
+                    }
+
+                    EmitProgress();
+
                     var now = DateTime.UtcNow;
                     long last = Interlocked.Read(ref lastResponseTicks);
                     if (now >= deadline || (last != 0 && now.Ticks - last >= idleTicks))
                     {
+                        stopReason = now >= deadline ? "budget" : "idle";
                         cts.Cancel();
                         break;
                     }
@@ -280,58 +345,61 @@ namespace Soulseek.Wrapper
 
                 try
                 {
-                    await searchTask.ConfigureAwait(false);
+                    var search = await searchTask.ConfigureAwait(false);
+                    // Завершилась сама библиотека: лимит ответов/файлов или её таймаут.
+                    stopReason ??= search.State.ToString();
                 }
                 catch (OperationCanceledException) when (cts.IsCancellationRequested)
                 {
-                    // Остановлено watchdog'ом — возвращаем накопленное.
+                    // Остановлено watchdog'ом или cancelSearch — возвращаем накопленное.
+                    stopReason ??= "cancelled";
                 }
             }
-
-            // Маппим responses → плоский список SearchResultDto (по одному DTO на файл).
-            // Библиотека проверяет fileLimit после добавления ответа, поэтому режем явно.
-            var results = new List<SearchResultDto>();
-            int responseIndex = 0;
-            foreach (var response in responses)
+            finally
             {
-                if (results.Count >= fileLimit)
-                {
-                    break;
-                }
-
-                foreach (var file in response.Files)
-                {
-                    if (!PassesFileFilter(file, filters))
-                    {
-                        continue;
-                    }
-
-                    results.Add(MapSearchResult(req.RequestId, responseIndex, response, file));
-                }
-
-                // Locked files — тоже включаем (требуют привилегий, но доступны для отображения).
-                foreach (var file in response.LockedFiles)
-                {
-                    if (!PassesFileFilter(file, filters))
-                    {
-                        continue;
-                    }
-
-                    var dto = MapSearchResult(req.RequestId, responseIndex, response, file);
-                    dto.ResultId = req.RequestId + "_l_" + responseIndex + "_" + results.Count;
-                    results.Add(dto);
-                }
-
-                responseIndex++;
+                _searchCts.TryRemove(req.RequestId, out _);
+                cts.Dispose();
             }
 
-            if (results.Count > fileLimit)
+            string data;
+            lock (resultsLock)
             {
-                results.RemoveRange(fileLimit, results.Count - fileLimit);
+                // Диагностика для замеров: почему и когда остановился поиск
+                // (adb logcat -s SoulseekBridge).
+                long first = Interlocked.Read(ref firstResponseTicks);
+                Android.Util.Log.Info(
+                    "SoulseekBridge",
+                    $"search stop={stopReason} elapsed={(DateTime.UtcNow - startedAt).TotalMilliseconds:F0}ms "
+                    + $"firstResponse={(first == 0 ? "none" : ((first - startedAt.Ticks) / TimeSpan.TicksPerMillisecond) + "ms")} "
+                    + $"responses={responseCount} files={results.Count}");
+
+                data = JsonSerializer.Serialize(results, JsonOpts);
             }
 
-            var data = JsonSerializer.Serialize(results, JsonOpts);
             return SuccessJson(data);
+        }
+
+        /// <summary>
+        ///   Отменяет идущий поиск по requestId. Накопленное к этому моменту вернёт
+        ///   исходный вызов searchAsync. false — поиск уже завершён или неизвестен.
+        /// </summary>
+        [Export("cancelSearch")]
+        public bool CancelSearch(string requestId)
+        {
+            if (requestId != null && _searchCts.TryGetValue(requestId, out var cts))
+            {
+                try
+                {
+                    cts.Cancel();
+                    return true;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Поиск завершился между TryGetValue и Cancel.
+                }
+            }
+
+            return false;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -619,6 +687,7 @@ namespace Soulseek.Wrapper
 
         private void WireClientEvents()
         {
+
             // StateChanged: переходы между SoulseekClientStates (Disconnected → Connected → LoggedIn).
             _client.StateChanged += (_, e) =>
             {
@@ -646,9 +715,8 @@ namespace Soulseek.Wrapper
                 });
             };
 
-            // SearchResponseReceived: каждый ответ поиска (для streaming-обновлений UI).
-            // Здесь не пересылаем — SearchAsync собирает всё в финальный результат.
-            // Можно включить streaming если Kotlin-сторона захочет incremental updates.
+            // Потоковые результаты поиска (searchProgress) шлёт SearchCoreAsync —
+            // там известны requestId и фильтры конкретного запроса.
         }
 
         private void OnTransferStateChanged(string downloadId, Transfer transfer, TransferStates previousState)

@@ -82,6 +82,7 @@ object SoulseekEvents {
     const val BRIDGE_TRANSFER_PROGRESS = "transferProgress"
     const val BRIDGE_DOWNLOAD_COMPLETE = "downloadComplete"
     const val BRIDGE_DOWNLOAD_FAILED = "downloadFailed"
+    const val BRIDGE_SEARCH_PROGRESS = "searchProgress"
 
     /** Сериализует список событий трансфера в snapshot-событие для Flutter. */
     fun snapshotJson(transfers: List<SoulseekTransferEvent>): JSONObject =
