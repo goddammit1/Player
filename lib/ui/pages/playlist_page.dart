@@ -1788,6 +1788,8 @@ class _TrackArtwork extends StatelessWidget {
               child: Artwork(
                 trackId: track.id,
                 url: track.artworkUrl,
+                artist: track.artist,
+                title: track.title,
                 size: _Dimens.trackArtwork,
                 borderRadius: 0,
                 aspectRatio: artAspectRatio(track),
@@ -2102,6 +2104,8 @@ class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
                 return ListTile(
                   leading: Artwork(
                     url: t.artworkUrl,
+                    artist: t.artist,
+                    title: t.title,
                     size: 44,
                     borderRadius: 8,
                     aspectRatio: artAspectRatio(t),

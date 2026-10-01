@@ -329,6 +329,8 @@ class _Header extends StatelessWidget {
                         Artwork(
                           url: item.artUri?.toString(),
                           trackId: item.extras?['trackId'] as String?,
+                          artist: item.artist,
+                          title: item.title,
                           size: 56,
                           aspectRatio: artAspectRatio(item),
                           borderRadius: 12,
@@ -761,6 +763,8 @@ class _QueueTile extends StatelessWidget {
               Artwork(
                 url: media.artUri?.toString(),
                 trackId: media.extras?['trackId'] as String?,
+                artist: media.artist,
+                title: media.title,
                 size: 48,
                 aspectRatio: artAspectRatio(media),
                 borderRadius: 8,
