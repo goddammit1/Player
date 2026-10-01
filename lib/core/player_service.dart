@@ -440,7 +440,12 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       _pendingHistoryTrack = track;
       _log('[$myGen] setAudioSource OK (${sw.elapsedMilliseconds} ms total),'
           ' starting playback');
-      await _player.play();
+      // Future от just_audio play() на Android завершается только при
+      // паузе/остановке/конце трека — не ждём его, иначе сохранение сессии,
+      // обложки и префетч ниже выполнялись бы лишь после паузы.
+      unawaited(_player.play().catchError((Object e) {
+        _log('[$myGen] play() error: $e');
+      }));
 
       unawaited(_reapplyBoost());
       _scheduleSessionSave();
@@ -551,7 +556,10 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       return;
     }
 
-    await _player.play();
+    // См. _playIndex: future play() завершается только при паузе.
+    unawaited(_player.play().catchError((Object e) {
+      _log('play() error: $e');
+    }));
     _scheduleSessionSave();
   }
 
@@ -689,7 +697,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
   Future<void> pause() async {
     await _player.pause();
     // Мгновенный flush с актуальной позицией — после паузы debounce не нужен.
-    await _flushSessionNow();
+    await _flushSessionNow(force: true);
   }
 
   // ===== SESSION PERSISTENCE =====
@@ -713,14 +721,26 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
 
   /// Немедленный flush (без дебаунса): pause/stop/onTaskRemoved/saveSession —
   /// сюда попадает актуальная позиция на момент вызова.
-  Future<void> _flushSessionNow() async {
+  ///
+  /// [force] — сохранить даже без отложенных изменений (позиция меняется
+  /// постоянно, а флаг dirty её не отслеживает). Пропускаем только idle-плеер
+  /// без изменений: восстановленная, но не запущенная сессия (или ещё не
+  /// восстановленная — пустая очередь) не должна перезаписывать сохранённую.
+  Future<void> _flushSessionNow({bool force = false}) async {
     _sessionSaveTimer?.cancel();
     _sessionSaveTimer = null;
     final dirty = _sessionDirty;
     _sessionDirty = false;
-    if (!dirty) return;
+    final pendingPos = _pendingPositionMs;
+    _pendingPositionMs = null;
+    if (!dirty &&
+        (!force || _player.processingState == ProcessingState.idle)) {
+      return;
+    }
     try {
-      final pos = _pendingPositionMs ?? _player.position.inMilliseconds;
+      final pos = force
+          ? _player.position.inMilliseconds
+          : pendingPos ?? _player.position.inMilliseconds;
       final queueRows = _queue.map(PlayerConversions.trackToRow).toList();
       await AppDatabase.instance.savePlaybackSession(
         queueRows: queueRows,
@@ -729,15 +749,13 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
       );
     } catch (_) {
       // Не даём ошибке БД уронить плеер.
-    } finally {
-      _pendingPositionMs = null;
     }
   }
 
   /// Публичный доступ для сохранения сессии из UI (например, при сворачивании).
   /// Выполняется принудительный flush — сессия не теряется при сворачивании.
   @override
-  Future<void> saveSession() => _flushSessionNow();
+  Future<void> saveSession() => _flushSessionNow(force: true);
 
   Future<void> _restoreSession() async {
     try {
@@ -790,7 +808,7 @@ class PlayerService extends BaseAudioHandler with SeekHandler implements PlayerS
     _log('onTaskRemoved — saving session');
     // Немедленный flush: процесс может быть убит сразу после onTaskRemoved,
     // debounce-таймер не успеет сработать.
-    await _flushSessionNow();
+    await _flushSessionNow(force: true);
     // Не вызываем _player.stop()/_player.dispose() — на момент
     // onTaskRemoved основной изолят уже может быть мёртв, Platform
     // Channel для just_audio/sqflite недоступен, и dispose крашит
