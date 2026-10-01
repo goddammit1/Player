@@ -183,6 +183,79 @@ class SearchEmptyState extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  ISOLATED SECTION (Soulseek в режиме «Все»)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Шапка секции медленного источника под основной выдачей.
+class SearchSectionHeader extends StatelessWidget {
+  const SearchSectionHeader({
+    super.key,
+    required this.title,
+    required this.loading,
+    required this.colors,
+  });
+
+  final String title;
+  final bool loading;
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Row(
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (loading) ...[
+            const SizedBox(width: 10),
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: colors.textSecondary,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Плейсхолдер секции, пока источник ищет. Фиксированная высота — чтобы
+/// приход результатов менял только содержимое ниже шапки.
+class SearchSectionPlaceholder extends StatelessWidget {
+  const SearchSectionPlaceholder({super.key, required this.colors});
+
+  final dynamic colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Searching peers…',
+            style: TextStyle(color: colors.textSecondary, fontSize: 13),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  FILTER CHIPS (no animation)
 // ═══════════════════════════════════════════════════════════════════════════
 
