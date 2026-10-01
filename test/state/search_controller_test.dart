@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
@@ -34,6 +36,26 @@ class _FakeSource extends TrackSource {
 
   @override
   Future<void> dispose() async {}
+}
+
+/// Потоковый fake-источник: снимки выдаются вручную из теста.
+class _FakeProgressiveSource extends _FakeSource
+    implements ProgressiveSearchSource {
+  _FakeProgressiveSource({required super.id});
+
+  StreamController<List<Track>>? controller;
+  int listens = 0;
+  int cancels = 0;
+
+  @override
+  Stream<List<Track>> searchProgressive(String query, {int limit = 20}) {
+    final c = StreamController<List<Track>>(
+      onListen: () => listens++,
+      onCancel: () => cancels++,
+    );
+    controller = c;
+    return c.stream;
+  }
 }
 
 Track _t(String id, String sourceId) => Track(
@@ -227,6 +249,114 @@ void main() {
       await controller.search('');
       expect(controller.state.results, isEmpty);
       expect(controller.state.query, '');
+    });
+
+    test('isolated source goes to its own section, not into results', () async {
+      controller = SearchController(isolatedSourceIds: {'fake_b'});
+      sourceA.searchResult = [_t('a1', 'fake_a'), _t('a2', 'fake_a')];
+      sourceB.searchDelayMs = 50;
+      sourceB.searchResult = [_t('b1', 'fake_b')];
+
+      final future = controller.search('test');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // Обычный источник уже ответил, изолированный ещё ищет.
+      expect(controller.state.results.map((t) => t.id), ['a1', 'a2']);
+      expect(controller.state.loading, false);
+      expect(controller.state.isolatedResults, isEmpty);
+      expect(controller.state.isolatedLoading, true);
+
+      await future;
+
+      // Основная выдача не изменилась — изолированный трек в секции.
+      expect(controller.state.results.map((t) => t.id), ['a1', 'a2']);
+      expect(controller.state.isolatedResults.map((t) => t.id), ['b1']);
+      expect(controller.state.isolatedLoading, false);
+      expect(
+        controller.state.allResults.map((t) => t.id),
+        ['a1', 'a2', 'b1'],
+      );
+    });
+
+    test('isolated source is not separated in single-source mode', () async {
+      controller = SearchController(isolatedSourceIds: {'fake_b'});
+      sourceB.searchResult = [_t('b1', 'fake_b')];
+      controller.setSourceId('fake_b');
+
+      await controller.search('test');
+
+      expect(controller.state.results.map((t) => t.id), ['b1']);
+      expect(controller.state.isolatedResults, isEmpty);
+      expect(controller.state.isolatedLoading, false);
+    });
+
+    test('new search clears previous isolated section', () async {
+      controller = SearchController(isolatedSourceIds: {'fake_b'});
+      sourceB.searchResult = [_t('b1', 'fake_b')];
+      await controller.search('first');
+      expect(controller.state.isolatedResults, isNotEmpty);
+
+      sourceB.searchDelayMs = 50;
+      final future = controller.search('second');
+      expect(controller.state.isolatedResults, isEmpty);
+      expect(controller.state.isolatedLoading, true);
+      await future;
+    });
+
+    group('progressive source', () {
+      late _FakeProgressiveSource progressive;
+
+      setUp(() {
+        progressive = _FakeProgressiveSource(id: 'fake_p');
+        SourceRegistry.instance.register(progressive);
+        controller = SearchController(isolatedSourceIds: {'fake_p'});
+      });
+
+      test('snapshots fill the isolated section while it keeps loading',
+          () async {
+        sourceA.searchResult = [_t('a1', 'fake_a')];
+        final future = controller.search('test');
+        await Future<void>.delayed(Duration.zero);
+
+        progressive.controller!.add([_t('p1', 'fake_p')]);
+        await Future<void>.delayed(Duration.zero);
+        expect(controller.state.isolatedResults.map((t) => t.id), ['p1']);
+        expect(controller.state.isolatedLoading, true);
+
+        progressive.controller!.add([_t('p1', 'fake_p'), _t('p2', 'fake_p')]);
+        await progressive.controller!.close();
+        await future;
+        expect(controller.state.isolatedResults.map((t) => t.id), ['p1', 'p2']);
+        expect(controller.state.isolatedLoading, false);
+        expect(controller.state.results.map((t) => t.id), ['a1']);
+      });
+
+      test('new search cancels the running progressive search', () async {
+        unawaited(controller.search('first'));
+        await Future<void>.delayed(Duration.zero);
+        expect(progressive.listens, 1);
+
+        unawaited(controller.search('second'));
+        expect(progressive.cancels, 1);
+        expect(progressive.listens, 2);
+        await progressive.controller!.close();
+      });
+
+      test('single-source mode streams snapshots into results', () async {
+        controller.setSourceId('fake_p');
+        final future = controller.search('test');
+        await Future<void>.delayed(Duration.zero);
+        expect(controller.state.loading, true);
+
+        progressive.controller!.add([_t('p1', 'fake_p')]);
+        await Future<void>.delayed(Duration.zero);
+        expect(controller.state.results.map((t) => t.id), ['p1']);
+        expect(controller.state.loading, false);
+
+        await progressive.controller!.close();
+        await future;
+        expect(controller.state.isolatedResults, isEmpty);
+      });
     });
 
     test('loading flag is set during search', () {
