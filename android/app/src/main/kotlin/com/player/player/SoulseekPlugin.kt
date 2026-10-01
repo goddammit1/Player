@@ -267,6 +267,21 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             handleUpdateNativeSettings(call, result)
             return
         }
+        // Отмена поиска не должна поднимать сервис и ждать bind: без bridge
+        // отменять нечего.
+        if (call.method == "cancelSearch") {
+            val bridge = serviceBinder?.bridge
+            val requestId = call.argument<String>("requestId")
+            if (bridge == null || requestId == null) {
+                result.success(false)
+                return
+            }
+            ioScope.launch {
+                val cancelled = runCatching { bridge.cancelSearch(requestId) }.getOrDefault(false)
+                mainHandler.post { result.success(cancelled) }
+            }
+            return
+        }
         // Дефект №3: отсутствие binder у нового экземпляра плагина не
         // доказывает отсутствия соединения — foreground service может
         // продолжать работать (пересоздание Flutter engine). Если bind уже
