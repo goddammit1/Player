@@ -77,6 +77,15 @@ class SoulseekPlatformChannel implements SoulseekChannel {
         .cast<SoulseekTransferEvent>();
   }
 
+  /// Удобный под-стрим: потоковые результаты идущих поисков.
+  @override
+  Stream<SoulseekSearchProgressEvent> get searchProgress {
+    _requireAndroid();
+    return _eventsStream
+        .where((e) => e is SoulseekSearchProgressEvent)
+        .cast<SoulseekSearchProgressEvent>();
+  }
+
   /// Удобный под-стрим: только connection-события.
   Stream<SoulseekConnectionEvent> get connectionEvents {
     _requireAndroid();
@@ -263,6 +272,19 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     return result
         .map((m) => SoulseekSearchResult.fromMap((m as Map).cast<String, dynamic>()))
         .toList(growable: false);
+  }
+
+  /// Отменяет идущий поиск [requestId]: натив перестаёт ждать ответов пиров
+  /// и освобождает слот поиска. Исходный [search] вернёт накопленное.
+  /// Best-effort: ошибки канала глотаются (поиск и так ограничен бюджетом).
+  @override
+  Future<void> cancelSearch(String requestId) async {
+    if (!isAvailable) return;
+    try {
+      await _invoke<bool>('cancelSearch', {'requestId': requestId});
+    } on SoulseekException catch (e) {
+      debugPrint('[Soulseek] cancelSearch failed: ${e.code} ${e.message}');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════

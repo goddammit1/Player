@@ -71,13 +71,46 @@ class _TestChannel implements SoulseekChannel {
     required int fileLimit,
     required SoulseekSearchFilters filters,
   }) async {
+    searchCalls++;
+    lastRequestId = requestId;
     lastSearchQuery = query;
     lastSearchTimeoutMs = timeoutMs;
     lastIdleTimeoutMs = idleTimeoutMs;
     lastResponseLimit = responseLimit;
     lastFileLimit = fileLimit;
     if (searchError != null) throw searchError!;
+    final gate = searchGate;
+    if (gate != null) return gate.future;
     return searchResults;
+  }
+
+  /// Число вызовов нативного search (проверка кэша / присоединения).
+  int searchCalls = 0;
+  String? lastRequestId;
+
+  /// Если задан — search() ждёт его вместо немедленного ответа
+  /// (идущий поиск: дельты через [emitProgress], отмена через cancelSearch).
+  Completer<List<SoulseekSearchResult>>? searchGate;
+
+  final StreamController<SoulseekSearchProgressEvent> _progressController =
+      StreamController<SoulseekSearchProgressEvent>.broadcast();
+
+  @override
+  Stream<SoulseekSearchProgressEvent> get searchProgress =>
+      _progressController.stream;
+
+  void emitProgress(List<SoulseekSearchResult> results) {
+    _progressController.add(SoulseekSearchProgressEvent(
+      requestId: lastRequestId!,
+      results: results,
+    ));
+  }
+
+  final List<String> cancelledSearches = [];
+
+  @override
+  Future<void> cancelSearch(String requestId) async {
+    cancelledSearches.add(requestId);
   }
 
   /// Задержка ответов getTransfer/getCacheEntry — имитация нативной
@@ -862,10 +895,13 @@ void main() {
           filename: 'Artist - Title.flac',
           sizeBytes: 50000000,
         ),
+        // Другая длительность — иначе файл свернулся бы с r1 как
+        // «абсолютно одинаковый» (размер в ключ свёртки не входит).
         _searchResult(
           resultId: 'r3',
           filename: 'Artist - Title.flac',
           sizeBytes: 60000000,
+          durationSeconds: 241,
         ),
       ];
       final tracks = await source.search('query');
@@ -1446,6 +1482,195 @@ void main() {
 
     test('displayName is "Soulseek"', () {
       expect(source.displayName, 'Soulseek');
+    });
+  });
+
+  group('grouping of identical files', () {
+    test('identical artist/title/duration/quality from different peers → one track',
+        () async {
+      channel.searchResults = [
+        _searchResult(resultId: 'r1', username: 'peerA', filename: r'peerA\Artist - Title.flac'),
+        _searchResult(resultId: 'r2', username: 'peerB', filename: r'peerB\Artist - Title.flac'),
+        _searchResult(resultId: 'r3', username: 'peerC', filename: r'peerC\Artist - Title.flac'),
+      ];
+      final tracks = await source.search('query');
+      expect(tracks, hasLength(1));
+      expect(tracks.single.extra['peerCount'], 3);
+      // Представитель — лучший по рангу (у всех равные — первый пришедший).
+      expect(tracks.single.extra['peerUsername'], 'peerA');
+    });
+
+    test('any difference in quality, duration, title or artist → separate tracks',
+        () async {
+      channel.searchResults = [
+        _searchResult(resultId: 'base', username: 'p0', filename: r'p0\Artist - Title.flac'),
+        _searchResult(resultId: 'br', username: 'p1', filename: r'p1\Artist - Title.flac', bitrate: 1000),
+        _searchResult(resultId: 'depth', username: 'p2', filename: r'p2\Artist - Title.flac', bitDepth: 24),
+        _searchResult(resultId: 'rate', username: 'p3', filename: r'p3\Artist - Title.flac', sampleRate: 48000),
+        _searchResult(
+            resultId: 'ext', username: 'p4', extension: 'mp3',
+            filename: r'p4\Artist - Title.mp3'),
+        _searchResult(resultId: 'dur', username: 'p5', filename: r'p5\Artist - Title.flac', durationSeconds: 241),
+        _searchResult(
+            resultId: 'title', username: 'p6', filename: r'p6\Artist - Other.flac'),
+        _searchResult(
+            resultId: 'artist', username: 'p7', filename: r'p7\Other - Title.flac'),
+        _searchResult(
+            resultId: 'case', username: 'p8', filename: r'p8rtist - Title.flac'),
+      ];
+      final tracks = await source.search('query');
+      expect(tracks, hasLength(9));
+      expect(tracks.every((t) => t.extra['peerCount'] == null), isTrue);
+    });
+
+    test('same file (path + size) from another peer counts into the group',
+        () async {
+      channel.searchResults = [
+        _searchResult(resultId: 'r1', username: 'peerA', durationSeconds: null),
+        _searchResult(resultId: 'r2', username: 'peerB', durationSeconds: null),
+      ];
+      final tracks = await source.search('query');
+      expect(tracks, hasLength(1));
+      expect(tracks.single.extra['peerCount'], 2);
+    });
+
+    test('unknown duration is never grouped', () async {
+      channel.searchResults = [
+        _searchResult(resultId: 'r1', username: 'peerA', durationSeconds: null, filename: r'peerA\Artist - Title.flac'),
+        _searchResult(resultId: 'r2', username: 'peerB', durationSeconds: null, filename: r'peerB\Artist - Title.flac'),
+      ];
+      final tracks = await source.search('query');
+      expect(tracks, hasLength(2));
+    });
+
+    test('limit counts distinct tracks, duplicates still increase peerCount',
+        () async {
+      channel.searchResults = [
+        _searchResult(resultId: 'a', username: 'p1', filename: r'p1\Artist - Title.flac'),
+        _searchResult(
+            resultId: 'b', username: 'p2', filename: 'Artist - Other.flac'),
+        _searchResult(resultId: 'a2', username: 'p3', filename: r'p3\Artist - Title.flac'),
+      ];
+      final tracks = await source.search('query', limit: 1);
+      expect(tracks, hasLength(1));
+      expect(tracks.single.extra['peerCount'], 2);
+    });
+  });
+
+  group('searchProgressive', () {
+    // Таймаут уже применён — поиск не ждёт чтения настройки из БД.
+    setUp(() => source.applySearchTimeoutSec(10));
+
+    test('streams snapshots: shown tracks keep positions, new ones append',
+        () async {
+      channel.searchGate = Completer();
+      final snapshots = <List<String>>[];
+      final done = source
+          .searchProgressive('query')
+          .listen((s) => snapshots.add([for (final t in s) t.title]))
+          .asFuture<void>();
+      await Future<void>.delayed(Duration.zero);
+
+      // Первая пачка: у peerB свободный слот — внутри пачки он выше.
+      channel.emitProgress([
+        _searchResult(
+            resultId: 'r1', username: 'peerA', filename: 'A - One.flac',
+            freeUploadSlots: 0),
+        _searchResult(
+            resultId: 'r2', username: 'peerB', filename: 'A - Two.flac'),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      // Вторая пачка с более «быстрым» пиром не обгоняет показанные треки.
+      channel.emitProgress([
+        _searchResult(
+            resultId: 'r3', username: 'peerC', filename: 'A - Three.flac',
+            uploadSpeed: 99999),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      // Итог поиска — надмножество дельт: повторы не дублируются.
+      channel.searchGate!.complete([
+        _searchResult(
+            resultId: 'r1', username: 'peerA', filename: 'A - One.flac',
+            freeUploadSlots: 0),
+        _searchResult(
+            resultId: 'r2', username: 'peerB', filename: 'A - Two.flac'),
+        _searchResult(
+            resultId: 'r3', username: 'peerC', filename: 'A - Three.flac',
+            uploadSpeed: 99999),
+        _searchResult(
+            resultId: 'r4', username: 'peerD', filename: 'A - Four.flac'),
+      ]);
+      await done;
+
+      expect(snapshots.first, ['Two', 'One']);
+      expect(snapshots[1], ['Two', 'One', 'Three']);
+      expect(snapshots.last, ['Two', 'One', 'Three', 'Four']);
+    });
+
+    test('completed search is cached: same query does not hit the network',
+        () async {
+      channel.searchResults = [_searchResult()];
+      final first = await source.search('query');
+      final second = await source.search('query');
+      expect(channel.searchCalls, 1);
+      expect(second.map((t) => t.id), first.map((t) => t.id));
+
+      // Другие фильтры — другой ключ кэша.
+      source.searchFilters =
+          const SoulseekSearchFilters(losslessOnly: true);
+      await source.search('query');
+      expect(channel.searchCalls, 2);
+    });
+
+    test('failed search is not cached', () async {
+      channel.searchError = const SoulseekException('NOT_CONNECTED', 'x');
+      expect(await source.search('query'), isEmpty);
+      channel.searchError = null;
+      channel.searchResults = [_searchResult()];
+      expect(await source.search('query'), hasLength(1));
+      expect(channel.searchCalls, 2);
+    });
+
+    test('cancelling the only subscriber cancels the native search', () async {
+      channel.searchGate = Completer();
+      final sub = source.searchProgressive('query').listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+      final requestId = channel.lastRequestId;
+
+      await sub.cancel();
+      await Future<void>.delayed(Duration.zero);
+      expect(channel.cancelledSearches, [requestId]);
+
+      // Отменённый поиск не кэшируется: повторный запрос идёт в сеть.
+      channel.searchGate!.complete([_searchResult()]);
+      await Future<void>.delayed(Duration.zero);
+      channel.searchGate = null;
+      channel.searchResults = [_searchResult()];
+      await source.search('query');
+      expect(channel.searchCalls, 2);
+    });
+
+    test('re-subscribing in the same tick joins the running search', () async {
+      channel.searchGate = Completer();
+      final first = source.searchProgressive('query').listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+      channel.emitProgress([_searchResult()]);
+      await Future<void>.delayed(Duration.zero);
+
+      // Как при смене чипа: отписка и сразу новая подписка на тот же запрос.
+      await first.cancel();
+      final snapshots = <List<Track>>[];
+      final second = source.searchProgressive('query').listen(snapshots.add);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(channel.searchCalls, 1);
+      expect(channel.cancelledSearches, isEmpty);
+      // Новый подписчик сразу получает уже накопленное.
+      expect(snapshots.first, hasLength(1));
+
+      channel.searchGate!.complete([_searchResult()]);
+      await second.asFuture<void>();
     });
   });
 }

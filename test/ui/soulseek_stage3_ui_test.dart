@@ -116,6 +116,12 @@ class _TestChannel implements SoulseekChannel {
       transferInfo;
 
   @override
+  Stream<SoulseekSearchProgressEvent> get searchProgress => const Stream.empty();
+
+  @override
+  Future<void> cancelSearch(String requestId) async {}
+
+  @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       _transferController.stream;
 

@@ -508,6 +508,15 @@ sealed class SoulseekEvent {
               .map((t) => SoulseekTransferInfo.fromMap(t as Map<String, dynamic>))
               .toList(growable: false),
         );
+      case 'searchProgress':
+        final resultsRaw = m['results'] as List? ?? const [];
+        return SoulseekSearchProgressEvent(
+          requestId: m['requestId'] as String? ?? '',
+          results: resultsRaw
+              .map((r) => SoulseekSearchResult.fromMap(
+                  (r as Map).cast<String, dynamic>()))
+              .toList(growable: false),
+        );
       default:
         return SoulseekUnknownEvent(type, m);
     }
@@ -554,6 +563,18 @@ class SoulseekTransferSnapshot extends SoulseekEvent {
   final List<SoulseekTransferInfo> transfers;
 
   const SoulseekTransferSnapshot({required this.transfers});
+}
+
+/// Потоковые результаты идущего поиска: новые файлы с прошлого события
+/// (дельта). Итоговый полный список возвращает сам вызов `search`.
+class SoulseekSearchProgressEvent extends SoulseekEvent {
+  final String requestId;
+  final List<SoulseekSearchResult> results;
+
+  const SoulseekSearchProgressEvent({
+    required this.requestId,
+    required this.results,
+  });
 }
 
 /// Неизвестный тип события (для forward-compatibility).

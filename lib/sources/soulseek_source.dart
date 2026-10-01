@@ -63,6 +63,13 @@ abstract class SoulseekChannel {
     required SoulseekSearchFilters filters,
   });
 
+  /// Потоковые результаты идущих поисков (дельты по requestId). Итоговый
+  /// полный список по-прежнему возвращает [search].
+  Stream<SoulseekSearchProgressEvent> get searchProgress;
+
+  /// Отменяет идущий поиск [requestId]; [search] вернёт накопленное.
+  Future<void> cancelSearch(String requestId);
+
   /// Возвращает запись о кэшированном файле (или null, если файла нет).
   Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey);
 
@@ -96,7 +103,7 @@ abstract class SoulseekChannel {
   Stream<SoulseekTransferEvent> get transferEvents;
 }
 
-class SoulseekSource implements TrackSource {
+class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   static const String sourceId = 'soulseek';
 
   final SoulseekChannel _channel;
@@ -317,23 +324,111 @@ class SoulseekSource implements TrackSource {
   //  search
   // ═══════════════════════════════════════════════════════════════════
 
+  /// Сколько живёт завершённая выдача в [_searchCache]. Повторный поиск того
+  /// же запроса (смена чипа «Все» → «Soulseek», запрос из истории) берёт её
+  /// мгновенно вместо нового P2P-поиска на секунды.
+  static const Duration searchCacheTtl = Duration(minutes: 10);
+  static const int _searchCacheMaxEntries = 20;
+
+  /// Завершённые выдачи по ключу [_searchKey].
+  final Map<String, ({DateTime at, List<Track> tracks})> _searchCache = {};
+
+  /// Идущие поиски по ключу [_searchKey] — повторный подписчик
+  /// присоединяется к ним, а не запускает второй P2P-поиск.
+  final Map<String, _SearchRun> _searchRuns = {};
+
+  String _searchKey(String q, int limit) =>
+      '$q\u0000$limit\u0000${jsonEncode(searchFilters.toMap())}';
+
+  /// Сбрасывает кэш выдачи (например, после смены фильтров в настройках).
+  void clearSearchCache() => _searchCache.clear();
+
   @override
-  Future<List<Track>> search(String query, {int limit = 20}) async {
-    // На не-Android платформах Soulseek недоступен — возвращаем пустой список,
+  Future<List<Track>> search(String query, {int limit = 20}) =>
+      searchProgressive(query, limit: limit)
+          .fold(const <Track>[], (_, snapshot) => snapshot);
+
+  @override
+  Stream<List<Track>> searchProgressive(String query, {int limit = 20}) {
+    // На не-Android платформах Soulseek недоступен — пустая выдача,
     // чтобы SourceRegistry.searchable не падал.
-    if (!_channel.isAvailable) return const [];
-
     final q = query.trim();
-    if (q.isEmpty) return const [];
+    if (!_channel.isAvailable || q.isEmpty) {
+      return Stream.value(const <Track>[]);
+    }
 
-    final requestId = const Uuid().v4();
+    final key = _searchKey(q, limit);
+    final cached = _searchCache[key];
+    if (cached != null) {
+      if (DateTime.now().difference(cached.at) < searchCacheTtl) {
+        return Stream.value(cached.tracks);
+      }
+      _searchCache.remove(key);
+    }
 
-    // NEW-2: применяем настраиваемый таймаут из настроек (default 10 c).
-    await _ensureSearchTimeoutLoaded();
+    // Присоединение к идущему поиску выполняется синхронно — до таймера
+    // отмены, который мог запланировать предыдущий подписчик.
+    final run = _searchRuns[key] ?? _startSearchRun(key, q, limit);
+    late final StreamController<List<Track>> controller;
+    controller = StreamController<List<Track>>(
+      onListen: () => run.attach(controller),
+      onCancel: () {
+        run.detach(controller);
+        if (run.listeners.isNotEmpty || run.finished) return;
+        // Отменяем натив на следующем тике: SearchController при смене
+        // фильтра сначала отписывается от старого поиска и тут же
+        // подписывается на тот же запрос — такой поиск должен продолжиться.
+        Timer(Duration.zero, () {
+          if (run.listeners.isNotEmpty || run.finished) return;
+          run.cancelled = true;
+          if (_searchRuns[key] == run) _searchRuns.remove(key);
+          unawaited(_channel.cancelSearch(run.requestId));
+        });
+      },
+    );
+    return controller.stream;
+  }
 
+  _SearchRun _startSearchRun(String key, String q, int limit) {
+    final run = _SearchRun(const Uuid().v4());
+    _searchRuns[key] = run;
+    unawaited(_executeSearchRun(run, key, q, limit));
+    return run;
+  }
+
+  Future<void> _executeSearchRun(
+    _SearchRun run,
+    String key,
+    String q,
+    int limit,
+  ) async {
+    final acc = _SearchAccumulator(
+      filters: searchFilters,
+      limit: limit,
+      identity: identityKey,
+      toTrack: _resultToTrack,
+    );
+    StreamSubscription<SoulseekSearchProgressEvent>? progressSub;
+    var failed = false;
     try {
+      // NEW-2: применяем настраиваемый таймаут из настроек (default 10 c).
+      await _ensureSearchTimeoutLoaded();
+      // Отписались, пока читали настройку: нативный поиск ещё не запущен,
+      // и cancelSearch его не нашёл бы — просто не запускаем.
+      if (run.cancelled) {
+        run.finish(const []);
+        return;
+      }
+
+      // Подписка до запуска поиска — иначе первые дельты потерялись бы.
+      progressSub = _channel.searchProgress
+          .where((e) => e.requestId == run.requestId)
+          .listen((e) {
+        if (acc.addBatch(e.results)) run.publish(acc.snapshot());
+      });
+
       final results = await _channel.search(
-        requestId: requestId,
+        requestId: run.requestId,
         query: q,
         timeoutMs: searchTimeoutMs,
         idleTimeoutMs: searchIdleTimeoutMs,
@@ -341,40 +436,35 @@ class SoulseekSource implements TrackSource {
         fileLimit: searchFileLimit,
         filters: searchFilters,
       );
-
-      // Пост-фильтрация на Dart-стороне (дублирование native-фильтров).
-      final filtered = results.where((r) => searchFilters.matches(r)).toList();
-
-      // Дедупликация по filename + size и по resultId (P4-защита).
-      //
-      // Дубликаты resultId давали несколько треков с одинаковым globalId
-      // в результатах поиска → мульти-подсветка «играющих» треков после
-      // одного тапа (isPlaying сравнивает mediaItem.id с globalId).
-      final seenFiles = <String>{};
-      final seenIds = <String>{};
-      final deduped = <SoulseekSearchResult>[];
-      for (final r in filtered) {
-        final fileKey = '${r.filename}|${r.sizeBytes}';
-        if (!seenFiles.add(fileKey)) continue;
-        if (r.resultId.isNotEmpty && !seenIds.add(r.resultId)) continue;
-        deduped.add(r);
-      }
-
-      final tracks =
-          rankResults(deduped).take(limit).map(_resultToTrack).toList();
+      // Итоговый список — надмножество дельт: уже учтённое отсеет дедуп.
+      acc.addBatch(results);
 
       if (kDebugMode) {
         debugPrint('[Soulseek] search "$q": ${results.length} raw, '
-            '${filtered.length} filtered, ${tracks.length} after dedup+limit');
+            '${acc.snapshot().length} tracks after dedup+group+limit');
       }
-
-      return tracks;
     } on SoulseekException catch (e) {
+      failed = true;
       if (kDebugMode) debugPrint('[Soulseek] search failed: $e');
-      return const [];
     } on UnsupportedError {
-      return const [];
+      failed = true;
+    } finally {
+      await progressSub?.cancel();
+      if (_searchRuns[key] == run) _searchRuns.remove(key);
     }
+
+    final tracks = acc.snapshot();
+    // В кэш — только полный ответ: отменённый поиск или ошибка (нет
+    // соединения) не должны на 10 минут подменять настоящую выдачу.
+    if (!run.cancelled && !failed) {
+      _searchCache
+        ..remove(key)
+        ..[key] = (at: DateTime.now(), tracks: tracks);
+      while (_searchCache.length > _searchCacheMaxEntries) {
+        _searchCache.remove(_searchCache.keys.first);
+      }
+    }
+    run.finish(tracks);
   }
 
   /// Ранжирует результаты по тому, как быстро пир отдаст файл: сначала
@@ -401,7 +491,10 @@ class SoulseekSource implements TrackSource {
   }
 
   /// Маппинг [SoulseekSearchResult] → [Track].
-  Track _resultToTrack(SoulseekSearchResult result) {
+  ///
+  /// [peerCount] — сколько полностью одинаковых файлов свёрнуто в этот трек
+  /// (`extra.peerCount`, бейдж «×N» в выдаче).
+  Track _resultToTrack(SoulseekSearchResult result, [int peerCount = 1]) {
     final cacheKey =
         computeCacheKey(result.username, result.filename, result.sizeBytes);
 
@@ -435,6 +528,7 @@ class SoulseekSource implements TrackSource {
         'hasFreeUploadSlot': result.freeUploadSlots > 0,
         'uploadSpeed': result.uploadSpeed,
         'queueLength': result.queueLength,
+        if (peerCount > 1) 'peerCount': peerCount,
       },
     );
   }
@@ -1112,4 +1206,153 @@ class SoulseekSource implements TrackSource {
     if (v is num) return v.toInt();
     return int.tryParse(v.toString()) ?? 0;
   }
+
+  /// Ключ «абсолютно одинакового» трека: исполнитель, название,
+  /// длительность и все параметры качества (расширение, битрейт, битность,
+  /// частота) совпадают точно. null — одинаковость не подтвердить
+  /// (неизвестны длительность или исполнитель): такой файл не сворачивается.
+  @visibleForTesting
+  String? identityKey(SoulseekSearchResult r) {
+    final duration = r.durationSeconds;
+    if (duration == null || duration <= 0) return null;
+    final artist = extractArtist(r.filename);
+    if (artist == 'Unknown') return null;
+    return [
+      artist,
+      extractTitle(r.filename),
+      duration,
+      r.extension,
+      r.bitrate,
+      r.bitDepth,
+      r.sampleRate,
+    ].join('\u0000');
+  }
+}
+
+/// Один P2P-поиск, на который могут быть подписаны несколько потоков
+/// [SoulseekSource.searchProgressive] (например, «Все» → чип «Soulseek»).
+class _SearchRun {
+  _SearchRun(this.requestId);
+
+  final String requestId;
+  final Set<StreamController<List<Track>>> listeners = {};
+  List<Track> latest = const [];
+  bool finished = false;
+
+  /// Отменён, потому что от него отписались все — в кэш не попадает.
+  bool cancelled = false;
+
+  void attach(StreamController<List<Track>> c) {
+    if (finished) {
+      c
+        ..add(latest)
+        ..close();
+      return;
+    }
+    listeners.add(c);
+    if (latest.isNotEmpty) c.add(latest);
+  }
+
+  void detach(StreamController<List<Track>> c) => listeners.remove(c);
+
+  void publish(List<Track> snapshot) {
+    latest = snapshot;
+    for (final c in listeners.toList()) {
+      c.add(snapshot);
+    }
+  }
+
+  void finish(List<Track> tracks) {
+    latest = tracks;
+    finished = true;
+    final current = listeners.toList();
+    listeners.clear();
+    for (final c in current) {
+      c
+        ..add(tracks)
+        ..close();
+    }
+  }
+}
+
+/// Сворачиваемая группа одинаковых файлов: первый пришедший (лучший в своей
+/// пачке) остаётся представителем, остальные лишь увеличивают [count].
+class _ResultGroup {
+  _ResultGroup(this.representative);
+
+  final SoulseekSearchResult representative;
+  int count = 1;
+}
+
+/// Инкрементальная сборка выдачи Soulseek из пачек ответов пиров.
+///
+/// Только дописывает: уже показанные треки остаются на своих местах,
+/// новые встают в конец (внутри пачки — по [SoulseekSource.rankResults]).
+/// Полностью одинаковые файлы ([SoulseekSource.identityKey]) сворачиваются
+/// в один трек с `extra.peerCount`.
+class _SearchAccumulator {
+  _SearchAccumulator({
+    required this.filters,
+    required this.limit,
+    required this.identity,
+    required this.toTrack,
+  });
+
+  final SoulseekSearchFilters filters;
+  final int limit;
+  final String? Function(SoulseekSearchResult) identity;
+  final Track Function(SoulseekSearchResult, int peerCount) toTrack;
+
+  final _seenPeerFiles = <String>{};
+  final _seenIds = <String>{};
+  final _groups = <_ResultGroup>[];
+  final _groupByKey = <String, _ResultGroup>{};
+  final _groupByFile = <String, _ResultGroup>{};
+
+  /// Добавляет пачку результатов; true — выдача изменилась.
+  bool addBatch(List<SoulseekSearchResult> batch) {
+    final fresh = <SoulseekSearchResult>[];
+    for (final r in batch) {
+      // Пост-фильтрация на Dart-стороне (дублирование native-фильтров).
+      if (!filters.matches(r)) continue;
+      // Точные повторы — тот же resultId или тот же файл того же пира
+      // (P4-защита: дубликаты resultId давали несколько треков с одинаковым
+      // globalId → мульти-подсветка «играющих»). Здесь же отсеивается
+      // повтор дельт в итоговом списке поиска.
+      final peerFileKey = '${r.username}|${r.filename}|${r.sizeBytes}';
+      if (_seenPeerFiles.contains(peerFileKey)) continue;
+      if (r.resultId.isNotEmpty && _seenIds.contains(r.resultId)) continue;
+      _seenPeerFiles.add(peerFileKey);
+      if (r.resultId.isNotEmpty) _seenIds.add(r.resultId);
+      fresh.add(r);
+    }
+    if (fresh.isEmpty) return false;
+
+    var changed = false;
+    for (final r in SoulseekSource.rankResults(fresh)) {
+      // Тот же файл (путь + размер) у другого пира — тот же трек, даже если
+      // одинаковость по метаданным не подтвердить (нет длительности).
+      final fileKey = '${r.filename}|${r.sizeBytes}';
+      final key = identity(r);
+      final existing =
+          _groupByFile[fileKey] ?? (key == null ? null : _groupByKey[key]);
+      if (existing != null) {
+        existing.count++;
+        _groupByFile[fileKey] = existing;
+        changed = true;
+        continue;
+      }
+      if (_groups.length >= limit) continue;
+      final group = _ResultGroup(r);
+      _groups.add(group);
+      _groupByFile[fileKey] = group;
+      if (key != null) _groupByKey[key] = group;
+      changed = true;
+    }
+    return changed;
+  }
+
+  List<Track> snapshot() => [
+        for (final g in _groups) toTrack(g.representative, g.count),
+      ];
 }
