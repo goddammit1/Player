@@ -22,6 +22,7 @@ import 'artwork.dart';
 import '../desktop/desktop_layout.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
+import 'soulseek_folder_sheet.dart';
 import '../../core/youtube_cache.dart';
 
 // =============================================================================
@@ -696,6 +697,15 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         as SoulseekSource?;
   }
 
+  /// Soulseek-трек с известным пиром и каталогом — папку можно открыть.
+  bool get _soulseekFolderAvailable {
+    if (_soulseekSource == null) return false;
+    final remote = widget.track.extra['remoteFilename'] as String?;
+    return widget.track.extra['peerUsername'] is String &&
+        remote != null &&
+        SoulseekSource.folderOf(remote).isNotEmpty;
+  }
+
   /// PLAYER-DL-01: cacheKey для нативного кэша Soulseek (null — трек не
   /// Soulseek или данных недостаточно → fallback на YoutubeCache-путь).
   String? get _soulseekCacheKey {
@@ -1003,6 +1013,18 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
                 title: 'Details',
                 onTap: () => _showDetails(context),
               ),
+              // Вся папка пира, в которой лежит Soulseek-трек.
+              if (_soulseekFolderAvailable)
+                _SettingsTileData(
+                  icon: Icons.folder_open_rounded,
+                  title: 'Open folder',
+                  subtitle: widget.track.extra['peerUsername'] as String?,
+                  onTap: () {
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    showSoulseekFolderSheet(nav.context, [widget.track]);
+                  },
+                ),
             ];
 
             return Container(

@@ -1,386 +1,212 @@
 # Player
 
-Музыкальный плеер с поиском и стримингом треков с разных площадок.
-Только для личного использования.
+Музыкальный плеер на Flutter: поиск и стриминг треков с нескольких площадок,
+плейлисты, история и офлайн-кэш. Проект для личного использования.
 
-Поддерживаемые платформы:
+Текущая версия: **3.1.0** · история изменений в [CHANGELOG.md](CHANGELOG.md).
 
-- **Android / iOS** — мобильный UI (полноэкранный плеер, мини-плеер-оверлей, lock-screen контролы)
-- **Windows / Linux / macOS** — десктопный UI (боковая навигация + контент + панель плеера снизу)
+## Возможности
 
-Логика (провайдеры, репозитории, источники, плеер) общая; отличается
-только слой UI и реализация плеера.
+- Поиск по всем источникам сразу или по одному. Результаты приходят по мере
+  готовности, медленный Soulseek выводится отдельной секцией.
+- Плейлисты с ручной сортировкой, история прослушивания, история поиска.
+- Импорт и экспорт плейлистов в JSON.
+- Офлайн-кэш аудио с лимитом по размеру и кэширование плейлиста целиком.
+- Обложки: от источника, через Genius API или iTunes, плюс свои обложки.
+- Динамическая цветовая схема по обложке, светлая и тёмная темы.
+- Фоновое воспроизведение и управление с экрана блокировки на мобильных.
+- Очередь, таймер сна, детали трека (битрейт, источник, качество).
+- Проверка обновлений через GitHub Releases, включая бета-релизы.
 
-## Стек
+## Платформы
 
-- **Flutter** (Android + iOS + Windows + Linux + macOS)
-- **just_audio** + **audio_service** — воспроизведение, фон, lock-screen контролы (мобильные)
-- **just_audio_windows** — нативная Windows-реализация для just_audio
-- **sqflite_common_ffi** + **sqlite3_flutter_libs** — SQLite на десктопе
-- **youtube_explode_dart** — парсинг YouTube
-- **dio** + **dio_cookie_manager** + **cookie_jar** + **html** — парсинг
-  HTML-источников (Muzmo, SoundCloud)
-- **flutter_riverpod** — state management
-- **sqflite** — локальная БД (библиотека / история / плейлисты)
-- **shared_preferences** — кэш URL обложек и мелких настроек
-- **path_provider** — офлайн-кэш аудио
-- **cached_network_image** — кэширование обложек в UI
-- **palette_generator** + **flutter_color_models** + **dynamic_colors** —
-  генерация цветовой схемы из обложек
-- **blur** + **figma_squircle** — визуальные эффекты
-- **vibration** — тактильная отдача
-- **permission_handler** — запросы разрешений
-- **package_info_plus** — версия приложения (для автообновлений)
-- **share_plus** + **file_picker** — импорт/экспорт плейлистов
-- **uuid** — генерация ID плейлистов
-- **rxdart** — реактивные потоки
-- **marquee** — бегущая строка (длинные названия)
+| Платформа | Статус | Особенности |
+|-----------|--------|-------------|
+| Android   | основная | `audio_service`, уведомления, Soulseek |
+| Windows   | рабочая  | десктопный UI, `just_audio_windows` |
+| iOS       | сборка без подписи | собирается в Codemagic, Soulseek недоступен |
 
-## Архитектура
+Логика (источники, репозитории, плеер) общая. Различаются UI и реализация
+плеера: на мобильных `PlayerService` (audio_service + just_audio), на
+десктопе `DesktopPlayerService` (только just_audio). Выбор делает
+`PlayerServiceFactory`.
 
-```
-lib/
-├── main.dart                          выбор реализации плеера + root (моб. UI / DesktopShell)
-├── core/
-│   ├── player_service_interface.dart  общий контракт PlayerServiceInterface
-│   ├── player_service.dart            мобильная реализация (audio_service + just_audio)
-│   ├── player_service_desktop.dart    десктопная реализация (чистый just_audio)
-│   ├── providers.dart                 Riverpod-провайдеры (плеер, поиск, UI)
-│   ├── appearance_provider.dart       провайдер темы (светлая / тёмная / система)
-│   ├── global_theme_provider.dart     генерация цветовой схемы из обложек
-│   ├── dynamic_colors.dart            вычисление DynamicScheme (Material You)
-│   ├── history_repository.dart        история прослушивания (SQLite)
-│   ├── playlist_repository.dart       CRUD плейлистов (SQLite)
-│   ├── playlist_backup.dart           импорт/экспорт плейлистов (JSON)
-│   ├── update_service.dart            проверка обновлений (GitHub Releases)
-│   ├── youtube_cache.dart             LRU-кэш скачанных треков (5 шт.)
-│   ├── artwork_helper.dart            хелперы обложек (дефолтные иконки)
-│   └── haptic_helper.dart             утилиты для тактильной отдачи
-├── models/
-│   ├── track.dart                     унифицированная модель трека
-│   └── playlist.dart                  модель плейлиста
-├── sources/                           ← плагинная система источников
-│   ├── track_source.dart              интерфейс
-│   ├── source_registry.dart           реестр
-│   ├── youtube_source.dart            реализация для YouTube
-│   ├── muzmo_source.dart              реализация для rmr.muzmo.cc
-│   ├── soundcloud_source.dart         реализация для SoundCloud
-│   └── artwork_provider.dart          обложки: Genius API + iTunes fallback
-└── ui/
-    ├── pages/                         ← мобильный UI (Android/iOS)
-    │   ├── home_page.dart             главный экран
-    │   ├── search_page.dart           поиск по источникам
-    │   ├── player_page.dart           полноэкранный плеер
-    │   ├── playlist_page.dart         содержимое плейлиста
-    │   ├── history_page.dart          история прослушивания
-    │   ├── settings_page.dart         настройки
-    │   └── cache_page.dart            управление кэшем
-    ├── widgets/
-    │   ├── now_playing_overlay.dart   мини-плеер поверх контента (моб.)
-    │   ├── desktop_layout.dart        isDesktop + адаптивные хелперы
-    │   ├── artwork.dart               виджет обложки с эффектами
-    │   ├── queue_sheet.dart           очередь воспроизведения
-    │   ├── track_details_sheet.dart   детали трека (битрейт, источник)
-    │   ├── track_settings_sheet.dart  настройки конкретного трека
-    │   ├── add_to_playlist_sheet.dart добавление трека в плейлист
-    │   ├── update_dialog.dart         диалог обновления приложения
-    │   └── snack.dart                 снек-бары
-    └── desktop/                       ← десктопный UI (Windows/Linux/macOS)
-        ├── desktop_shell.dart         каркас: боковая панель + контент + плеер
-        ├── desktop_home_page.dart     главная: сетка плейлистов
-        └── desktop_player_bar.dart    нижняя панель плеера (прогресс, управление)
-```
+## Источники
 
-### Разделение UI по платформам
+| Источник | Поиск | Как работает |
+|----------|:-----:|--------------|
+| Muzmo (`rmr.muzmo.cc`) | да | HTML-парсинг выдачи, прямой MP3 320 kbps |
+| SoundCloud | да | публичный API `api-v2`, `client_id` берётся из JS-бандлов сайта |
+| Soulseek | по флагу | P2P через нативную обёртку над Soulseek.NET, только Android |
+| YouTube | нет | отключён: `youtube_explode_dart` не проходит проверку PoToken |
 
-Корень выбирается в `lib/main.dart` по `isDesktop` (см. `desktop_layout.dart`):
+YouTube остаётся зарегистрированным, чтобы старые треки в плейлистах не
+ломали загрузку. Soulseek включается в настройках и требует учётную запись
+Soulseek.
 
-```dart
-home: isDesktop
-    ? const DesktopShell()   // Windows/Linux/macOS
-    : const HomePage(),      // Android/iOS
-```
+Стрим-URL временные, поэтому в БД хранятся только метаданные трека, а
+ссылка получается при воспроизведении.
 
-- Мобильные страницы (`ui/pages/`) остаются нетронутыми и не знают о десктопе.
-- Десктопный `DesktopShell` переиспользует мобильные страницы (Search, History,
-  Settings, Cache) как разделы `IndexedStack` — состояние сохраняется при
-  переключении. Плейлист открывается в собственном стеке контента
-  (внутри окна), а не через `Navigator.push` поверх всей раскладки.
-- Страницам, встроенным в shell, отключается встроенный мини-плеер
-  (`showNowPlayingOverlay: false`), т.к. свою панель рисует
-  `DesktopPlayerBar` внизу окна — иначе были бы две панели.
-- Реализации плеера тоже две, выбор в `main.dart`:
-  `Platform.isAndroid || Platform.isIOS` → `PlayerService`
-  (audio_service, фоновые уведомления), иначе → `DesktopPlayerService`
-  (чистый just_audio, без audio_service).
-- Десктопные экраны докручиваются независимо: сетка плейлистов
-  (`desktop_home_page.dart`), панель плеера (`desktop_player_bar.dart`),
-  клавиатурные шорткаты — без риска сломать мобильную вёрстку.
+### Добавление источника
 
-### Идея плагинной системы
-
-Любая новая площадка реализует интерфейс `TrackSource`:
+Источник реализует `TrackSource` ([track_source.dart](lib/sources/track_source.dart))
+и регистрируется в `SourceRegistry.registerDefaults()`
+([source_registry.dart](lib/sources/source_registry.dart)):
 
 ```dart
 abstract class TrackSource {
   String get id;
   String get displayName;
-  Future<List<Track>> search(String query, {int limit});
+  Future<List<Track>> search(String query, {int limit = 20});
   Future<String> resolveStreamUrl(Track track);
+  // createAudioSource, prefetch, resolveBitrate, resolveArtwork, dispose
+  // имеют реализации по умолчанию
 }
 ```
 
-И регистрируется в `SourceRegistry`:
+Для потоковой выдачи источник дополнительно реализует `ProgressiveSearchSource`.
 
-```dart
-SourceRegistry.instance.register(SoundCloudSource());
+## Обложки
+
+Muzmo и Soulseek обложек не отдают, их ищет `ArtworkProvider`:
+
+1. **Genius API** — основной поиск, нужен токен (см. ниже).
+2. **iTunes Search API** — запасной вариант без токена.
+
+Метки версий в скобках (`(Remix)`, `[Slowed + Reverb]`) уходят в запрос, чтобы
+найти обложку именно этой версии. Результаты кэшируются в памяти и SQLite с
+TTL 7 дней. Обложки ищутся лениво, когда плитка появляется на экране. Найденная
+обложка применяется к треку сразу в плейлистах и в истории.
+
+## Быстрый старт
+
+Нужны Flutter (stable, Dart ≥ 3.11) и Android SDK. Для Windows-сборки ещё
+Visual Studio Build Tools 2022 с Windows 10/11 SDK.
+
+1. Скопировать `env.json.example` в `env.json` (файл в `.gitignore`) и вписать
+   токен Genius:
+
+   ```json
+   { "GENIUS_TOKEN": "<Client Access Token>" }
+   ```
+
+   Нужен именно **Client Access Token** со страницы
+   <https://genius.com/api-clients>, не Client Secret. Без токена Genius
+   пропускается и работает только iTunes.
+
+2. Установить зависимости:
+
+   ```bash
+   flutter pub get
+   ```
+
+3. Запустить или собрать через скрипты из `tools/`. Они сами передают
+   `--dart-define-from-file=env.json`:
+
+   | Команда | Что делает |
+   |---------|------------|
+   | `tools\run.ps1` | `flutter run`, аргументы пробрасываются (`-d windows` и т.п.) |
+   | `tools\build_release.ps1` | release APK, падает при пустом токене |
+   | `tools\install_release.ps1` | установка собранного APK на устройство |
+   | `tools\build_windows.ps1 [-Zip]` | release-сборка `player.exe`, опционально zip |
+   | `tools\backup_keystore.ps1` | резервная копия ключа подписи |
+
+   В VS Code конфигурации из `.vscode/launch.json` уже передают `env.json`.
+   При ручном запуске флаг указывается явно:
+
+   ```bash
+   flutter run --dart-define-from-file=env.json
+   ```
+
+### Тесты
+
+```bash
+flutter test
 ```
 
-Плеер работает с любым источником одинаково — берёт трек, спрашивает у его
-источника прямую ссылку и проигрывает через `just_audio`.
+## Soulseek-обёртка
 
-## Источники
-
-### YouTube
-Поиск и стрим — через `youtube_explode_dart` (Android VR client).
-Кэш скачанного аудио — `youtube_cache.dart` (LRU на 5 треков).
-
-### Muzmo (`rmr.muzmo.cc`)
-Поиск парсится из HTML страницы `/search?q=...`:
-блоки `<div class="item-song">` содержат `data-file` — прямой mp3 (320kbps),
-который играется обычным HTTP-клиентом, без HLS и подписей.
-Сессионная кука `sid` подхватывается автоматически (`CookieManager`).
-
-Обложек Muzmo не отдаёт, поэтому они подгружаются через `ArtworkProvider`.
-
-### SoundCloud
-Поиск и стриминг через публичный API `api-v2.soundcloud.com`. `client_id`
-извлекается из JS-бандлов главной страницы автоматически. Используется
-progressive-транскодинг (прямой MP3). Обложки берутся напрямую с
-`sndcdn.com`, Genius/iTunes используется только как фолбэк.
-
-## Обложки (ArtworkProvider)
-
-1. **SoundCloud / YouTube** — отдают обложки сами, `ArtworkProvider` не нужен.
-2. Для Muzmo и треков без обложек:
-   - **Genius API** — основной источник. Нужен Client Access Token,
-     получается на https://genius.com/api-clients.
-   - **iTunes Search API** — fallback, бесплатный, без токена,
-     покрывает то, что Genius не нашёл (русская музыка, ремиксы).
-3. **Хинты из скобок**: всё, что в скобках (круглых или квадратных) после
-   названия трека, отправляется в поисковый запрос как хинт версии —
-   например `(Remix)`, `(Club Mix | Extended Mix)`, `[Slowed + Reverb]`,
-   `(Original Mix)`, `(Radio Edit)`. Это помогает Genius/iTunes найти
-   именно версию трека, а не оригинал. Пропускаются только заведомо
-   не-версионные метки: `feat/ft`, `prod. by`, `official video/audio`,
-   `клип`, `lyric video`, `explicit/clean`. Если поиск с хинтами пуст,
-   делается retry «без хинтов», а для кириллицы — fallback по артисту.
-   Важно: если искалась конкретная версия, страница оригинала на Genius
-   (с обложкой альбома, в котором есть трек) не используется — версия
-   получает обложку только со своей страницы Genius или через iTunes
-   fallback.
-4. Результаты кэшируются в RAM и в SQLite, поэтому повторные поиски не
-   дёргают сеть. Найденные URL имеют TTL (`foundUrlTtl`, 7 дней): по
-   истечении срока URL считается устаревшим, и следующий запрос лениво
-   перезапрашивает Genius/iTunes — так подхватывается смена обложки на
-   стороне Genius. Если нового URL нет или сеть недоступна, устаревший URL
-   используется как запасной, пока TTL не обновится.
-5. **Авто-обновление в плейлистах и истории**: при каждом старте приложения
-   `PlaylistRepository._refreshArtworkCandidates()` и
-   `HistoryRepository._refreshArtworkCandidates()` (для истории — так же, как
-   для плейлистов) перезапрашивают обложки для треков без обложки и для
-   **провайдерских** обложек (Genius/iTunes), у которых истёк TTL — т.е.
-   обложки, изменённые на стороне Genius/iTunes, подхватываются автоматически,
-   без ручной очистки кэша. Дополнительно исправляется **рассинхрон**: если
-   в кэше провайдера лежит свежий URL, отличающийся от хранимого в
-   плейлисте/истории, он обновляется без запроса сети. Обложки, которые дал
-   сам источник (SoundCloud/YouTube), и кастомные обложки пользователя не
-   трогаются. Операция фоновая и ограничена (`_maxEnrichPerLoad`, семафор) —
-   старт приложения не превращается в сетевой шторм.
-6. **Одна обложка на трек во всём приложении**: любой найденный URL
-   кросс-пропагируется между плейлистами и историей прослушивания
-   (`PlaylistRepository._applyArtworkUpdates` ↔ `HistoryRepository._applyArtworkUpdates`),
-   поэтому один и тот же трек показывает одну и ту же самую актуальную
-   обложку в плейлистах, в истории, в очереди и на экране плеера.
-   Обновления идемпотентны, циклического «пинг-понга» нет.
-7. **Очистка кэша обложек** (CachePage) теперь сбрасывает и кэш найденных
-   URL (`ArtworkProvider.clearCache()`: RAM + SQLite), и `artworkUrl` у
-   провайдерских обложек **и в плейлистах, и в истории** (`resetAllTrackArtworks`
-   у обоих репозиториев), после чего фоновая дозагрузка перезапрашивает
-   Genius/iTunes заново — так подхватывается самая свежая обложка на стороне
-   провайдера.
-
-Токен Genius задаётся при сборке через `--dart-define-from-file=env.json`.
-**ВАЖНО**: нужен именно **Client Access Token** (со страницы
-https://genius.com/api-clients), а НЕ Client Secret. Код шлёт его в
-заголовке `Authorization: Bearer <token>`.
-
-Настройка (один раз):
-
-1. Скопируй `env.json.example` в `env.json` (файл в `.gitignore`, в git
-   не попадает).
-2. Вставь токен в `env.json`:
-
-```json
-{
-  "GENIUS_TOKEN": "<твой_Client_Access_Token>"
-}
-```
-
-Дальше токен подставляется автоматически:
+Нативная часть Soulseek лежит в [`soulseek-wrapper/`](soulseek-wrapper): C#-проект
+поверх Soulseek.NET, который собирается в `android/app/libs/soulseek-wrapper.aar`.
+Готовый AAR лежит в репозитории, пересобирать его нужно только после изменений
+в обёртке. Требуются .NET 9 SDK и workload `android`:
 
 ```powershell
-# debug / запуск (аргументы пробрасываются в flutter run)
-tools\run.ps1
-
-# release APK — скрипт сам добавит токен и упадёт с ошибкой, если он пуст
-tools\build_release.ps1
+soulseek-wrapper\build_aar.ps1                     # Release, arm64-v8a
+soulseek-wrapper\build_aar.ps1 -Abis arm64-v8a,x64 # с эмулятором x86_64
 ```
 
-Запуск по F5 из VS Code тоже работает: конфигурации в `.vscode/launch.json`
-уже передают `--dart-define-from-file=env.json`.
+Kotlin-слой (плагин, foreground service, загрузки, кэш) находится в
+`android/app/src/main/kotlin/com/player/player/Soulseek*.kt`, Dart-API в `lib/sources/soulseek_*.dart`.
 
-Если собираешь вручную — флаг нужно указывать самому:
+## Подпись Android
 
-```bash
-flutter run --dart-define-from-file=env.json
-flutter build apk --release --dart-define-from-file=env.json
-```
-
-Если токен не указан или неверный, Genius тихо пропускается и
-используется только iTunes-фолбэк. В debug-режиме при ошибке
-авторизации (401/403) в логи пишется предупреждение.
-
-Примечание про кэш: результаты («нашли»/«не нашли») кэшируются в
-SQLite. Префикс ключа зависит от наличия токена, поэтому
-после добавления токена негативные результаты, накопленные без него,
-больше не блокируют повторный поиск через Genius.
-
-## Запуск
-
-```bash
-flutter pub get
-tools\run.ps1            # запуск на Android-устройстве/эмуляторе (токен из env.json)
-tools\build_release.ps1  # релизный APK (токен из env.json)
-```
-
-Для Windows (нужны Visual Studio Build Tools 2022 и Windows 10/11 SDK):
-
-```bash
-tools\run.ps1 -d windows     # запуск десктопной сборки в debug (токен из env.json)
-tools\build_windows.ps1      # релизная Windows-сборка player.exe (токен из env.json)
-tools\build_windows.ps1 -Zip # дополнительно упакует Release-папку в build\player-windows-x64.zip
-```
-
-Для iOS:
-
-```bash
-flutter pub get
-cd ios && pod install && cd ..
-flutter run -d ios --dart-define-from-file=env.json
-```
-
-## CI/CD (Codemagic)
-
-iOS-сборка настроена через `codemagic.yaml`. Триггер — пуш тега вида `ios-*`.
-Сборка выполняется без code-signing (только `.app` бандл).
-
-`GENIUS_TOKEN` задаётся в Codemagic UI: **App settings → Environment variables**
-→ группа `player_credentials`.
-
-## Подпись release-сборки (Android)
-
-Release APK подписывается постоянным ключом (а не debug-ключом), иначе
-Google Play Protect помечает установку как угрозу (ложное срабатывание
-вида `*.BulimiaTGen.*` / «высокий риск»). Конфигурация подписи читается из
-`android/key.properties` (этот файл и сам keystore в `.gitignore`).
-
-Keystore должен лежать рядом с `build.gradle.kts`:
+Release APK подписывается постоянным ключом из `android/key.properties`.
+Этот файл и keystore исключены из git.
 
 ```
 android/app/player-release.jks
 android/key.properties
 ```
 
-Создать keystore (один раз):
-
-```bash
-keytool -genkeypair -v -keystore android/app/player-release.jks ^
-  -keyalg RSA -keysize 2048 -validity 10000 -alias player
-```
-
-`android/key.properties`:
-
-```
+```properties
 storePassword=<пароль>
 keyPassword=<пароль>
 keyAlias=player
 storeFile=app/player-release.jks
 ```
 
-**ВАЖНО**:
+Создание ключа (один раз):
 
-- Не теряйте `player-release.jks`. С другим ключом обновления поверх
-  установленной версии работать не будут.
-- При первой установке APK с новой подписью сначала удалите старую версию
-  приложения с устройства — Android не обновляет APK с другим сертификатом.
-- После создания/изменения keystore сделайте бэкап:
+```bash
+keytool -genkeypair -v -keystore android/app/player-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias player
+```
 
-  ```powershell
-  tools\backup_keystore.ps1
-  ```
+Потеря ключа означает, что обновить уже установленное приложение не получится:
+APK с другой подписью Android поверх не ставит. После создания ключа сделайте
+копию через `tools\backup_keystore.ps1` (сохраняет в
+`Documents\Player-Keystore-Backup\<дата>`).
 
-  Скрипт сохранит `player-release.jks` и `key.properties` в
-  `Documents\Player-Keystore-Backup\<дата_время>`. Храните эту копию в
-  надёжном месте (облако, менеджер паролей и т.п.).
+Play Protect может пометить локально собранный самоподписанный APK как
+«высокий риск». Для установки временно отключите сканирование в
+Play Маркет → Play Protect → настройки, установите APK и включите обратно.
 
-### Play Protect / «высокий риск»
+## Релизы и CI
 
-Даже правильно подписанный release APK при локальной сборке может вызвать
-у Play Protect предупреждение «высокий риск» или ложное срабатывание
-антивируса (например, `*.BulimiaTGen.*`). Это происходит потому, что
-самоподписанный APK собран на вашем ПК и ещё не известен системе защиты.
-APK из GitHub Releases обычно не вызывает такого предупреждения, потому что
-уже был просканирован и/или установлен ранее.
+- **Android / Windows** — собираются локально, APK публикуется в
+  [GitHub Releases](https://github.com/goddammit1/Player/releases).
+  Приложение проверяет релизы через GitHub API. Теги с суффиксом `-beta`
+  считаются бета-версиями.
+- **iOS** — [codemagic.yaml](codemagic.yaml), запускается пушем тега `ios-*`,
+  собирает `Runner.app` без подписи. `GENIUS_TOKEN` задаётся в Codemagic:
+  App settings → Environment variables → группа `player_credentials`.
 
-Чтобы установить локальную сборку:
+## Структура
 
-1. Включите «Установка из неизвестных источников» для используемого
-   браузера/файлового менеджера (или для ADB).
-2. Временно отключите Play Protect:
-   **Play Market → профиль → Play Protect → настройки (шестерёнка) →
-   Выключить сканирование приложений с помощью Play Protect**.
-3. Установите APK через `tools\install_release.ps1` или вручную.
-4. После успешной установки Play Protect можно снова включить.
+```
+lib/
+├── main.dart          инициализация и выбор корня (HomePage / DesktopShell)
+├── core/              плеер, провайдеры Riverpod, кэш, обновления
+│   ├── database/      SQLite: схема и DAO
+│   ├── repositories/  плейлисты и история
+│   ├── providers/     тема и цветовая схема
+│   ├── platform/      десктопный плеер, фабрика, хаптика
+│   └── backup/        импорт и экспорт плейлистов
+├── models/            Track, Playlist
+├── search/            контроллер поиска по источникам
+├── sources/           источники, реестр, ArtworkProvider, Soulseek-канал
+└── ui/
+    ├── pages/         мобильные экраны
+    ├── widgets/       общие виджеты и шторки
+    └── desktop/       десктопная оболочка, панель плеера, очередь
+test/                  тесты (зеркалят структуру lib/)
+tools/                 скрипты запуска, сборки и установки
+soulseek-wrapper/      .NET-обёртка Soulseek для Android
+plans/, docs/          планы и заметки по отдельным задачам
+```
 
-Если вы выпускаете релиз для других пользователей — загрузите финальный APK
-на GitHub Releases. Play Protect со временем перестаёт ругаться на файл,
-который уже установлен у многих людей.
+## Лицензия
 
-## Что дальше (roadmap)
-
-- [x] Источник Muzmo (HTML-парсинг rmr.muzmo.cc)
-- [x] Источник SoundCloud (публичный API)
-- [x] Локальная БД: плейлисты, история прослушивания
-- [x] Офлайн-кэширование треков (LRU, 5 треков)
-- [x] Тёмная / светлая тема с адаптивной палитрой (Material You)
-- [x] Поиск одновременно по всем источникам
-- [x] Импорт / экспорт плейлистов (JSON)
-- [x] Автообновление из GitHub Releases
-- [x] Десктопная реализация плеера (Windows: чистый just_audio)
-- [x] Десктопный UI: боковая навигация + панель плеера (DesktopShell)
-- [ ] Десктоп: клавиатурные шорткаты (пробел — play/pause, стрелки — скип)
-- [ ] Десктоп: очередь и детали трека в панели плеера
-- [ ] Источник VK Music (reverse-engineered API + токен)
-- [ ] Источник Bandcamp (официальный, простой scraping)
-- [ ] Эквалайзер (через `just_audio`'s `AndroidLoudnessEnhancer`)
-
-## Заметки
-
-- `youtube_explode_dart` иногда отстаёт от изменений YouTube — обновляй
-  пакет, если перестали резолвиться стримы.
-- Стрим-URL временные (несколько часов). Хранить их в БД бессмысленно —
-  сохраняем только метаданные трека, а URL резолвим при воспроизведении.
-- Для офлайн-кэша аудио скачивается в `path_provider`'s
-  `getApplicationDocumentsDirectory()` и URL подменяется на локальный путь
-  в `resolveStreamUrl`.
+Проект для личного использования, лицензия на код не выдаётся.
+Soulseek.NET и обёртка в `soulseek-wrapper/` распространяются под GPLv3,
+подробности в [`soulseek-wrapper/THIRD_PARTY_NOTICES.md`](soulseek-wrapper/THIRD_PARTY_NOTICES.md).

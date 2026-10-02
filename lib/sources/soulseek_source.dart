@@ -70,6 +70,13 @@ abstract class SoulseekChannel {
   /// Отменяет идущий поиск [requestId]; [search] вернёт накопленное.
   Future<void> cancelSearch(String requestId);
 
+  /// Полное содержимое папки [directory] пира [username] (только аудио).
+  Future<List<SoulseekSearchResult>> getDirectoryContents({
+    required String username,
+    required String directory,
+    int timeoutMs,
+  });
+
   /// Возвращает запись о кэшированном файле (или null, если файла нет).
   Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey);
 
@@ -136,13 +143,17 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// каждый ответ без общего предела, и популярные запросы шли 25–30 c.
   static const int searchIdleTimeoutMs = 2500;
 
-  /// Досрочное завершение по числу ответов пиров.
-  static const int searchResponseLimit = 100;
+  /// Досрочное завершение по числу ответов пиров (как в SeekerAndroid).
+  static const int searchResponseLimit = 250;
 
-  /// Досрочное завершение по числу аудиофайлов (после фильтров). В выдачу
-  /// идут максимум `limit` треков, так что сотни файлов с запасом хватает
-  /// на дедупликацию и ранжирование.
-  static const int searchFileLimit = 200;
+  /// Досрочное завершение по числу аудиофайлов (после фильтров). Ответ пира
+  /// по запросу «исполнитель альбом» — это вся папка (10–20 файлов), так что
+  /// прежние 200 файлов останавливали поиск на 10–20 пирах.
+  static const int searchFileLimit = 2000;
+
+  /// Размер выдачи по умолчанию. Общий дефолт [TrackSource.search] (20)
+  /// рассчитан на стриминговые источники; P2P-выдача ценна именно широтой.
+  static const int searchResultLimit = 100;
 
   static const _searchTimeoutKey = 'soulseek_search_timeout_sec';
   bool _searchTimeoutLoaded = false;
@@ -344,12 +355,15 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   void clearSearchCache() => _searchCache.clear();
 
   @override
-  Future<List<Track>> search(String query, {int limit = 20}) =>
+  Future<List<Track>> search(String query, {int limit = searchResultLimit}) =>
       searchProgressive(query, limit: limit)
           .fold(const <Track>[], (_, snapshot) => snapshot);
 
   @override
-  Stream<List<Track>> searchProgressive(String query, {int limit = 20}) {
+  Stream<List<Track>> searchProgressive(
+    String query, {
+    int limit = searchResultLimit,
+  }) {
     // На не-Android платформах Soulseek недоступен — пустая выдача,
     // чтобы SourceRegistry.searchable не падал.
     final q = query.trim();
@@ -494,7 +508,16 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   ///
   /// [peerCount] — сколько полностью одинаковых файлов свёрнуто в этот трек
   /// (`extra.peerCount`, бейдж «×N» в выдаче).
-  Track _resultToTrack(SoulseekSearchResult result, [int peerCount = 1]) {
+  ///
+  /// [folderKey] — трек входит в папку-альбом выдачи (`extra.folderKey`,
+  /// UI сворачивает такие треки в карточку); [folderPeers] — у скольких
+  /// пиров есть такая же папка (`extra.folderPeers`).
+  Track _resultToTrack(
+    SoulseekSearchResult result,
+    int peerCount, {
+    String? folderKey,
+    int folderPeers = 1,
+  }) {
     final cacheKey =
         computeCacheKey(result.username, result.filename, result.sizeBytes);
 
@@ -529,9 +552,111 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         'uploadSpeed': result.uploadSpeed,
         'queueLength': result.queueLength,
         if (peerCount > 1) 'peerCount': peerCount,
+        'folderKey': ?folderKey,
+        if (folderKey != null && folderPeers > 1) 'folderPeers': folderPeers,
       },
     );
   }
+
+  /// Загруженные папки по [folderKeyOf] — повторное открытие без запроса.
+  final Map<String, ({DateTime at, List<Track> tracks})> _folderCache = {};
+
+  /// Полное содержимое папки, в которой лежат [known] (треки одного пира и
+  /// одного каталога — карточка папки или одиночный трек выдачи).
+  ///
+  /// Поиск отдаёт только совпавшие с запросом файлы; здесь у пира
+  /// запрашивается вся папка (FolderContentsRequest), как «Get folder
+  /// contents» в SeekerAndroid. Уже известные треки возвращаются как есть
+  /// (с длительностью, качеством и обложкой: в ответе папки атрибутов часто
+  /// нет), новые получают статистику пира и обложку от известных. Порядок —
+  /// по полному пути (подпапки CD1/CD2 идут подряд). Ошибки канала
+  /// пробрасываются: UI оставляет [known].
+  Future<List<Track>> loadFolder(List<Track> known) async {
+    if (known.isEmpty) return known;
+    final first = known.first;
+    final username = first.extra['peerUsername'] as String?;
+    final remote = first.extra['remoteFilename'] as String?;
+    if (username == null || remote == null) return known;
+    final directory = folderOf(remote);
+    if (directory.isEmpty) return known;
+    final key = folderKeyOf(username, remote);
+
+    final cached = _folderCache[key];
+    if (cached != null && DateTime.now().difference(cached.at) < searchCacheTtl) {
+      return cached.tracks;
+    }
+
+    final files = await _channel.getDirectoryContents(
+      username: username,
+      directory: directory,
+    );
+    if (files.isEmpty) return known;
+
+    final byFile = {
+      for (final t in known) t.extra['remoteFilename'] as String?: t,
+    };
+    final artwork = known
+        .map((t) => t.artworkUrl)
+        .firstWhere((u) => u != null && u.isNotEmpty, orElse: () => null);
+    final hasFreeSlot = first.extra['hasFreeUploadSlot'] == true;
+    final queueLength = _asInt(first.extra['queueLength']);
+    final uploadSpeed = _asInt(first.extra['uploadSpeed']);
+
+    final sorted = [...files]
+      ..sort((a, b) =>
+          a.filename.toLowerCase().compareTo(b.filename.toLowerCase()));
+    final tracks = <Track>[
+      for (final r in sorted)
+        byFile[r.filename] ??
+            _resultToTrack(
+              SoulseekSearchResult(
+                resultId: r.resultId,
+                username: username,
+                filename: r.filename,
+                sizeBytes: r.sizeBytes,
+                extension: r.extension,
+                bitrate: r.bitrate,
+                sampleRate: r.sampleRate,
+                bitDepth: r.bitDepth,
+                durationSeconds: r.durationSeconds,
+                queueLength: queueLength,
+                freeUploadSlots: hasFreeSlot ? 1 : 0,
+                uploadSpeed: uploadSpeed,
+              ),
+              1,
+              folderKey: key,
+            ).copyWith(artworkUrl: artwork),
+    ];
+    // Совпавшие в поиске файлы не теряем, даже если пир их не перечислил.
+    final listed = {for (final r in files) r.filename};
+    tracks.addAll(
+        known.where((t) => !listed.contains(t.extra['remoteFilename'])));
+
+    _folderCache
+      ..remove(key)
+      ..[key] = (at: DateTime.now(), tracks: tracks);
+    while (_folderCache.length > _searchCacheMaxEntries) {
+      _folderCache.remove(_folderCache.keys.first);
+    }
+    return tracks;
+  }
+
+  /// Каталог файла на стороне пира: всё до последнего разделителя
+  /// (Windows-пиры шлют `\`, остальные — `/`). Пусто — файл в корне.
+  static String folderOf(String filename) {
+    final i = filename.lastIndexOf(RegExp(r'[\\/]'));
+    return i < 0 ? '' : filename.substring(0, i);
+  }
+
+  /// Имя файла без каталога (с расширением).
+  static String leafOf(String filename) {
+    final i = filename.lastIndexOf(RegExp(r'[\\/]'));
+    return i < 0 ? filename : filename.substring(i + 1);
+  }
+
+  /// Ключ папки пира: файлы с одинаковым ключом — одна папка-альбом.
+  static String folderKeyOf(String username, String filename) =>
+      '$username|${folderOf(filename)}';
 
   /// Строит [Track] из записи нативного кэша [SoulseekCacheEntry].
   ///
@@ -891,8 +1016,32 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     void Function(List<Track> updated)? onUpdate,
   ]) async {
     const concurrency = 6;
-    final order = _priorityIndices(tracks.length);
+    // Треки папки-альбома делят одну обложку: ищем по первому треку папки
+    // и раздаём её всем — иначе альбом из 15 треков давал 15 запросов.
+    final order = <int>[];
+    final members = <int, List<int>>{};
+    final leadByFolder = <String, int>{};
+    for (final idx in _priorityIndices(tracks.length)) {
+      final folder = tracks[idx].extra['folderKey'] as String?;
+      final lead = folder == null ? null : leadByFolder[folder];
+      if (lead != null) {
+        members[lead]!.add(idx);
+        continue;
+      }
+      if (folder != null) leadByFolder[folder] = idx;
+      order.add(idx);
+      members[idx] = [idx];
+    }
     var pos = 0;
+
+    void apply(int lead, String url) {
+      for (final m in members[lead]!) {
+        final art = tracks[m].artworkUrl;
+        if (art == null || art.isEmpty) {
+          tracks[m] = tracks[m].copyWith(artworkUrl: url);
+        }
+      }
+    }
 
     Timer? notifyTimer;
     void scheduleNotify() {
@@ -911,13 +1060,19 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         final t = tracks[idx];
         // Уже обогащённые пропускаем: enrich получает треки из
         // state.results, где могли остаться обложки прошлого поиска.
-        if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) continue;
+        if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) {
+          if (members[idx]!.length > 1) {
+            apply(idx, t.artworkUrl!);
+            scheduleNotify();
+          }
+          continue;
+        }
         try {
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
               .timeout(const Duration(seconds: 4));
           if (url != null && url.isNotEmpty) {
-            tracks[idx] = t.copyWith(artworkUrl: url);
+            apply(idx, url);
             scheduleNotify();
             // Прекэшируем миниатюру (200px — размер для списков),
             // чтобы к моменту перерисовки UI она уже была в кэше.
@@ -1284,12 +1439,34 @@ class _ResultGroup {
   int count = 1;
 }
 
+/// Элемент выдачи: одиночный трек или папка пира (альбом), как в Seeker.
+/// [limit] аккумулятора считает элементы, а не треки.
+class _Entry {
+  _Entry.single(_ResultGroup group)
+      : tracks = [group],
+        folderKey = null;
+
+  _Entry.folder(String this.folderKey, this.tracks);
+
+  /// Ключ папки (`username` + каталог); null — одиночный трек.
+  final String? folderKey;
+  final List<_ResultGroup> tracks;
+
+  /// Сколько пиров прислали ту же папку (те же имена и размеры файлов).
+  int folderPeers = 1;
+}
+
 /// Инкрементальная сборка выдачи Soulseek из пачек ответов пиров.
 ///
-/// Только дописывает: уже показанные треки остаются на своих местах,
+/// Только дописывает: уже показанные элементы остаются на своих местах,
 /// новые встают в конец (внутри пачки — по [SoulseekSource.rankResults]).
-/// Полностью одинаковые файлы ([SoulseekSource.identityKey]) сворачиваются
-/// в один трек с `extra.peerCount`.
+///
+/// Файлы одного пира из одной папки (2+ шт.) становятся папкой-альбомом:
+/// её треки идут подряд и несут `extra.folderKey`, UI сворачивает их в
+/// карточку. Такая же папка у другого пира (тот же набор имён и размеров)
+/// лишь увеличивает `extra.folderPeers`. Одиночные полностью одинаковые
+/// файлы ([SoulseekSource.identityKey]) сворачиваются в один трек с
+/// `extra.peerCount`.
 class _SearchAccumulator {
   _SearchAccumulator({
     required this.filters,
@@ -1301,13 +1478,20 @@ class _SearchAccumulator {
   final SoulseekSearchFilters filters;
   final int limit;
   final String? Function(SoulseekSearchResult) identity;
-  final Track Function(SoulseekSearchResult, int peerCount) toTrack;
+  final Track Function(
+    SoulseekSearchResult,
+    int peerCount, {
+    String? folderKey,
+    int folderPeers,
+  }) toTrack;
 
   final _seenPeerFiles = <String>{};
   final _seenIds = <String>{};
-  final _groups = <_ResultGroup>[];
+  final _entries = <_Entry>[];
   final _groupByKey = <String, _ResultGroup>{};
   final _groupByFile = <String, _ResultGroup>{};
+  final _folderByKey = <String, _Entry>{};
+  final _folderBySignature = <String, _Entry>{};
 
   /// Добавляет пачку результатов; true — выдача изменилась.
   bool addBatch(List<SoulseekSearchResult> batch) {
@@ -1328,31 +1512,96 @@ class _SearchAccumulator {
     }
     if (fresh.isEmpty) return false;
 
-    var changed = false;
+    // Папки в порядке первого файла в ранжированной пачке.
+    final buckets = <String, List<SoulseekSearchResult>>{};
     for (final r in SoulseekSource.rankResults(fresh)) {
-      // Тот же файл (путь + размер) у другого пира — тот же трек, даже если
-      // одинаковость по метаданным не подтвердить (нет длительности).
-      final fileKey = '${r.filename}|${r.sizeBytes}';
-      final key = identity(r);
-      final existing =
-          _groupByFile[fileKey] ?? (key == null ? null : _groupByKey[key]);
-      if (existing != null) {
-        existing.count++;
-        _groupByFile[fileKey] = existing;
+      buckets
+          .putIfAbsent(SoulseekSource.folderKeyOf(r.username, r.filename),
+              () => [])
+          .add(r);
+    }
+
+    var changed = false;
+    for (final MapEntry(key: folderKey, value: files) in buckets.entries) {
+      // Дозапись в уже показанную папку (ответ пира пришёл в двух дельтах).
+      final known = _folderByKey[folderKey];
+      if (known != null) {
+        for (final r in _sortedByName(files)) {
+          known.tracks.add(_register(r));
+        }
         changed = true;
         continue;
       }
-      if (_groups.length >= limit) continue;
-      final group = _ResultGroup(r);
-      _groups.add(group);
-      _groupByFile[fileKey] = group;
-      if (key != null) _groupByKey[key] = group;
-      changed = true;
+      if (files.length >= 2) {
+        changed |= _addFolder(folderKey, files);
+      } else {
+        changed |= _addSingle(files.single);
+      }
     }
     return changed;
   }
 
+  bool _addFolder(String folderKey, List<SoulseekSearchResult> files) {
+    final sorted = _sortedByName(files);
+    final signature = [
+      for (final r in sorted)
+        '${SoulseekSource.leafOf(r.filename).toLowerCase()}|${r.sizeBytes}',
+    ].join('/');
+    final same = _folderBySignature[signature];
+    if (same != null) {
+      same.folderPeers++;
+      return true;
+    }
+    if (_entries.length >= limit) return false;
+    final entry = _Entry.folder(folderKey, [for (final r in sorted) _register(r)]);
+    _entries.add(entry);
+    _folderByKey[folderKey] = entry;
+    _folderBySignature[signature] = entry;
+    return true;
+  }
+
+  bool _addSingle(SoulseekSearchResult r) {
+    // Тот же файл (путь + размер) у другого пира — тот же трек, даже если
+    // одинаковость по метаданным не подтвердить (нет длительности).
+    final fileKey = '${r.filename}|${r.sizeBytes}';
+    final key = identity(r);
+    final existing =
+        _groupByFile[fileKey] ?? (key == null ? null : _groupByKey[key]);
+    if (existing != null) {
+      existing.count++;
+      _groupByFile[fileKey] = existing;
+      return true;
+    }
+    if (_entries.length >= limit) return false;
+    _entries.add(_Entry.single(_register(r)));
+    return true;
+  }
+
+  /// Новая группа для [r]; по ней будут сворачиваться одиночные повторы.
+  _ResultGroup _register(SoulseekSearchResult r) {
+    final group = _ResultGroup(r);
+    _groupByFile.putIfAbsent('${r.filename}|${r.sizeBytes}', () => group);
+    final key = identity(r);
+    if (key != null) _groupByKey.putIfAbsent(key, () => group);
+    return group;
+  }
+
+  /// Порядок треков в папке — по имени файла (обычно с номером трека).
+  static List<SoulseekSearchResult> _sortedByName(
+    List<SoulseekSearchResult> files,
+  ) =>
+      [...files]..sort((a, b) => SoulseekSource.leafOf(a.filename)
+          .toLowerCase()
+          .compareTo(SoulseekSource.leafOf(b.filename).toLowerCase()));
+
   List<Track> snapshot() => [
-        for (final g in _groups) toTrack(g.representative, g.count),
+        for (final e in _entries)
+          for (final g in e.tracks)
+            toTrack(
+              g.representative,
+              g.count,
+              folderKey: e.folderKey,
+              folderPeers: e.folderPeers,
+            ),
       ];
 }

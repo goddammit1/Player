@@ -113,6 +113,22 @@ class _TestChannel implements SoulseekChannel {
     cancelledSearches.add(requestId);
   }
 
+  // Конфигурация getDirectoryContents
+  List<SoulseekSearchResult> directoryResults = [];
+  Object? directoryError;
+  final List<(String, String)> directoryCalls = [];
+
+  @override
+  Future<List<SoulseekSearchResult>> getDirectoryContents({
+    required String username,
+    required String directory,
+    int timeoutMs = 20000,
+  }) async {
+    directoryCalls.add((username, directory));
+    if (directoryError != null) throw directoryError!;
+    return directoryResults;
+  }
+
   /// Задержка ответов getTransfer/getCacheEntry — имитация нативной
   /// латентности в тестах поллинга (P1).
   Duration pollDelay = Duration.zero;
@@ -807,15 +823,15 @@ void main() {
     test('ranks free slot, then short queue, then speed; stable on ties',
         () async {
       channel.searchResults = [
-        _searchResult(resultId: 'busy', filename: 'a.flac',
+        _searchResult(resultId: 'busy', username: 'p1', filename: 'a.flac',
             freeUploadSlots: 0, queueLength: 0, uploadSpeed: 9000),
-        _searchResult(resultId: 'slow', filename: 'b.flac',
+        _searchResult(resultId: 'slow', username: 'p2', filename: 'b.flac',
             queueLength: 0, uploadSpeed: 100),
-        _searchResult(resultId: 'queued', filename: 'c.flac',
+        _searchResult(resultId: 'queued', username: 'p3', filename: 'c.flac',
             queueLength: 7, uploadSpeed: 9000),
-        _searchResult(resultId: 'fast', filename: 'd.flac',
+        _searchResult(resultId: 'fast', username: 'p4', filename: 'd.flac',
             queueLength: 0, uploadSpeed: 800),
-        _searchResult(resultId: 'fast2', filename: 'e.flac',
+        _searchResult(resultId: 'fast2', username: 'p5', filename: 'e.flac',
             queueLength: 0, uploadSpeed: 800),
       ];
 
@@ -973,6 +989,7 @@ void main() {
         10,
         (i) => _searchResult(
           resultId: 'r$i',
+          username: 'peer$i',
           filename: 'Artist - Track$i.flac',
           sizeBytes: 1000000 + i,
         ),
@@ -1554,6 +1571,144 @@ void main() {
       final tracks = await source.search('query', limit: 1);
       expect(tracks, hasLength(1));
       expect(tracks.single.extra['peerCount'], 2);
+    });
+  });
+
+  group('folder albums', () {
+    SoulseekSearchResult file(String user, String path, {int size = 1000}) =>
+        _searchResult(
+          resultId: '$user|$path',
+          username: user,
+          filename: path,
+          sizeBytes: size,
+        );
+
+    test('2+ files of one peer folder → contiguous tracks with folderKey, '
+        'sorted by file name', () async {
+      channel.searchResults = [
+        file('peerA', r'Music\Artist\Album\02 - Two.flac'),
+        file('peerB', r'Other\Artist - Single.flac'),
+        file('peerA', r'Music\Artist\Album\01 - One.flac'),
+      ];
+      final tracks = await source.search('query');
+      expect(tracks.map((t) => t.title), ['One', 'Two', 'Single']);
+      final key = SoulseekSource.folderKeyOf(
+          'peerA', r'Music\Artist\Album\01 - One.flac');
+      expect(tracks[0].extra['folderKey'], key);
+      expect(tracks[1].extra['folderKey'], key);
+      expect(tracks[2].extra.containsKey('folderKey'), isFalse);
+    });
+
+    test('same folder content at another peer → folderPeers, not a copy',
+        () async {
+      channel.searchResults = [
+        file('peerA', r'A\Album\01 - One.flac', size: 1),
+        file('peerA', r'A\Album\02 - Two.flac', size: 2),
+        file('peerB', r'B\x\Album\01 - One.flac', size: 1),
+        file('peerB', r'B\x\Album\02 - Two.flac', size: 2),
+      ];
+      final tracks = await source.search('query');
+      expect(tracks, hasLength(2));
+      expect(tracks.every((t) => t.extra['folderPeers'] == 2), isTrue);
+    });
+
+    test('limit counts folders as one entry', () async {
+      channel.searchResults = [
+        for (var i = 0; i < 5; i++)
+          file('peerA', 'Album\\0$i - T$i.flac', size: i),
+        file('peerB', r'X\Artist - Single.flac'),
+      ];
+      final tracks = await source.search('query', limit: 1);
+      expect(tracks, hasLength(5));
+      expect(tracks.every((t) => t.extra['folderKey'] != null), isTrue);
+    });
+
+    test('later delta of a shown folder appends to it', () async {
+      source.applySearchTimeoutSec(10);
+      channel.searchGate = Completer();
+      final snapshots = <List<String>>[];
+      final done = source
+          .searchProgressive('query')
+          .listen((s) => snapshots.add([for (final t in s) t.title]))
+          .asFuture<void>();
+      await Future<void>.delayed(Duration.zero);
+
+      channel.emitProgress([
+        file('peerA', r'Album\01 - One.flac', size: 1),
+        file('peerA', r'Album\02 - Two.flac', size: 2),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      channel.emitProgress([
+        file('peerB', r'X\Artist - Single.flac'),
+        file('peerA', r'Album\03 - Three.flac', size: 3),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      channel.searchGate!.complete(const []);
+      await done;
+
+      expect(snapshots.last, ['One', 'Two', 'Three', 'Single']);
+    });
+
+    test('loadFolder: full peer folder, known tracks keep their data',
+        () async {
+      channel.searchResults = [
+        file('peerA', r'M\Album\02 - Two.flac', size: 2),
+        file('peerA', r'M\Album\03 - Three.flac', size: 3),
+      ];
+      final known = await source.search('query');
+      channel.directoryResults = [
+        _searchResult(
+            resultId: 'd1', username: 'peerA',
+            filename: r'M\Album\01 - One.flac', sizeBytes: 1,
+            durationSeconds: null, queueLength: 0, uploadSpeed: 0),
+        _searchResult(
+            resultId: 'd2', username: 'peerA',
+            filename: r'M\Album\02 - Two.flac', sizeBytes: 2,
+            durationSeconds: null, queueLength: 0, uploadSpeed: 0),
+        _searchResult(
+            resultId: 'd3', username: 'peerA',
+            filename: r'M\Album\03 - Three.flac', sizeBytes: 3,
+            durationSeconds: null, queueLength: 0, uploadSpeed: 0),
+      ];
+
+      final full = await source.loadFolder(known);
+
+      expect(channel.directoryCalls, [('peerA', r'M\Album')]);
+      expect(full.map((t) => t.title), ['One', 'Two', 'Three']);
+      // Известный трек — тот же объект с атрибутами из поиска.
+      expect(identical(full[1], known[0]), isTrue);
+      expect(full[1].duration, const Duration(seconds: 240));
+      // Новый трек — статистика пира из известных, общий folderKey.
+      expect(full[0].extra['queueLength'], 5);
+      expect(full[0].extra['folderKey'], known[0].extra['folderKey']);
+
+      // Повторное открытие — из кэша, без запроса пиру.
+      await source.loadFolder(known);
+      expect(channel.directoryCalls, hasLength(1));
+    });
+
+    test('loadFolder keeps matched files the peer did not list', () async {
+      channel.searchResults = [file('peerA', r'M\Album\09 - Nine.flac')];
+      final known = await source.search('query');
+      channel.directoryResults = [
+        file('peerA', r'M\Album\01 - One.flac', size: 1),
+      ];
+      final full = await source.loadFolder(known);
+      expect(full.map((t) => t.title), ['One', 'Nine']);
+    });
+
+    test('loadFolder propagates channel errors', () async {
+      channel.searchResults = [file('peerA', r'M\Album\01 - One.flac')];
+      final known = await source.search('query');
+      channel.directoryError = const SoulseekException('ERR', 'offline');
+      expect(source.loadFolder(known), throwsA(isA<SoulseekException>()));
+    });
+
+    test('folderOf / leafOf handle both separators', () {
+      expect(SoulseekSource.folderOf(r'a\b/c.flac'), r'a\b');
+      expect(SoulseekSource.leafOf(r'a\b/c.flac'), 'c.flac');
+      expect(SoulseekSource.folderOf('c.flac'), '');
+      expect(SoulseekSource.leafOf('c.flac'), 'c.flac');
     });
   });
 
