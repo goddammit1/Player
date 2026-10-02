@@ -403,6 +403,86 @@ namespace Soulseek.Wrapper
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  Folder contents
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        ///   Запрашивает у пира полное содержимое папки (как «Get folder contents»
+        ///   в SeekerAndroid): поиск отдаёт только совпавшие с запросом файлы.
+        ///   jsonRequest: DirectoryRequestDto JSON {username, directory, timeoutMs}.
+        ///   Возвращает ResultDto JSON с data = SearchResultDto[] JSON (только аудио,
+        ///   полные пути; статистика пира — нули, её знает Dart из поиска).
+        /// </summary>
+        [Export("getDirectoryContentsAsync")]
+        public string GetDirectoryContentsSync(string jsonRequest)
+        {
+            try
+            {
+                return Task.Run(() => GetDirectoryContentsCoreAsync(jsonRequest)).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                return ErrorJson(ex, retryable: IsRetryableTransfer(ex));
+            }
+        }
+
+        private async Task<string> GetDirectoryContentsCoreAsync(string jsonRequest)
+        {
+            var req = JsonSerializer.Deserialize<DirectoryRequestDto>(jsonRequest, JsonOpts)
+                ?? throw new ArgumentException("Invalid directory request JSON");
+
+            if (string.IsNullOrWhiteSpace(req.Username) || string.IsNullOrWhiteSpace(req.Directory))
+            {
+                throw new ArgumentException("username and directory are required");
+            }
+
+            EnsureConnected();
+
+            using var cts = new CancellationTokenSource(req.TimeoutMs > 0 ? req.TimeoutMs : 20000);
+            var directories = await _client
+                .GetDirectoryContentsAsync(req.Username, req.Directory, cancellationToken: cts.Token)
+                .ConfigureAwait(false);
+
+            // В ответе на FolderContentsRequest имена файлов — без каталога
+            // ("02 - song.mp3"); для загрузки нужен полный путь, как в поиске.
+            var results = new List<SearchResultDto>();
+            int index = 0;
+            foreach (var dir in directories)
+            {
+                foreach (var f in dir.Files)
+                {
+                    var fullName = f.Filename.Contains('\\') && f.Filename.StartsWith(dir.Name, StringComparison.Ordinal)
+                        ? f.Filename
+                        : dir.Name + "\\" + f.Filename;
+                    var file = new SlskFile(f.Code, fullName, f.Size, f.Extension, f.Attributes, f.IsLatin1Decoded, dir.DecodedViaLatin1);
+                    if (!PassesFileFilter(file, null))
+                    {
+                        continue;
+                    }
+
+                    results.Add(new SearchResultDto
+                    {
+                        ResultId = "dir_" + index++,
+                        Username = req.Username,
+                        Filename = fullName,
+                        SizeBytes = file.Size,
+                        Extension = ExtensionOf(file),
+                        Bitrate = file.BitRate,
+                        SampleRate = file.SampleRate,
+                        BitDepth = file.BitDepth,
+                        DurationSeconds = file.Length,
+                    });
+                }
+            }
+
+            Android.Util.Log.Info(
+                "SoulseekBridge",
+                $"folder contents user={req.Username} dirs={directories.Count} audio={results.Count}");
+
+            return SuccessJson(JsonSerializer.Serialize(results, JsonOpts));
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  Download
         // ─────────────────────────────────────────────────────────────────────
 

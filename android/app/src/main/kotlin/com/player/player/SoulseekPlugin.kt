@@ -487,6 +487,36 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     }
                 }
 
+                "getDirectoryContents" -> {
+                    val bridge = serviceBinder?.bridge
+                        ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
+                    val username = call.argument<String>("username")
+                        ?: run { result.error("INVALID_ARGS", "username is required", null); return }
+                    val directory = call.argument<String>("directory")
+                        ?: run { result.error("INVALID_ARGS", "directory is required", null); return }
+                    val json = JSONObject()
+                        .put("username", username)
+                        .put("directory", directory)
+                        .put("timeoutMs", call.argument<Number>("timeoutMs")?.toInt() ?: 20000)
+                        .toString()
+                    // Блокирует до ответа пира (секунды) — на IO dispatcher.
+                    ioScope.launch {
+                        val res = BridgeCallResult.parse(runCatching { bridge.getDirectoryContentsAsync(json) }
+                            .getOrElse { e ->
+                                "{\"success\":false,\"errorCode\":\"JNI_ERROR\",\"errorMessage\":\"${e.message?.replace("\"", "'")}\"}"
+                            })
+                        replyBridgeResult(result, res) { data ->
+                            // data — JSON-массив SearchResultDto, как у search.
+                            val arr = JSONArray(data)
+                            val list = ArrayList<Map<String, Any?>>(arr.length())
+                            for (i in 0 until arr.length()) {
+                                list.add(JsonInterop.toStandard(arr.getJSONObject(i)) as Map<String, Any?>)
+                            }
+                            list
+                        }
+                    }
+                }
+
                 "startDownload" -> {
                     val mgr = serviceBinder?.transferManager
                         ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
@@ -826,8 +856,8 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         obj.put("query", call.argument<String>("query") ?: "")
         obj.put("timeoutMs", (call.argument<Number>("timeoutMs")?.toInt() ?: 10000))
         obj.put("idleTimeoutMs", (call.argument<Number>("idleTimeoutMs")?.toInt() ?: 2500))
-        obj.put("responseLimit", (call.argument<Number>("responseLimit")?.toInt() ?: 100))
-        obj.put("fileLimit", (call.argument<Number>("fileLimit")?.toInt() ?: 200))
+        obj.put("responseLimit", (call.argument<Number>("responseLimit")?.toInt() ?: 250))
+        obj.put("fileLimit", (call.argument<Number>("fileLimit")?.toInt() ?: 2000))
 
         val filters = call.argument<Map<String, Any>>("filters")
         val filtersObj = JSONObject()

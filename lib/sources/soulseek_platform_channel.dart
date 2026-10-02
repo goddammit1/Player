@@ -239,8 +239,8 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// [requestId] — уникальный ID запроса (генерируется вызывающим кодом).
   /// [timeoutMs] — жёсткий общий бюджет поиска (по умолчанию 10000 мс).
   /// [idleTimeoutMs] — «окно тишины» после первого ответа (по умолчанию 2500 мс).
-  /// [responseLimit] — максимальное количество ответов (по умолчанию 100).
-  /// [fileLimit] — досрочное завершение по числу файлов (по умолчанию 200).
+  /// [responseLimit] — максимальное количество ответов (по умолчанию 250).
+  /// [fileLimit] — досрочное завершение по числу файлов (по умолчанию 2000).
   /// [filters] — поисковые фильтры (расширения, размер, битрейт и т.д.).
   ///
   /// Возвращает список результатов поиска.
@@ -250,8 +250,8 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     required String query,
     int timeoutMs = 10000,
     int idleTimeoutMs = 2500,
-    int responseLimit = 100,
-    int fileLimit = 200,
+    int responseLimit = 250,
+    int fileLimit = 2000,
     SoulseekSearchFilters filters = SoulseekSearchFilters.empty,
   }) async {
     _requireAndroid();
@@ -285,6 +285,29 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     } on SoulseekException catch (e) {
       debugPrint('[Soulseek] cancelSearch failed: ${e.code} ${e.message}');
     }
+  }
+
+  /// Полное содержимое папки [directory] пира [username] (FolderContentsRequest).
+  ///
+  /// Поиск отдаёт только файлы, совпавшие с запросом; здесь — вся папка.
+  /// Только аудио, с полными путями; статистика пира (очередь, слоты,
+  /// скорость) в результатах нулевая. [timeoutMs] — ожидание ответа пира.
+  @override
+  Future<List<SoulseekSearchResult>> getDirectoryContents({
+    required String username,
+    required String directory,
+    int timeoutMs = 20000,
+  }) async {
+    _requireAndroid();
+    final result = await _invoke<List>('getDirectoryContents', {
+      'username': username,
+      'directory': directory,
+      'timeoutMs': timeoutMs,
+    });
+    if (result == null) return const [];
+    return result
+        .map((m) => SoulseekSearchResult.fromMap((m as Map).cast<String, dynamic>()))
+        .toList(growable: false);
   }
 
   // ═══════════════════════════════════════════════════════════════════

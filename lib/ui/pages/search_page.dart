@@ -8,6 +8,7 @@ import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import 'search/search_bar_widgets.dart';
+import 'search/search_folder_tiles.dart';
 import 'search/search_track_tiles.dart';
 import 'search_history_page.dart';
 import 'settings_page.dart';
@@ -249,12 +250,16 @@ class _SearchPageState extends ConsumerState<SearchPage>
   }
 
   /// Сетка или список треков [tracks] в текущем режиме отображения.
+  /// Треки папок Soulseek ([groupSearchEntries]) сворачиваются в карточки.
   Widget _buildTracksSliver(
     List<Track> tracks,
     SearchViewMode viewMode,
     dynamic colors,
   ) {
     final player = ref.read(playerServiceProvider);
+    final entries = groupSearchEntries(tracks);
+    bool playing(SearchEntry e, String? currentId) =>
+        currentId != null && e.tracks.any((t) => t.globalId == currentId);
     if (viewMode == SearchViewMode.grid) {
       return SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -270,14 +275,22 @@ class _SearchPageState extends ConsumerState<SearchPage>
                 childAspectRatio: 1.0,
               ),
               delegate: SliverChildBuilderDelegate((context, i) {
-                final t = tracks[i];
+                final e = entries[i];
+                if (e.isFolder) {
+                  return SearchFolderTileGrid(
+                    tracks: e.tracks,
+                    isPlaying: playing(e, currentId),
+                    colors: colors,
+                  );
+                }
+                final t = e.tracks.single;
                 return SearchTrackTileGrid(
                   track: t,
-                  isPlaying: currentId != null && currentId == t.globalId,
+                  isPlaying: playing(e, currentId),
                   onTap: () => _playTrack(t),
                   colors: colors,
                 );
-              }, childCount: tracks.length),
+              }, childCount: entries.length),
             );
           },
         ),
@@ -291,21 +304,35 @@ class _SearchPageState extends ConsumerState<SearchPage>
           final currentId = mediaSnap.data?.id;
           return SliverList(
             delegate: SliverChildBuilderDelegate((context, i) {
-              final t = tracks[i];
+              final e = entries[i];
+              if (e.isFolder) {
+                return SearchFolderTileList(
+                  tracks: e.tracks,
+                  isPlaying: playing(e, currentId),
+                  onPlay: () => _playFolder(e.tracks),
+                  colors: colors,
+                );
+              }
+              final t = e.tracks.single;
               return SearchTrackTileList(
                 track: t,
-                isPlaying: currentId != null && currentId == t.globalId,
+                isPlaying: playing(e, currentId),
                 duration: t.duration != null
                     ? _formatDuration(t.duration!)
                     : null,
                 onTap: () => _playTrack(t),
                 colors: colors,
               );
-            }, childCount: tracks.length),
+            }, childCount: entries.length),
           );
         },
       ),
     );
+  }
+
+  /// Папка Soulseek с первого трека; очередь — только треки папки.
+  void _playFolder(List<Track> tracks) {
+    ref.read(playerServiceProvider).setQueue(List.of(tracks));
   }
 
   /// Заголовок изолированной секции — имена её источников («Soulseek»).
@@ -328,10 +355,16 @@ class _SearchPageState extends ConsumerState<SearchPage>
   /// неверного [startIndex], если список обновился между build и тапом
   /// (например, подгрузились обложки или добавился источник).
   ///
-  /// Очередь — основная выдача + изолированная секция, в порядке на экране.
+  /// Очередь — основная выдача + изолированная секция, в порядке на экране,
+  /// без треков папок Soulseek: они свёрнуты в карточки и играют своей
+  /// очередью ([_playFolder], шторка папки).
   void _playTrack(Track track) {
     final player = ref.read(playerServiceProvider);
-    final results = ref.read(searchProvider).allResults;
+    final results = ref
+        .read(searchProvider)
+        .allResults
+        .where((t) => t.extra['folderKey'] == null)
+        .toList();
     final startIndex = results.indexWhere((t) => t.globalId == track.globalId);
     if (startIndex == -1 || results.isEmpty) return;
     player.setQueue(List.of(results), startIndex: startIndex);
