@@ -550,10 +550,16 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                         durationSeconds = durationSeconds
                     )
                     // ret может быть путём (cache hit) или downloadId.
+                    val cacheHit = ret != downloadId
+                    // Стриминг: путь .part, который C# bridge пишет последовательно
+                    // (тот же cacheDir + "<cacheKey>.part"); Dart читает его по мере роста.
+                    val partPath = if (cacheHit) null else serviceBinder?.cacheManager
+                        ?.let { runCatching { it.ensurePartFile(cacheKey).absolutePath }.getOrNull() }
                     val map = mapOf(
                         "downloadId" to downloadId,
                         "result" to ret,
-                        "cacheHit" to (ret != downloadId)
+                        "cacheHit" to cacheHit,
+                        "partPath" to partPath
                     )
                     result.success(map)
                 }
@@ -775,7 +781,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             "title" to it.title,
             "artist" to it.artist,
             "durationSeconds" to it.durationSeconds,
-            "extension" to it.extension
+            "extension" to it.extension,
+            // Дата кэширования для единого списка кэш-треков: mtime файла
+            // (пишется по завершении загрузки, LRU-touch его не меняет).
+            "cachedAt" to java.io.File(it.localPath).lastModified()
         )
 
     // ───────────────────────────────────────────────────────────────────

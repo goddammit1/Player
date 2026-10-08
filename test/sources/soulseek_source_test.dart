@@ -17,9 +17,11 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/database/app_database.dart';
@@ -27,6 +29,7 @@ import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
+import 'package:player/sources/soulseek_stream_audio_source.dart';
 
 import '../setup/test_harness.dart';
 
@@ -1214,6 +1217,188 @@ void main() {
           ),
         ),
       );
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  createAudioSource — стриминг из .part
+  // ═══════════════════════════════════════════════════════════════════
+  group('createAudioSource streaming', () {
+    late Directory dir;
+    late File part;
+
+    setUp(() async {
+      dir = await Directory.systemTemp.createTemp('slsk_source_stream');
+      part = File('${dir.path}/ck_test.part');
+      source.offlineAudioSourceLookup = (_) async => null;
+      source.pollInterval = const Duration(milliseconds: 10);
+      source.streamPollInterval = const Duration(milliseconds: 5);
+      source.streamStartBytes = 100;
+      channel.cacheEntry = null;
+      channel.downloadResult = SoulseekDownloadResult(
+        downloadId: 'dl_ck_test',
+        result: 'dl_ck_test',
+        cacheHit: false,
+        partPath: part.path,
+      );
+    });
+
+    tearDown(() async {
+      // Завершаем фоновое ожидание загрузки, чтобы не осталось таймеров.
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.cancelled,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await dir.delete(recursive: true);
+    });
+
+    test('returns a stream source once the start threshold is written',
+        () async {
+      final future = source.createAudioSource(_makeTrack());
+      // Пир начинает отдавать после старта загрузки.
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await part.writeAsBytes(List<int>.filled(150, 1));
+
+      final audio = await future;
+
+      expect(audio, isA<SoulseekStreamAudioSource>());
+      final stream = audio as SoulseekStreamAudioSource;
+      expect(stream.partPath, part.path);
+      expect(stream.totalBytes, 50000000);
+      expect(stream.contentType, 'audio/flac');
+    });
+
+    test('waits until the start threshold is reached', () async {
+      await part.writeAsBytes(List<int>.filled(10, 1));
+      var done = false;
+
+      final future = source
+          .createAudioSource(_makeTrack())
+          .whenComplete(() => done = true);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(done, isFalse);
+
+      await part.writeAsBytes(List<int>.filled(200, 1), mode: FileMode.append);
+      expect(await future, isA<SoulseekStreamAudioSource>());
+    });
+
+    test('stale .part from an earlier attempt must grow before streaming',
+        () async {
+      // Остаток прошлой загрузки больше порога, но пир ещё ничего не отдал.
+      await part.writeAsBytes(List<int>.filled(500, 1));
+      var done = false;
+
+      final future = source
+          .createAudioSource(_makeTrack())
+          .whenComplete(() => done = true);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(done, isFalse);
+
+      await part.writeAsBytes(List<int>.filled(150, 1), mode: FileMode.append);
+      expect(await future, isA<SoulseekStreamAudioSource>());
+    });
+
+    test('download finished before threshold → plays the final file',
+        () async {
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.completed,
+        localPath: '/cache/ck_test.flac',
+      );
+
+      final audio = await source.createAudioSource(_makeTrack());
+
+      expect(audio, isA<UriAudioSource>());
+      expect((audio as UriAudioSource).uri, Uri.file('/cache/ck_test.flac'));
+    });
+
+    test('download failure before threshold is rethrown', () async {
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.failed,
+        errorCode: 'PEER_OFFLINE',
+        message: 'Peer went offline',
+      );
+
+      await expectLater(
+        source.createAudioSource(_makeTrack()),
+        throwsA(isA<SoulseekException>()
+            .having((e) => e.code, 'code', 'PEER_OFFLINE')),
+      );
+    });
+
+    test('no bytes within downloadTimeout → DOWNLOAD_TIMEOUT', () async {
+      source.downloadTimeout = const Duration(milliseconds: 60);
+
+      await expectLater(
+        source.createAudioSource(_makeTrack()),
+        throwsA(isA<SoulseekException>()
+            .having((e) => e.code, 'code', 'DOWNLOAD_TIMEOUT')),
+      );
+    });
+
+    test('completion while streaming records the cache key', () async {
+      final future = source.createAudioSource(_makeTrack());
+      // Пир начинает отдавать после старта загрузки.
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await part.writeAsBytes(List<int>.filled(150, 1));
+      await future;
+
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.completed,
+        localPath: '/cache/ck_test.flac',
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(source.knownCacheKeys, contains('ck_test'));
+    });
+
+    test('without partPath falls back to waiting for the full file', () async {
+      channel.downloadResult = const SoulseekDownloadResult(
+        downloadId: 'dl_ck_test',
+        result: 'dl_ck_test',
+        cacheHit: false,
+      );
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.completed,
+        localPath: '/cache/full.flac',
+      );
+
+      final audio = await source.createAudioSource(_makeTrack());
+
+      expect((audio as UriAudioSource).uri, Uri.file('/cache/full.flac'));
+    });
+
+    test('streaming disabled → waits for the full file', () async {
+      source.streamingEnabled = false;
+      await part.writeAsBytes(List<int>.filled(150, 1));
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.completed,
+        localPath: '/cache/full.flac',
+      );
+
+      final audio = await source.createAudioSource(_makeTrack());
+
+      expect((audio as UriAudioSource).uri, Uri.file('/cache/full.flac'));
+    });
+
+    test('complete cache entry is played directly', () async {
+      channel.cacheEntry = const SoulseekCacheEntry(
+        cacheKey: 'ck_test',
+        localPath: '/cache/cached.flac',
+        sizeBytes: 50000000,
+        complete: true,
+        pinned: false,
+      );
+
+      final audio = await source.createAudioSource(_makeTrack());
+
+      expect((audio as UriAudioSource).uri, Uri.file('/cache/cached.flac'));
+      expect(channel.startDownloadCalls, isEmpty);
     });
   });
 

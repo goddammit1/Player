@@ -848,6 +848,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
       }
 
       await YoutubeCache.instance.pin(_cacheId(widget.track));
+      await YoutubeCache.instance.registerTrack(widget.track);
 
       if (mounted) {
         setState(() {

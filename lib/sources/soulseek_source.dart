@@ -19,6 +19,8 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:crypto/crypto.dart';
@@ -34,6 +36,7 @@ import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
 import 'soulseek_models.dart';
 import 'soulseek_platform_channel.dart';
+import 'soulseek_stream_audio_source.dart';
 import 'track_source.dart';
 
 /// Минимальный контракт платформенного канала, необходимый [SoulseekSource].
@@ -129,6 +132,29 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// Общий таймаут ожидания завершения одной загрузки.
   @visibleForTesting
   Duration downloadTimeout = const Duration(minutes: 10);
+
+  /// Стриминг: играть трек во время загрузки, читая `.part`. Выключение
+  /// возвращает прежнее поведение (воспроизведение после полной загрузки).
+  bool streamingEnabled = true;
+
+  /// Сколько байт `.part` дождаться перед отдачей AudioSource плееру:
+  /// подтверждение, что пир реально начал отдавать файл.
+  @visibleForTesting
+  int streamStartBytes = 256 * 1024;
+
+  /// Интервал проверки роста `.part` при ожидании старта стриминга.
+  @visibleForTesting
+  Duration streamPollInterval = const Duration(milliseconds: 250);
+
+  /// Таймаут ожидания завершения загрузки, которая уже играет: длинный FLAC
+  /// от медленного пира может качаться дольше [downloadTimeout].
+  @visibleForTesting
+  Duration streamDownloadTimeout = const Duration(hours: 1);
+
+  /// Поиск трека в офлайн-кэше YoutubeCache (DI для тестов).
+  @visibleForTesting
+  Future<AudioSource?> Function(Track track) offlineAudioSourceLookup =
+      offline.createOfflineAudioSource;
 
   /// NEW-2: таймаут поиска из настроек (soulseek_search_timeout_sec, БД).
   /// Это жёсткий общий бюджет: C# bridge останавливает поиск по его
@@ -713,13 +739,33 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     final cacheKey = _getOrCreateCacheKey(track);
 
     // 1. Проверка кэша: файл уже скачан и complete?
-    final entry = await _channel.getCacheEntry(cacheKey);
-    if (entry != null && entry.complete) {
-      if (kDebugMode) debugPrint('[Soulseek] cache hit: $cacheKey → ${entry.localPath}');
-      return entry.localPath;
-    }
+    final cachedPath = await _completeCachePath(cacheKey);
+    if (cachedPath != null) return cachedPath;
 
     // 2. Запуск загрузки (или присоединение к идущей).
+    final result = await _startDownload(track, cacheKey);
+
+    // Cache hit — файл уже complete (мог появиться между шагами 1 и 2).
+    if (result.cacheHit) return result.result;
+
+    // 3. Ждём завершения загрузки через event stream.
+    //    result.result — downloadId (может отличаться при dedupe).
+    return _waitForDownloadComplete(result.result);
+  }
+
+  /// Путь полностью скачанного файла из нативного кэша или null.
+  Future<String?> _completeCachePath(String cacheKey) async {
+    final entry = await _channel.getCacheEntry(cacheKey);
+    if (entry == null || !entry.complete) return null;
+    if (kDebugMode) debugPrint('[Soulseek] cache hit: $cacheKey → ${entry.localPath}');
+    return entry.localPath;
+  }
+
+  /// Запускает загрузку трека (или присоединяется к идущей).
+  Future<SoulseekDownloadResult> _startDownload(
+    Track track,
+    String cacheKey,
+  ) async {
     final peerUsername = track.extra['peerUsername'] as String?;
     final remoteFilename = track.extra['remoteFilename'] as String?;
     final sizeBytes = _asInt(track.extra['sizeBytes']);
@@ -754,16 +800,10 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       durationSeconds: track.duration?.inSeconds,
     );
 
-    // Cache hit — файл уже complete (мог появиться между шагами 1 и 2).
-    if (result.cacheHit) {
-      if (kDebugMode) debugPrint('[Soulseek] startDownload cache hit: ${result.result}');
-      return result.result;
+    if (result.cacheHit && kDebugMode) {
+      debugPrint('[Soulseek] startDownload cache hit: ${result.result}');
     }
-
-    // 3. Ждём завершения загрузки через event stream.
-    //    result.result — downloadId (может отличаться при dedupe).
-    final actualDownloadId = result.result;
-    return _waitForDownloadComplete(actualDownloadId);
+    return result;
   }
 
   /// Ждёт завершения загрузки [downloadId] — событие ИЛИ поллинг-fallback.
@@ -775,10 +815,26 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   ///  2. Немедленная проверка текущего состояния после подписки.
   ///  3. Поллинг getTransfer + getCacheEntry(cacheKey) каждые [pollInterval]
   ///     — гарантированное завершение даже без событий.
-  ///  4. Общий таймаут [downloadTimeout] — бросает SoulseekException.
-  Future<String> _waitForDownloadComplete(String downloadId) async {
+  ///  4. Общий таймаут [timeout] (по умолчанию [downloadTimeout]) — бросает
+  ///     SoulseekException.
+  ///
+  /// [abandon] — досрочный отказ от ожидания (стриминг не дождался старта):
+  /// останавливает поллинг, сама загрузка продолжается нативно.
+  Future<String> _waitForDownloadComplete(
+    String downloadId, {
+    Duration? timeout,
+    Future<void>? abandon,
+  }) async {
     final cacheKey = downloadId.replaceFirst('dl_', '');
     final completer = Completer<String>();
+    abandon?.then<void>((_) {
+      if (!completer.isCompleted) {
+        completer.completeError(const SoulseekException(
+          'DOWNLOAD_ABANDONED',
+          'Stopped waiting for download',
+        ));
+      }
+    });
     Timer? pollTimer;
 
     void finish() {
@@ -875,7 +931,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
     try {
       return await completer.future.timeout(
-        downloadTimeout,
+        timeout ?? downloadTimeout,
         onTimeout: () => throw const SoulseekException(
           'DOWNLOAD_TIMEOUT',
           'Download timed out',
@@ -899,14 +955,104 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     //    Soulseek-файлы лежат в отдельном native-кэше (soulseek_cache/),
     //    поэтому createOfflineAudioSource вернёт null для них. Но паттерн
     //    сохранён для консистентности и на случай будущих изменений.
-    final offlineSource = await offline.createOfflineAudioSource(track);
+    final offlineSource = await offlineAudioSourceLookup(track);
     if (offlineSource != null) return offlineSource;
 
-    // 2. Обеспечить локальный файл (кэш Soulseek → скачать если нужно).
-    final localPath = await resolveStreamUrl(track);
+    // 2. Без стриминга — дождаться полного файла (кэш Soulseek → скачать).
+    if (!streamingEnabled) {
+      return AudioSource.uri(Uri.file(await resolveStreamUrl(track)));
+    }
 
-    // 3. AudioSource из локального file:// пути — без сетевых URL.
-    return AudioSource.uri(Uri.file(localPath));
+    // 3. Стриминг: готовый файл из кэша или чтение .part во время загрузки.
+    final cacheKey = _getOrCreateCacheKey(track);
+    final cachedPath = await _completeCachePath(cacheKey);
+    if (cachedPath != null) return AudioSource.uri(Uri.file(cachedPath));
+
+    final result = await _startDownload(track, cacheKey);
+    if (result.cacheHit) return AudioSource.uri(Uri.file(result.result));
+
+    final partPath = result.partPath;
+    if (partPath == null) {
+      // Нативная сторона не сообщила путь .part (старый контракт канала).
+      final path = await _waitForDownloadComplete(result.result);
+      return AudioSource.uri(Uri.file(path));
+    }
+    return _createStreamSource(track, result.result, partPath);
+  }
+
+  /// Стриминг: ждёт [streamStartBytes] новых байт в `.part` и отдаёт
+  /// [SoulseekStreamAudioSource], который дочитывает файл по мере загрузки.
+  ///
+  /// Ожидание старта ограничено [downloadTimeout] — очередь у пира или
+  /// оффлайн-пир дают ошибку до setAudioSource, как и без стриминга.
+  /// Если загрузка завершилась раньше порога, играем готовый файл.
+  Future<AudioSource> _createStreamSource(
+    Track track,
+    String downloadId,
+    String partPath,
+  ) async {
+    final sizeBytes = _asInt(track.extra['sizeBytes']);
+    final extension = (track.extra['extension'] as String?) ?? 'dat';
+
+    final abandon = Completer<void>();
+    // Ожидание завершения живёт всё время воспроизведения: индексирует
+    // кэш и сообщает читателю об успехе/ошибке загрузки.
+    final completion = _waitForDownloadComplete(
+      downloadId,
+      timeout: streamDownloadTimeout,
+      abandon: abandon.future,
+    );
+    String? completedPath;
+    Object? failure;
+    unawaited(completion.then<void>(
+      (path) => completedPath = path,
+      onError: (Object e) => failure = e,
+    ));
+
+    // Порог — прирост относительно начального размера: остаток прошлой
+    // попытки уже может быть больше порога, а пир (в очереди/оффлайн) ещё
+    // ничего не отдал. Ждём подтверждения, что загрузка реально идёт.
+    final initialBytes = await _fileLength(partPath);
+    final threshold = math.min(initialBytes + streamStartBytes, sizeBytes);
+    final sw = Stopwatch()..start();
+    while (true) {
+      final error = failure;
+      if (error != null) throw error;
+      final path = completedPath;
+      if (path != null) return AudioSource.uri(Uri.file(path));
+
+      final written = await _fileLength(partPath);
+      if (written >= threshold) break;
+
+      if (sw.elapsed >= downloadTimeout) {
+        if (!abandon.isCompleted) abandon.complete();
+        throw const SoulseekException(
+          'DOWNLOAD_TIMEOUT',
+          'Download did not start in time',
+          retryable: true,
+        );
+      }
+      await Future<void>.delayed(streamPollInterval);
+    }
+
+    if (kDebugMode) {
+      debugPrint('[Soulseek] streaming $downloadId from .part '
+          'after ${sw.elapsedMilliseconds} ms');
+    }
+    return SoulseekStreamAudioSource(
+      partPath: partPath,
+      totalBytes: sizeBytes,
+      contentType: SoulseekStreamAudioSource.contentTypeFor(extension),
+      completion: completion,
+    );
+  }
+
+  static Future<int> _fileLength(String path) async {
+    try {
+      return await File(path).length();
+    } on FileSystemException {
+      return 0;
+    }
   }
 
   /// Предзагрузка: запускает скачивание в фоне, не дожидаясь завершения.

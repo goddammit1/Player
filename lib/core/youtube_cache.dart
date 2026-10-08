@@ -11,6 +11,25 @@ import '../sources/artwork_provider.dart';
 import 'database/app_database.dart';
 import 'artwork_helper.dart';
 
+/// Аудио-файл в дисковом кэше (без `.part`/`.mime`-спутников).
+class CachedAudioFile {
+  const CachedAudioFile({
+    required this.cacheId,
+    required this.file,
+    required this.sizeBytes,
+    required this.modified,
+    required this.pinned,
+  });
+
+  final String cacheId;
+  final File file;
+  final int sizeBytes;
+
+  /// mtime файла: LRU-метка (обновляется при каждом открытии).
+  final DateTime modified;
+  final bool pinned;
+}
+
 /// Дисковый кэш приложения.
 ///
 /// Аудио (`yt_audio_cache`): LRU-кэш по mtime файлов с лимитом в МБ.
@@ -86,15 +105,115 @@ class YoutubeCache {
     }
   }
 
+  /// Обратная операция к [cacheIdFor]: источник и id трека по cache id.
+  /// Для id без известного префикса — легаси YouTube (id = cache id).
+  static ({String sourceId, String trackId}) parseCacheId(String cacheId) {
+    for (final sourceId in const ['muzmo', 'soundcloud']) {
+      final prefix = '${sourceId}_';
+      if (cacheId.startsWith(prefix) && cacheId.length > prefix.length) {
+        return (sourceId: sourceId, trackId: cacheId.substring(prefix.length));
+      }
+    }
+    return (sourceId: 'youtube', trackId: cacheId);
+  }
+
   /// Удобный хелпер: файл кэша для трека с учётом его источника.
+  /// Попутно запоминает метаданные трека в индексе (см. [registerTrack]).
+  ///
+  /// Источники зовут его перед стримингом через LockCachingAudioSource,
+  /// т.е. когда файла ещё нет: дата кэширования сбрасывается на «сейчас»,
+  /// иначе трек, однажды пропущенный и докачанный через месяц, попал бы
+  /// в группу дня первой попытки.
   Future<File> fileForTrack(
     Track track, {
     String extension = 'mp3',
   }) {
+    unawaited(registerTrack(track, resetCachedAt: true));
     return fileFor(
       cacheIdFor(sourceId: track.sourceId, trackId: track.id),
       extension: extension,
     );
+  }
+
+  /// Запоминает название/исполнителя трека для списка кэшированных
+  /// треков: по имени файла (`muzmo_<id>.mp3`) их не восстановить.
+  /// Ошибки БД не мешают кэшированию. [cachedAt] — для дозаписи индекса
+  /// по уже лежащему в кэше файлу (по умолчанию — сейчас); дата у
+  /// существующей записи меняется только с [resetCachedAt].
+  Future<void> registerTrack(
+    Track track, {
+    DateTime? cachedAt,
+    bool resetCachedAt = false,
+  }) async {
+    try {
+      await AppDatabase.instance.upsertAudioCacheEntry(
+        cacheIdFor(sourceId: track.sourceId, trackId: track.id),
+        track,
+        cachedAt: cachedAt,
+        resetCachedAt: resetCachedAt,
+      );
+    } catch (_) {}
+  }
+
+  /// Удаляет записи индекса [ids], у которых нет файла в кэше: загрузка
+  /// не завершилась, файл вычистила ОС, или запись досталась гонке с
+  /// очисткой. Идущие загрузки (`.part`) и играющий трек не трогаются.
+  Future<void> forgetMissing(Iterable<String> ids) async {
+    final dir = await _ensureAudioDir();
+    final missing = <String>[];
+    for (final id in ids) {
+      if (id == _protectedId) continue;
+      if (await findFile(id) != null) continue;
+      if (await _hasActiveDownload(dir, id)) continue;
+      missing.add(id);
+    }
+    await _forgetIndexEntries(missing);
+  }
+
+  /// Удаляет трек из кэша по запросу пользователя. В отличие от [evict]
+  /// не трогает файл играющего трека и сбрасывает закрепление и индекс
+  /// только если файл действительно удалён (на Windows открытый файл
+  /// удалить нельзя). Возвращает false, если трек остался в кэше.
+  Future<bool> removeTrackFile(String id) async {
+    if (id == _protectedId) return false;
+    final dir = await _ensureAudioDir();
+    var removed = true;
+    for (final ext in audioExtensions) {
+      final f = File(p.join(dir.path, '$id.$ext'));
+      if (!await f.exists()) continue;
+      try {
+        await f.delete();
+      } catch (_) {
+        removed = false;
+      }
+    }
+    if (!removed) return false;
+    await unpin(id);
+    await _forgetIndexEntries([id]);
+    return true;
+  }
+
+  /// Аудио-файлы в кэше. Незавершённые загрузки (`.part`) и служебные
+  /// файлы just_audio (`.mime`) не попадают в список.
+  Future<List<CachedAudioFile>> listAudioFiles() async {
+    final dir = await _ensureAudioDir();
+    await _loadPinnedIds();
+    final result = <CachedAudioFile>[];
+    try {
+      for (final (file, size, modified) in await _listFilesWithSize(dir)) {
+        final ext = p.extension(file.path).replaceFirst('.', '');
+        if (!audioExtensions.contains(ext)) continue;
+        final id = p.basenameWithoutExtension(file.path);
+        result.add(CachedAudioFile(
+          cacheId: id,
+          file: file,
+          sizeBytes: size,
+          modified: modified,
+          pinned: _pinnedIds.contains(id),
+        ));
+      }
+    } catch (_) {}
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -338,6 +457,7 @@ class YoutubeCache {
 
     var overflow = totalBytes - limitBytes;
     final now = DateTime.now();
+    final evicted = <String>[];
 
     // mtime берём из листинга — повторный stat() на каждый кандидат не нужен.
     for (final (file, size, modified) in files) {
@@ -353,8 +473,17 @@ class YoutubeCache {
       try {
         await file.delete();
         overflow -= size;
+        evicted.add(fid);
       } catch (_) {}
     }
+    await _forgetIndexEntries(evicted);
+  }
+
+  Future<void> _forgetIndexEntries(List<String> ids) async {
+    if (ids.isEmpty) return;
+    try {
+      await AppDatabase.instance.removeAudioCacheEntries(ids);
+    } catch (_) {}
   }
 
   /// Ограничивает по размеру дисковый кэш CachedNetworkImage.
@@ -423,6 +552,9 @@ class YoutubeCache {
     }
     _pinnedIds.clear();
     await _persistPinnedIds();
+    try {
+      await AppDatabase.instance.clearAudioCacheIndex(keep: _protectedId);
+    } catch (_) {}
   }
 
   /// Чистит дисковый кэш обложек CachedNetworkImage, сбрасывает
@@ -480,5 +612,6 @@ class YoutubeCache {
       }
     }
     await unpin(id);
+    await _forgetIndexEntries([id]);
   }
 }
