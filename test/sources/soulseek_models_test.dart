@@ -719,6 +719,32 @@ void main() {
       expect(result.cacheHit, isFalse);
     });
 
+    test('fromMap reads partPath for streaming', () {
+      final result = SoulseekDownloadResult.fromMap({
+        'downloadId': 'dl_2',
+        'result': 'dl_2',
+        'cacheHit': false,
+        'partPath': '/cache/abc.part',
+      });
+
+      expect(result.partPath, '/cache/abc.part');
+    });
+
+    test('fromMap treats missing or empty partPath as null', () {
+      final missing = SoulseekDownloadResult.fromMap({
+        'downloadId': 'dl_2',
+        'result': 'dl_2',
+      });
+      final empty = SoulseekDownloadResult.fromMap({
+        'downloadId': 'dl_2',
+        'result': 'dl_2',
+        'partPath': '',
+      });
+
+      expect(missing.partPath, isNull);
+      expect(empty.partPath, isNull);
+    });
+
     test('fromMap defaults cacheHit to false when missing', () {
       final result = SoulseekDownloadResult.fromMap({
         'downloadId': 'dl_3',

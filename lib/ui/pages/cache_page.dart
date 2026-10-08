@@ -4,17 +4,24 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/cached_tracks_service.dart';
 import '../../core/repositories/history_repository.dart';
 import '../../core/providers.dart';
 import '../../core/repositories/playlist_repository.dart';
+import '../../core/soulseek_settings_repository.dart';
 import '../../core/youtube_cache.dart';
 import '../../sources/artwork_provider.dart';
+import '../../sources/soulseek_platform_channel.dart';
 import '../desktop/desktop_layout.dart';
+import '../widgets/byte_format.dart';
+import 'cached_tracks_page.dart';
 
 /// Страница управления кэшем.
 ///
-/// Два независимых лимита:
-/// - Audio cache: mp3/m4a/webm треки
+/// - Audio cache: общий для всех источников — стриминговый кэш
+///   (muzmo/SoundCloud, легаси YouTube) и Soulseek (только Android).
+///   Размер и очистка — суммарные, лимиты у хранилищ раздельные
+///   (у каждого своя LRU-эвикция). Список треков — [CachedTracksPage].
 /// - Artwork cache: обложки (CachedNetworkImage хранит сам, мы лишь
 ///   ограничиваем его размер через ImageCache + свой дисковый кэш)
 class CachePage extends ConsumerStatefulWidget {
@@ -26,13 +33,13 @@ class CachePage extends ConsumerStatefulWidget {
 
 class _CachePageState extends ConsumerState<CachePage> {
   // ===== Состояние =====
-  int? _audioSize;
-  int? _audioCount;
+  CacheUsage? _audioUsage;
   int? _artworkSize;
   int? _artworkCount;
 
   late int _audioLimitMB;
   late int _artworkLimitMB;
+  int _soulseekLimitMB = SoulseekSettingsRepository.defaultCacheLimitMB;
 
   // Опции лимита: 0 = unlimited
   static const List<int> _limitOptions = [100, 500, 1024, 5120, 0];
@@ -44,29 +51,50 @@ class _CachePageState extends ConsumerState<CachePage> {
     'Unlimited',
   ];
 
+  // Опции лимита Soulseek (перенесены из настроек Soulseek).
+  static const List<int> _soulseekLimitOptions = [500, 1024, 2048, 5120, 0];
+  static const List<String> _soulseekLimitLabels = [
+    '500 MB',
+    '1 GB',
+    '2 GB',
+    '5 GB',
+    'Unlimited',
+  ];
+
+  /// Soulseek-кэш есть только на Android.
+  bool get _hasSoulseek => SoulseekPlatformChannel.instance.isAvailable;
+
+  CachedTracksService get _tracks => ref.read(cachedTracksServiceProvider);
+
   @override
   void initState() {
     super.initState();
     _audioLimitMB = YoutubeCache.maxAudioCacheMB;
     _artworkLimitMB = YoutubeCache.maxArtworkCacheMB;
+    _loadSoulseekLimit();
     _refreshStats();
+  }
+
+  Future<void> _loadSoulseekLimit() async {
+    if (!_hasSoulseek) return;
+    try {
+      final settings = await SoulseekSettingsRepository.instance.loadAll();
+      if (mounted) setState(() => _soulseekLimitMB = settings.cacheLimitMB);
+    } catch (_) {}
   }
 
   // ===== Статистика =====
 
   Future<void> _refreshStats() async {
-    final audioDir = YoutubeCache.instance.audioDir;
-
     // Инициализирует пути кэша, если их ещё никто не трогал.
     final artworkDir = await YoutubeCache.instance.ensureArtworkDir();
 
-    final audioStats = await _calcDirStats(audioDir);
+    final cached = await _tracks.loadAll();
     final artworkStats = await _calcDirStats(artworkDir);
 
     if (mounted) {
       setState(() {
-        _audioSize = audioStats.$1;
-        _audioCount = audioStats.$2;
+        _audioUsage = CacheUsage.of(cached);
         _artworkSize = artworkStats.$1;
         _artworkCount = artworkStats.$2;
       });
@@ -91,35 +119,39 @@ class _CachePageState extends ConsumerState<CachePage> {
 
   // ===== Форматирование =====
 
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-
   double? _usagePercent(int? usedBytes, int limitMB) {
     if (usedBytes == null || limitMB == 0) return null;
     final limitBytes = limitMB * 1024 * 1024;
     return (usedBytes / limitBytes).clamp(0.0, 1.0);
   }
 
+  String _sizeSummary(int? bytes, String? count) {
+    final sizeStr = bytes != null ? formatBytes(bytes) : '...';
+    return count == null ? sizeStr : '$sizeStr • $count';
+  }
+
   // ===== Действия =====
+
+  Future<void> _openCachedTracks() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const CachedTracksPage()),
+    );
+    // Треки могли удалить/открепить в списке.
+    if (mounted) await _refreshStats();
+  }
 
   Future<void> _clearAudioCache() async {
     final confirmed = await _showConfirmDialog(
       title: 'Clear audio cache?',
-      body:
-          'All cached tracks will be deleted. They will be re-downloaded on next play.',
+      body: 'All cached tracks from every source, including Soulseek '
+          'downloads, will be deleted. They will be re-downloaded on next play.',
     );
     if (confirmed != true) return;
 
-    await YoutubeCache.instance.clearAudioCache();
+    final error = await _guardClear(_tracks.clearAudio);
     await _refreshStats();
 
-    if (mounted) _showSnack('Audio cache cleared');
+    if (mounted) _showSnack(error ?? 'Audio cache cleared');
   }
 
   Future<void> _clearArtworkCache() async {
@@ -161,6 +193,7 @@ class _CachePageState extends ConsumerState<CachePage> {
     if (confirmed != true) return;
 
     await YoutubeCache.instance.clearAllCache();
+    final error = await _guardClear(_tracks.clearSoulseek);
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
 
@@ -172,7 +205,19 @@ class _CachePageState extends ConsumerState<CachePage> {
 
     await _refreshStats();
 
-    if (mounted) _showSnack('All cache cleared');
+    if (mounted) _showSnack(error ?? 'All cache cleared');
+  }
+
+  /// Выполняет очистку; возвращает текст ошибки для снэкбара или null.
+  Future<String?> _guardClear(Future<Object?> Function() clear) async {
+    try {
+      await clear();
+      return null;
+    } on CacheActionException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'Failed to clear audio cache';
+    }
   }
 
   Future<bool?> _showConfirmDialog({
@@ -253,7 +298,7 @@ class _CachePageState extends ConsumerState<CachePage> {
               ),
               const SizedBox(height: 48), // ← добавить
             ],
-            
+
           ),
         ),
         actions: [
@@ -279,38 +324,38 @@ class _CachePageState extends ConsumerState<CachePage> {
               children: [
                 // === AUDIO CACHE ===
                 _buildSectionHeader('Audio Cache', colors),
-                _buildCacheCard(
-                  icon: Icons.music_note_rounded,
-                  title: 'Cached tracks',
-                  usedBytes: _audioSize,
-                  fileCount: _audioCount,
-                  limitMB: _audioLimitMB,
-                  colors: colors,
-                  onLimitChanged: (mb) async {
-                    setState(() => _audioLimitMB = mb);
-                    await YoutubeCache.setAudioLimitMB(mb);
-                    await _refreshStats();
-                  },
-                  onClear: _clearAudioCache,
-                ),
+                _buildAudioCard(colors),
 
                 const SizedBox(height: 16),
 
                 // === ARTWORK CACHE ===
                 _buildSectionHeader('Artwork Cache', colors),
-                _buildCacheCard(
-                  icon: Icons.image_rounded,
-                  title: 'Cached artwork',
-                  usedBytes: _artworkSize,
-                  fileCount: _artworkCount,
-                  limitMB: _artworkLimitMB,
+                _buildCard(
                   colors: colors,
-                  onLimitChanged: (mb) async {
-                    setState(() => _artworkLimitMB = mb);
-                    await YoutubeCache.setArtworkLimitMB(mb);
-                    await _refreshStats();
-                  },
-                  onClear: _clearArtworkCache,
+                  children: [
+                    _buildCardHeader(
+                      icon: Icons.image_rounded,
+                      title: 'Cached artwork',
+                      subtitle: _sizeSummary(
+                        _artworkSize,
+                        _artworkCount == null ? null : '$_artworkCount files',
+                      ),
+                      colors: colors,
+                      onClear: _clearArtworkCache,
+                    ),
+                    _buildLimitBlock(
+                      usedBytes: _artworkSize,
+                      limitMB: _artworkLimitMB,
+                      options: _limitOptions,
+                      labels: _limitLabels,
+                      colors: colors,
+                      onLimitChanged: (mb) async {
+                        setState(() => _artworkLimitMB = mb);
+                        await YoutubeCache.setArtworkLimitMB(mb);
+                        await _refreshStats();
+                      },
+                    ),
+                  ],
                 ),
 
                 const SizedBox(height: 24),
@@ -348,20 +393,62 @@ class _CachePageState extends ConsumerState<CachePage> {
     );
   }
 
-  Widget _buildCacheCard({
-    required IconData icon,
-    required String title,
-    required int? usedBytes,
-    required int? fileCount,
-    required int limitMB,
-    required dynamic colors,
-    required ValueChanged<int> onLimitChanged,
-    required VoidCallback onClear,
-  }) {
-    final sizeStr = usedBytes != null ? _formatBytes(usedBytes) : '...';
-    final countStr = fileCount != null ? '$fileCount files' : '';
-    final percent = _usagePercent(usedBytes, limitMB);
+  /// Общая карточка аудио-кэша: суммарный размер, переход к списку
+  /// треков и лимиты хранилищ.
+  Widget _buildAudioCard(AppColors colors) {
+    final usage = _audioUsage;
+    final count = usage?.trackCount;
+    return _buildCard(
+      colors: colors,
+      children: [
+        _buildCardHeader(
+          icon: Icons.music_note_rounded,
+          title: 'Cached tracks',
+          subtitle: _sizeSummary(
+            usage?.totalBytes,
+            count == null ? null : '$count ${count == 1 ? 'track' : 'tracks'}',
+          ),
+          colors: colors,
+          onClear: _clearAudioCache,
+          onTap: _openCachedTracks,
+        ),
+        _buildLimitBlock(
+          title: 'Streaming',
+          usedBytes: usage?.streamingBytes,
+          limitMB: _audioLimitMB,
+          options: _limitOptions,
+          labels: _limitLabels,
+          colors: colors,
+          onLimitChanged: (mb) async {
+            setState(() => _audioLimitMB = mb);
+            await YoutubeCache.setAudioLimitMB(mb);
+            await _refreshStats();
+          },
+        ),
+        if (_hasSoulseek)
+          _buildLimitBlock(
+            title: 'Soulseek',
+            usedBytes: usage?.soulseekBytes,
+            limitMB: _soulseekLimitMB,
+            options: _soulseekLimitOptions,
+            labels: _soulseekLimitLabels,
+            colors: colors,
+            onLimitChanged: (mb) async {
+              setState(() => _soulseekLimitMB = mb);
+              // Репозиторий синхронизирует лимит с нативным кэшем, а
+              // натив может сразу вычистить лишнее — обновляем размер.
+              await SoulseekSettingsRepository.instance.setCacheLimitMB(mb);
+              await _refreshStats();
+            },
+          ),
+      ],
+    );
+  }
 
+  Widget _buildCard({
+    required AppColors colors,
+    required List<Widget> children,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Container(
@@ -372,121 +459,178 @@ class _CachePageState extends ConsumerState<CachePage> {
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Заголовок + иконка
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: colors.background,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(icon, color: colors.textPrimary, size: 20),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          style: TextStyle(
-                            color: colors.textPrimary,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '$sizeStr • $countStr',
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Кнопка очистки
-                  Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: onClear,
-                      child: Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Icon(
-                          Icons.delete_outline_rounded,
-                          color: Colors.redAccent.withValues(alpha: 0.8),
-                          size: 20,
+          children: children,
+        ),
+      ),
+    );
+  }
+
+  /// Заголовок карточки: иконка, название, размер, кнопка очистки.
+  /// С [onTap] строка кликабельна (стрелка справа от названия).
+  Widget _buildCardHeader({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required AppColors colors,
+    required VoidCallback onClear,
+    VoidCallback? onTap,
+  }) {
+    final row = Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colors.background,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: colors.textPrimary, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
+                    if (onTap != null)
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        color: colors.textSecondary,
+                        size: 20,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 13,
                   ),
-                ],
+                ),
+              ],
+            ),
+          ),
+          // Кнопка очистки
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onClear,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Icon(
+                  Icons.delete_outline_rounded,
+                  color: Colors.redAccent.withValues(alpha: 0.8),
+                  size: 20,
+                ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+    if (onTap == null) return row;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        onTap: onTap,
+        child: row,
+      ),
+    );
+  }
 
-            // Прогресс-бар (если лимит задан)
-            if (percent != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: percent,
-                    backgroundColor: colors.background,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      percent > 0.9
-                          ? Colors.orangeAccent
-                          : percent > 0.75
-                          ? Colors.yellowAccent
-                          : colors.accent,
-                    ),
-                    minHeight: 6,
+  /// Прогресс заполнения и чипы лимита одного хранилища.
+  Widget _buildLimitBlock({
+    String? title,
+    required int? usedBytes,
+    required int limitMB,
+    required List<int> options,
+    required List<String> labels,
+    required AppColors colors,
+    required ValueChanged<int> onLimitChanged,
+  }) {
+    final percent = _usagePercent(usedBytes, limitMB);
+    final used = usedBytes != null ? formatBytes(usedBytes) : '...';
+    final limitIndex = options.indexOf(limitMB);
+    final limitText = limitMB == 0
+        ? 'no limit'
+        : 'of ${limitIndex >= 0 ? labels[limitIndex] : '$limitMB MB'}';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title == null ? 'Size limit' : '$title size limit',
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
-
-            // Лимит
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Size limit',
-                    style: TextStyle(
-                      color: colors.textSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: List.generate(_limitOptions.length, (i) {
-                      final mb = _limitOptions[i];
-                      final label = _limitLabels[i];
-                      final isSelected = limitMB == mb;
-                      return _LimitChip(
-                        label: label,
-                        isSelected: isSelected,
-                        colors: colors,
-                        onTap: () => onLimitChanged(mb),
-                      );
-                    }),
-                  ),
-                ],
+              Text(
+                '$used $limitText',
+                style: TextStyle(
+                  color: colors.textTertiary,
+                  fontSize: 12,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ),
+          if (percent != null) ...[
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: percent,
+                backgroundColor: colors.background,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  percent > 0.9
+                      ? Colors.orangeAccent
+                      : percent > 0.75
+                      ? Colors.yellowAccent
+                      : colors.accent,
+                ),
+                minHeight: 6,
               ),
             ),
           ],
-        ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: List.generate(options.length, (i) {
+              final mb = options[i];
+              return _LimitChip(
+                label: labels[i],
+                isSelected: limitMB == mb,
+                colors: colors,
+                onTap: () => onLimitChanged(mb),
+              );
+            }),
+          ),
+        ],
       ),
     );
   }

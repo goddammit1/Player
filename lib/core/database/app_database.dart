@@ -8,6 +8,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../../models/playlist.dart';
 import '../../models/track.dart';
+import 'audio_cache_index_dao.dart';
 import 'backup_dao.dart';
 import 'database_schema.dart';
 import 'listen_history_dao.dart';
@@ -43,6 +44,7 @@ import '../repositories/history_repository.dart';
 /// | `settings`          | Все настройки (key-value)         |
 /// | `playlist_covers`   | Пути к кастомным обложкам         |
 /// | `playback_state`    | Сохранённая очередь плеера        |
+/// | `audio_cache_index` | Метаданные треков в аудио-кэше    |
 ///
 /// Миграции версионируются стандартным `onUpgrade` sqflite.
 ///
@@ -64,6 +66,7 @@ class AppDatabase {
   final SettingsDao _settingsDao = SettingsDao.instance;
   final PlaybackDao _playbackDao = PlaybackDao.instance;
   final BackupDao _backupDao = BackupDao.instance;
+  final AudioCacheIndexDao _audioCacheIndexDao = AudioCacheIndexDao.instance;
 
   Database? _db;
 
@@ -552,6 +555,41 @@ class AppDatabase {
   /// Удаляет legacy-ключи custom_art_ (без версионного суффикса v1).
   Future<void> cleanupLegacyCustomArtKeys() async {
     await _settingsDao.cleanupLegacyCustomArtKeys(await database);
+  }
+
+  // ==============================================================
+  //  AUDIO CACHE INDEX
+  // ==============================================================
+
+  /// Запоминает метаданные трека, кэшируемого под [cacheId].
+  Future<void> upsertAudioCacheEntry(
+    String cacheId,
+    Track track, {
+    DateTime? cachedAt,
+    bool resetCachedAt = false,
+  }) async {
+    await _audioCacheIndexDao.upsert(
+      await database,
+      cacheId,
+      track,
+      cachedAt: cachedAt,
+      resetCachedAt: resetCachedAt,
+    );
+  }
+
+  /// Все записи индекса аудио-кэша (ключ — cache id).
+  Future<Map<String, AudioCacheIndexEntry>> getAudioCacheIndex() async {
+    return _audioCacheIndexDao.getAll(await database);
+  }
+
+  /// Удаляет записи индекса аудио-кэша.
+  Future<void> removeAudioCacheEntries(Iterable<String> cacheIds) async {
+    await _audioCacheIndexDao.removeAll(await database, cacheIds);
+  }
+
+  /// Очищает индекс аудио-кэша, кроме [keep].
+  Future<void> clearAudioCacheIndex({String? keep}) async {
+    await _audioCacheIndexDao.clear(await database, keep: keep);
   }
 
   // ==============================================================

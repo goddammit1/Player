@@ -71,6 +71,31 @@ class SourceRegistry {
     }
   }
 
+  /// Перечитывает настройки Soulseek из БД в рантайм-состояние: feature
+  /// flag, поисковые фильтры/таймаут источника и натив-ключи soulseek.db.
+  ///
+  /// Нужна после импорта полного бэкапа: таблица `settings` замещается
+  /// целиком, а флаг, фильтры и натив иначе жили бы на старых значениях
+  /// до рестарта. До [registerDefaults] (авто-восстановление на старте)
+  /// источник ещё не зарегистрирован — обновляется только флаг, остальное
+  /// main.dart применит сам после регистрации.
+  static Future<void> reloadSoulseekSettings() async {
+    await loadSoulseekEnabled();
+    final source = instance._sources['soulseek'];
+    if (source == null) return;
+    if (_soulseekEnabled) {
+      instance._disabledForSearch.remove('soulseek');
+    } else {
+      instance._disabledForSearch.add('soulseek');
+    }
+    if (source is SoulseekSource) {
+      try {
+        await SoulseekSettingsRepository.instance.applyToSource(source);
+      } catch (_) {}
+    }
+    await SoulseekSettingsRepository.instance.syncToNative();
+  }
+
   /// Включает или выключает Soulseek для поиска.
   ///
   /// Сохраняет значение в SQLite (через SoulseekSettingsRepository) и

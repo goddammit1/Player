@@ -20,6 +20,7 @@ import 'package:player/core/database/app_database.dart';
 import 'package:player/core/soulseek_settings_repository.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
+import 'package:player/sources/source_registry.dart';
 
 import '../setup/test_harness.dart';
 
@@ -103,6 +104,7 @@ void main() {
       expect(s.maxFileSizeMB, 0);
       expect(s.searchTimeoutSec, 10);
       expect(s.sharingDirectory, '');
+      expect(s.streamingEnabled, isTrue);
     });
 
     test('isEnabled defaults to false when key is missing', () async {
@@ -123,6 +125,7 @@ void main() {
       await repo.setMaxFileSizeMB(300);
       await repo.setSearchTimeoutSec(42);
       await repo.setSharingDirectory('/storage/emulated/0/Music');
+      await repo.setStreamingEnabled(false);
 
       final s = await repo.loadAll();
 
@@ -135,6 +138,7 @@ void main() {
       expect(s.maxFileSizeMB, 300);
       expect(s.searchTimeoutSec, 42);
       expect(s.sharingDirectory, '/storage/emulated/0/Music');
+      expect(s.streamingEnabled, isFalse);
     });
 
     test('overwrite works (last write wins)', () async {
@@ -213,6 +217,17 @@ void main() {
         settings: const SoulseekSettings(searchTimeoutSec: 7),
       );
       expect(source.searchTimeoutMs, 7000);
+    });
+
+    test('applyToSource applies the streaming flag', () async {
+      final repo = SoulseekSettingsRepository.instance;
+      await repo.setStreamingEnabled(false);
+      final source = SoulseekSource(channel: _FakeChannel());
+      expect(source.streamingEnabled, isTrue);
+
+      await repo.applyToSource(source);
+
+      expect(source.streamingEnabled, isFalse);
     });
   });
 
@@ -297,6 +312,45 @@ void main() {
       // isAvailable == false → ранний return, канал не трогаем.
       await SoulseekSettingsRepository.instance.syncToNative();
       expect(invoked, isFalse);
+    });
+  });
+
+  group('Полный бэкап: настройки Soulseek', () {
+    tearDown(() async => await SourceRegistry.instance.disposeAll());
+
+    test('экспорт → импорт восстанавливает значения и рантайм-состояние',
+        () async {
+      final repo = SoulseekSettingsRepository.instance;
+      final source = SoulseekSource(channel: _FakeChannel());
+      SourceRegistry.instance.register(source);
+
+      await repo.setEnabled(true);
+      await repo.setAllowedFormats({'flac'});
+      await repo.setMaxFileSizeMB(200);
+      await repo.setSearchTimeoutSec(30);
+      final backup = await AppDatabase.instance.exportFullBackup();
+
+      // Состояние «до импорта» отличается от бэкапа во всём.
+      await SourceRegistry.setSoulseekEnabled(false);
+      await repo.setAllowedFormats({'mp3'});
+      await repo.setMaxFileSizeMB(0);
+      await repo.setSearchTimeoutSec(5);
+      await repo.applyToSource(source);
+
+      await AppDatabase.instance.importFullBackup(backup);
+      await SourceRegistry.reloadSoulseekSettings();
+
+      final s = await repo.loadAll();
+      expect(s.enabled, isTrue);
+      expect(s.allowedFormats, {'flac'});
+      expect(s.maxFileSizeMB, 200);
+      expect(s.searchTimeoutSec, 30);
+
+      expect(SourceRegistry.isSoulseekEnabled, isTrue);
+      expect(SourceRegistry.instance.isDisabled('soulseek'), isFalse);
+      expect(source.searchFilters.extensions, ['flac']);
+      expect(source.searchFilters.maxSizeBytes, 200 * 1024 * 1024);
+      expect(source.searchTimeoutMs, 30000);
     });
   });
 }

@@ -408,6 +408,10 @@ class SoulseekCacheEntry {
   /// метка тогда строится из localPath либо отсутствует.
   final String? extension;
 
+  /// Момент кэширования (mtime файла на нативной стороне). null — натив
+  /// не прислал дату (0 или старая сборка).
+  final DateTime? cachedAt;
+
   const SoulseekCacheEntry({
     required this.cacheKey,
     required this.localPath,
@@ -418,6 +422,7 @@ class SoulseekCacheEntry {
     this.artist,
     this.durationSeconds,
     this.extension,
+    this.cachedAt,
   });
 
   factory SoulseekCacheEntry.fromMap(Map<String, dynamic> m) {
@@ -434,7 +439,14 @@ class SoulseekCacheEntry {
           ?.trim()
           .toLowerCase()
           .replaceFirst('.', ''),
+      cachedAt: _dateOrNull(m['cachedAt']),
     );
+  }
+
+  static DateTime? _dateOrNull(dynamic v) {
+    final ms = _asIntOrNull(v);
+    if (ms == null || ms <= 0) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ms);
   }
 }
 
@@ -447,17 +459,24 @@ class SoulseekDownloadResult {
   final String result;
   final bool cacheHit;
 
+  /// Путь `.part`, который нативная сторона пишет последовательно во время
+  /// загрузки (стриминг). null при cache hit и у старых версий канала.
+  final String? partPath;
+
   const SoulseekDownloadResult({
     required this.downloadId,
     required this.result,
     required this.cacheHit,
+    this.partPath,
   });
 
   factory SoulseekDownloadResult.fromMap(Map<String, dynamic> m) {
+    final partPath = m['partPath'] as String?;
     return SoulseekDownloadResult(
       downloadId: (m['downloadId'] ?? '') as String,
       result: (m['result'] ?? '').toString(),
       cacheHit: m['cacheHit'] == true,
+      partPath: (partPath == null || partPath.isEmpty) ? null : partPath,
     );
   }
 }

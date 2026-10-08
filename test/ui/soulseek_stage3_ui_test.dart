@@ -1,7 +1,7 @@
 // Widget-тесты Этапа 3 серии 02 (UI):
-//   - CACHE-UI-01: кликабельный кэш-лист Soulseek (тап → setQueue из
-//     trackFromCacheEntry, long-press → track settings sheet, incomplete
-//     плитки пассивны);
+//   - CACHE-UI-01: единый список кэш-треков (Soulseek + стриминговый кэш):
+//     тап → setQueue из trackFromCacheEntry, long-press → track settings
+//     sheet, группировка по дате кэширования, свайп-удаление, pin;
 //   - PLAYER-DL-01: source-aware тайл Download (native cache hit → «Cached»,
 //     prefetch по тапу без dio-двойной загрузки, прогресс/завершение из
 //     transferEvents, сброс после failed, не-Soulseek путь не тронут);
@@ -33,6 +33,7 @@ import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/artwork_helper.dart';
+import 'package:player/core/database/app_database.dart';
 import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
@@ -42,8 +43,8 @@ import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
 import 'package:player/sources/source_registry.dart';
+import 'package:player/ui/pages/cached_tracks_page.dart';
 import 'package:player/ui/widgets/artwork.dart';
-import 'package:player/ui/widgets/soulseek_cache_sheet.dart';
 import 'package:player/ui/widgets/track_details_sheet.dart';
 import 'package:player/ui/widgets/track_settings_sheet.dart';
 
@@ -300,6 +301,7 @@ SoulseekCacheEntry _entry(
   String title, {
   bool complete = true,
   String extension = 'flac',
+  DateTime? cachedAt,
 }) {
   return SoulseekCacheEntry(
     cacheKey: cacheKey,
@@ -311,8 +313,33 @@ SoulseekCacheEntry _entry(
     artist: 'Artist',
     durationSeconds: 180,
     extension: extension,
+    cachedAt: cachedAt,
   );
 }
+
+/// Тапает «open» и ждёт загрузки списка. Страница читает файлы аудио-кэша
+/// и SQLite-индекс — реальный I/O, который в fake-async зоне testWidgets
+/// не завершается, поэтому ожидание идёт в runAsync (как в тесте
+/// YoutubeCache-пути Download-тайла).
+Future<void> _openAndLoad(WidgetTester tester) async {
+  await tester.runAsync(() async {
+    await tester.tap(find.text('open'));
+    await tester.pump();
+    for (var i = 0; i < 100; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await tester.pump();
+      final loading = find.byType(CircularProgressIndicator).evaluate();
+      if (i > 0 && loading.isEmpty) break;
+    }
+  });
+  await tester.pumpAndSettle();
+}
+
+/// Открывает единый список кэш-треков (бывшая Soulseek cache sheet).
+Future<void> _openCachedTracks(BuildContext context) =>
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const CachedTracksPage()),
+    );
 
 /// Soulseek-трек с полным extra (как из поиска) — для Download-тайла.
 Track _soulseekTrack({String cacheKey = 'ck1'}) {
@@ -337,7 +364,13 @@ Track _soulseekTrack({String cacheKey = 'ck1'}) {
 /// страницы (контекст с Navigator'ом).
 Widget _host(Future<void> Function(BuildContext) opener, _FakePlayer player) {
   return ProviderScope(
-    overrides: [playerServiceProvider.overrideWithValue(player)],
+    overrides: [
+      playerServiceProvider.overrideWithValue(player),
+      // Без чтения настройки из БД: плитки списка зовут HapticHelper,
+      // а lazy-load переживал бы dispose ProviderScope.
+      vibrationEnabledProvider
+          .overrideWith((ref) => VibrationNotifier.seeded(false)),
+    ],
     child: MaterialApp(
       home: Scaffold(
         body: Builder(
@@ -380,7 +413,11 @@ void main() {
         'artist': e.artist,
         'durationSeconds': e.durationSeconds,
         'extension': e.extension,
+        'cachedAt': e.cachedAt?.millisecondsSinceEpoch,
       };
+
+  // Вызовы MethodChannel (removeCache / pinCache) для проверок действий.
+  late List<MethodCall> methodCalls;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -400,11 +437,16 @@ void main() {
     // плагина нет → MissingPluginException). Подключаем БД к temp-каталогу.
     await TestHarness.setUpDb();
 
+    methodCalls = [];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methodsChannel, (call) async {
+      methodCalls.add(call);
       switch (call.method) {
         case 'getCacheEntries':
           return channel.cacheEntries.map(entryToMap).toList();
+        case 'removeCache':
+        case 'pinCache':
+          return true;
         default:
           return null;
       }
@@ -426,8 +468,8 @@ void main() {
 
   // ── CACHE-UI-01 ────────────────────────────────────────────────────────
 
-  group('CACHE-UI-01: кликабельный кэш-лист', () {
-    testWidgets('тап по complete-плитке вызывает setQueue с Track.extra.cacheKey',
+  group('CACHE-UI-01: единый список кэш-треков', () {
+    testWidgets('тап по плитке вызывает setQueue с Track.extra.cacheKey',
         (tester) async {
       channel.cacheEntries = [
         _entry('ck1', 'Title A'),
@@ -435,20 +477,17 @@ void main() {
         _entry('ck3', 'Broken', complete: false),
       ];
 
-      await tester.pumpWidget(_host(
-        (ctx) => showSoulseekCacheSheet(ctx),
-        player,
-      ));
-      await tester.tap(find.text('open'));
-      await tester.pumpAndSettle();
+      await tester.pumpWidget(_host(_openCachedTracks, player));
+      await _openAndLoad(tester);
 
       expect(find.text('Title A'), findsOneWidget);
-      expect(find.text('incomplete'), findsOneWidget);
+      // Незавершённые загрузки в списке не показываются.
+      expect(find.text('Broken'), findsNothing);
 
       await tester.tap(find.text('Title B'));
       await tester.pumpAndSettle();
 
-      // Очередь = все complete-треки (2 из 3), старт со второго.
+      // Очередь = все треки списка, старт со второго.
       expect(player.setQueueCalls, hasLength(1));
       final (tracks, startIndex) = player.setQueueCalls.single;
       expect(tracks, hasLength(2));
@@ -460,31 +499,80 @@ void main() {
       expect(tracks[0].sourceId, SoulseekSource.sourceId);
     });
 
-    testWidgets('тап по incomplete-плитке ничего не играет', (tester) async {
-      channel.cacheEntries = [_entry('ck3', 'Broken', complete: false)];
+    testWidgets('группирует по дате и показывает треки общего кэша',
+        (tester) async {
+      final now = DateTime.now();
+      channel.cacheEntries = [
+        _entry('old', 'Old Soul', cachedAt: DateTime(2025, 1, 15, 12)),
+        _entry('new', 'Fresh Soul', cachedAt: now),
+      ];
+      // Стриминговый трек: файл в аудио-кэше + запись индекса.
+      File('${tempDir.path}/muzmo_9.mp3').writeAsStringSync('x' * 2048);
+      await tester.runAsync(() => AppDatabase.instance.upsertAudioCacheEntry(
+            'muzmo_9',
+            const Track(
+              id: '9',
+              sourceId: 'muzmo',
+              title: 'Muzmo Song',
+              artist: 'Streamer',
+            ),
+            cachedAt: now.subtract(const Duration(minutes: 1)),
+          ));
 
-      await tester.pumpWidget(_host(
-        (ctx) => showSoulseekCacheSheet(ctx),
-        player,
-      ));
-      await tester.tap(find.text('open'));
+      await tester.pumpWidget(_host(_openCachedTracks, player));
+      await _openAndLoad(tester);
+
+      expect(find.text('3 tracks · 4.0 KB'), findsOneWidget);
+      expect(find.text('Today'), findsOneWidget);
+      expect(find.text('January 15, 2025'), findsOneWidget);
+      expect(find.text('Muzmo Song'), findsOneWidget);
+
+      // Порядок: новые сверху.
+      final freshY = tester.getTopLeft(find.text('Fresh Soul')).dy;
+      final muzmoY = tester.getTopLeft(find.text('Muzmo Song')).dy;
+      final oldY = tester.getTopLeft(find.text('Old Soul')).dy;
+      expect(freshY, lessThan(muzmoY));
+      expect(muzmoY, lessThan(oldY));
+    });
+
+    testWidgets('свайп влево удаляет Soulseek-трек из нативного кэша',
+        (tester) async {
+      channel.cacheEntries = [_entry('ck1', 'Title A')];
+
+      await tester.pumpWidget(_host(_openCachedTracks, player));
+      await _openAndLoad(tester);
+
+      await tester.drag(find.text('Title A'), const Offset(-600, 0));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Broken'));
+      expect(find.text('Title A'), findsNothing);
+      final remove = methodCalls.where((c) => c.method == 'removeCache');
+      expect(remove.single.arguments, {'cacheKey': 'ck1'});
+
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    testWidgets('кнопка-булавка закрепляет трек', (tester) async {
+      channel.cacheEntries = [_entry('ck1', 'Title A')];
+
+      await tester.pumpWidget(_host(_openCachedTracks, player));
+      await _openAndLoad(tester);
+
+      await tester.tap(find.byIcon(Icons.push_pin_outlined));
       await tester.pumpAndSettle();
 
-      expect(player.setQueueCalls, isEmpty);
+      final pin = methodCalls.where((c) => c.method == 'pinCache');
+      expect(pin.single.arguments, {'cacheKey': 'ck1', 'pinned': true});
+      expect(find.byIcon(Icons.push_pin_rounded), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 3));
     });
 
     testWidgets('long-press открывает track settings sheet', (tester) async {
       channel.cacheEntries = [_entry('ck1', 'Title A')];
 
-      await tester.pumpWidget(_host(
-        (ctx) => showSoulseekCacheSheet(ctx),
-        player,
-      ));
-      await tester.tap(find.text('open'));
-      await tester.pumpAndSettle();
+      await tester.pumpWidget(_host(_openCachedTracks, player));
+      await _openAndLoad(tester);
 
       await tester.longPress(find.text('Title A'));
       await tester.pumpAndSettle();
@@ -503,16 +591,15 @@ void main() {
       addTearDown(ap.clearMemCache);
 
       channel.cacheEntries = [_entry('ck1', 'Title A')];
+
+      await tester.pumpWidget(_host(_openCachedTracks, player));
+      await _openAndLoad(tester);
       // Трек уже играл: findArtwork при воспроизведении положил найденный
       // URL в mem-кэш — эмулируем это тестовым хуком (сеть не трогаем).
+      // Кладём после загрузки списка, чтобы плитка списка не тянула
+      // CachedNetworkImage (в тестах нет path_provider): проверяется
+      // обогащение именно в settings sheet.
       ap.cacheArtworkForTesting('Artist', 'Title A', 'https://img/cov.jpg');
-
-      await tester.pumpWidget(_host(
-        (ctx) => showSoulseekCacheSheet(ctx),
-        player,
-      ));
-      await tester.tap(find.text('open'));
-      await tester.pumpAndSettle();
 
       await tester.longPress(find.text('Title A'));
       await tester.pumpAndSettle();

@@ -40,6 +40,9 @@ class SoulseekSettings {
   final int searchTimeoutSec;
   final String sharingDirectory;
 
+  /// Играть трек во время загрузки (чтение `.part`), а не после неё.
+  final bool streamingEnabled;
+
   const SoulseekSettings({
     this.enabled = false,
     this.listenPort = SoulseekSettingsRepository.defaultListenPort,
@@ -51,6 +54,7 @@ class SoulseekSettings {
     this.maxFileSizeMB = SoulseekSettingsRepository.defaultMaxFileSizeMB,
     this.searchTimeoutSec = SoulseekSettingsRepository.defaultSearchTimeoutSec,
     this.sharingDirectory = '',
+    this.streamingEnabled = SoulseekSettingsRepository.defaultStreamingEnabled,
   });
 }
 
@@ -74,6 +78,7 @@ class SoulseekSettingsRepository {
   static const String keyMaxFileSizeMB = 'soulseek_max_file_size_mb';
   static const String keySearchTimeoutSec = 'soulseek_search_timeout_sec';
   static const String keySharingDirectory = 'soulseek_sharing_directory';
+  static const String keyStreamingEnabled = 'soulseek_streaming_enabled';
 
   // ── Дефолты (как в бывшем SoulseekPrefs) ──
   static const int defaultListenPort = 24150;
@@ -85,6 +90,7 @@ class SoulseekSettingsRepository {
   /// Жёсткий общий бюджет поиска (обычно поиск завершается раньше —
   /// по окну тишины или лимиту файлов, см. SoulseekSource).
   static const int defaultSearchTimeoutSec = 10;
+  static const bool defaultStreamingEnabled = true;
 
   /// Legacy-ключи SharedPreferences, перенесённые в БД миграцией v3.
   ///
@@ -139,6 +145,8 @@ class SoulseekSettingsRepository {
       searchTimeoutSec:
           await _readInt(keySearchTimeoutSec, defaultSearchTimeoutSec),
       sharingDirectory: await _readString(keySharingDirectory, ''),
+      streamingEnabled:
+          await _readBool(keyStreamingEnabled, defaultStreamingEnabled),
     );
   }
 
@@ -185,6 +193,9 @@ class SoulseekSettingsRepository {
   Future<void> setSharingDirectory(String value) =>
       AppDatabase.instance.setSetting(keySharingDirectory, value);
 
+  Future<void> setStreamingEnabled(bool value) =>
+      AppDatabase.instance.setSetting(keyStreamingEnabled, value.toString());
+
   // ── Применение к источнику ──
 
   /// Строит поисковые фильтры из настроек (логика бывшего
@@ -203,7 +214,8 @@ class SoulseekSettingsRepository {
     );
   }
 
-  /// Применяет настройки к [source]: поисковые фильтры + таймаут поиска.
+  /// Применяет настройки к [source]: поисковые фильтры, таймаут поиска и
+  /// стриминг.
   ///
   /// Если [settings] не переданы — лениво читаются из БД. Вызывается на
   /// старте приложения (устранение разрыва №2) и со страницы настроек.
@@ -214,6 +226,7 @@ class SoulseekSettingsRepository {
     final s = settings ?? await loadAll();
     source.searchFilters = buildFilters(s);
     source.applySearchTimeoutSec(s.searchTimeoutSec);
+    source.streamingEnabled = s.streamingEnabled;
   }
 
   // ── Синк в нативную soulseek.db (Фаза B, разрыв №3) ──

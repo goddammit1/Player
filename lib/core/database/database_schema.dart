@@ -19,12 +19,13 @@ import 'package:sqflite/sqflite.dart';
 /// | `settings`          | Все настройки (key-value)         |
 /// | `playlist_covers`   | Пути к кастомным обложкам         |
 /// | `playback_state`    | Сохранённая очередь плеера        |
+/// | `audio_cache_index` | Метаданные треков в аудио-кэше    |
 ///
 /// ВАЖНО: схема и порядок миграций — вне правок. Данный класс только
 /// переносит существующий код из `AppDatabase` без изменения поведения.
 abstract class AppDatabaseSchema {
   static const String dbName = 'player_data.db';
-  static const int dbVersion = 5;
+  static const int dbVersion = 6;
 
   /// Создает все таблицы (вызывается sqflite при создании нового файла).
   static Future<void> create(Database db, int version) async {
@@ -124,6 +125,29 @@ abstract class AppDatabaseSchema {
       'INSERT OR IGNORE INTO playback_state (id, queue_json, current_index) '
       'VALUES (1, \'[]\', -1)',
     );
+
+    await createAudioCacheIndex(db);
+  }
+
+  /// Индекс метаданных аудио-кэша (`yt_audio_cache`): по имени файла
+  /// (`muzmo_<id>.mp3`) трек не восстановить, поэтому название/исполнитель
+  /// пишутся сюда в момент кэширования. Только метаданные, без stream URL.
+  static Future<void> createAudioCacheIndex(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS audio_cache_index (
+        cache_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL,
+        duration_ms INTEGER,
+        artwork_url TEXT,
+        extra_json TEXT,
+        quality_score INTEGER,
+        quality_label TEXT,
+        cached_at_ms INTEGER NOT NULL
+      )
+    ''');
   }
 
   /// Миграция базы со старой версии на новую (sqflite `onUpgrade`).
@@ -169,6 +193,12 @@ abstract class AppDatabaseSchema {
           'ALTER TABLE playlists ADD COLUMN manual_order_json TEXT',
         );
       } catch (_) {}
+    }
+    if (oldVersion < 6) {
+      // v5 → v6: индекс метаданных аудио-кэша для единого списка
+      // кэшированных треков. Уже лежащие в кэше файлы индекса не имеют —
+      // их метаданные ищутся по плейлистам/истории при открытии списка.
+      await createAudioCacheIndex(db);
     }
   }
 }

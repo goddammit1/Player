@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/playlist.dart';
+import 'cached_tracks_service.dart';
 import 'database/app_database.dart';
 import 'repositories/history_repository.dart';
 import 'player_service_interface.dart';
@@ -79,6 +80,12 @@ final listenHistoryProvider = StreamProvider<List<HistoryEntry>>((ref) async* {
 /// Удобный доступ к репозиторию истории: для мутаций.
 final historyRepositoryProvider = Provider<HistoryRepository>((ref) {
   return HistoryRepository.instance;
+});
+
+/// Единый список кэшированных треков (стриминговый кэш + Soulseek).
+/// Тесты подменяют сервис с фейковыми хранилищами.
+final cachedTracksServiceProvider = Provider<CachedTracksService>((ref) {
+  return CachedTracksService();
 });
 
 /// Лимит записей истории прослушивания. Persist живёт внутри
