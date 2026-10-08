@@ -1,8 +1,7 @@
 // lib/ui/pages/appearance_page.dart
 //
-// Страница-раздел «Appearance»: настройки внешнего вида. Логика перенесена
-// без изменений из модальной шторки settings_page.dart (тема Fixed/Dynamic,
-// режим поиска Grid/List, тактильная отдача). Открывается через
+// Страница-раздел «Appearance»: настройки внешнего вида (тема — одна из пяти
+// AppThemeMode, режим поиска Grid/List, тактильная отдача). Открывается через
 // Navigator.push из страницы настроек; внизу закреплён NowPlayingOverlay
 // (скрыт на десктопе — там свою панель рисует DesktopPlayerBar).
 
@@ -99,7 +98,7 @@ class AppearancePage extends ConsumerWidget {
 }
 
 // =====================================================================
-//  APPEARANCE CONTENT (тема: Fixed / Dynamic)
+//  APPEARANCE CONTENT (тема: Fixed / Classic / Perceptual / Mesh / Blur)
 // =====================================================================
 
 class _AppearanceSection extends ConsumerWidget {
@@ -129,55 +128,32 @@ class _AppearanceSection extends ConsumerWidget {
               ),
               const SizedBox(height: 8),
               Container(
-                height: 44,
+                clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
                   color: colors.elevated,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: colors.outline, width: 1),
                 ),
-                child: Row(
+                child: Column(
                   children: [
-                    Expanded(
-                      child: _ThemeOption(
-                        label: 'Fixed',
-                        icon: Icons.palette_outlined,
-                        isSelected: mode == AppThemeMode.fixed,
+                    for (final (i, option) in _themeOptions.indexed) ...[
+                      if (i > 0)
+                        Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: colors.outline,
+                          indent: 52,
+                        ),
+                      _ThemeOption(
+                        option: option,
+                        isSelected: mode == option.mode,
                         onTap: () => ref
                             .read(appThemeModeProvider.notifier)
-                            .setMode(AppThemeMode.fixed),
+                            .setMode(option.mode),
                         colors: colors,
                       ),
-                    ),
-                    VerticalDivider(
-                      width: 1,
-                      thickness: 1,
-                      color: colors.outline,
-                      indent: 8,
-                      endIndent: 8,
-                    ),
-                    Expanded(
-                      child: _ThemeOption(
-                        label: 'Dynamic',
-                        icon: Icons.auto_awesome_outlined,
-                        isSelected: mode == AppThemeMode.dynamic,
-                        onTap: () => ref
-                            .read(appThemeModeProvider.notifier)
-                            .setMode(AppThemeMode.dynamic),
-                        colors: colors,
-                      ),
-                    ),
+                    ],
                   ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                mode == AppThemeMode.dynamic
-                    ? 'Colors adapt to the current track artwork.'
-                    : 'Use the default dark grey palette.',
-                style: TextStyle(
-                  color: colors.textTertiary,
-                  fontSize: 12,
-                  height: 1.4,
                 ),
               ),
             ],
@@ -189,46 +165,103 @@ class _AppearanceSection extends ConsumerWidget {
   }
 }
 
+typedef _ThemeOptionData = ({
+  AppThemeMode mode,
+  String label,
+  String description,
+  IconData icon,
+});
+
+const List<_ThemeOptionData> _themeOptions = [
+  (
+    mode: AppThemeMode.fixed,
+    label: 'Fixed',
+    description: 'Default dark grey palette.',
+    icon: Icons.palette_outlined,
+  ),
+  (
+    mode: AppThemeMode.dynamic,
+    label: 'Classic',
+    description: 'Artwork colors, original algorithm.',
+    icon: Icons.auto_awesome_outlined,
+  ),
+  (
+    mode: AppThemeMode.perceptual,
+    label: 'Perceptual',
+    description: 'Artwork colors with even brightness and contrast.',
+    icon: Icons.contrast_rounded,
+  ),
+  (
+    mode: AppThemeMode.mesh,
+    label: 'Mesh',
+    description: 'Animated artwork color mesh behind the player.',
+    icon: Icons.gradient_rounded,
+  ),
+  (
+    mode: AppThemeMode.blur,
+    label: 'Blur',
+    description: 'Blurred artwork behind the player.',
+    icon: Icons.blur_on_rounded,
+  ),
+];
+
 class _ThemeOption extends StatelessWidget {
   const _ThemeOption({
-    required this.label,
-    required this.icon,
+    required this.option,
     required this.isSelected,
     required this.onTap,
     required this.colors,
   });
 
-  final String label;
-  final IconData icon;
+  final _ThemeOptionData option;
   final bool isSelected;
   final VoidCallback onTap;
   final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
+    final Color foreground =
+        isSelected ? colors.textPrimary : colors.textSecondary;
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          alignment: Alignment.center,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                icon,
-                size: 18,
-                color: isSelected ? colors.textPrimary : colors.textTertiary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isSelected ? colors.textPrimary : colors.textTertiary,
-                  fontSize: 14,
-                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+              Icon(option.icon, size: 20, color: foreground),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      option.label,
+                      style: TextStyle(
+                        color: foreground,
+                        fontSize: 14,
+                        fontWeight:
+                            isSelected ? FontWeight.w600 : FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      option.description,
+                      style: TextStyle(
+                        color: colors.textTertiary,
+                        fontSize: 12,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+              const SizedBox(width: 12),
+              Icon(
+                Icons.check_rounded,
+                size: 20,
+                color: isSelected ? colors.textPrimary : Colors.transparent,
               ),
             ],
           ),

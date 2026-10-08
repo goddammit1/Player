@@ -7,11 +7,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/artwork_helper.dart';
+import '../../core/artwork_image_provider.dart';
 import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/queue_sheet.dart';
 
+import 'player/player_background.dart';
 import 'player/player_bottom_actions.dart';
 import 'player/player_controls.dart';
 import 'player/player_interactive_artwork.dart';
@@ -25,14 +27,19 @@ class PlayerPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Scaffold(
       backgroundColor: Color(0xFF000000),
-      body: SafeArea(child: PlayerContent()),
+      body: PlayerContent(),
     );
   }
 }
 
+/// Страница плеера. Фон рисуется под системными панелями, контент — внутри
+/// SafeArea.
 class PlayerContent extends ConsumerStatefulWidget {
-  const PlayerContent({super.key, this.onClose});
+  const PlayerContent({super.key, this.onClose, this.active = true});
   final VoidCallback? onClose;
+
+  /// `false`, пока плеер свёрнут в мини-плеер: анимация фона не тикает.
+  final bool active;
 
   @override
   ConsumerState<PlayerContent> createState() => _PlayerContentState();
@@ -54,51 +61,66 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
   Widget build(BuildContext context) {
     final player = ref.watch(playerServiceProvider);
     final colors = ref.watch(animatedPaletteProvider);
-
-    final bgDecoration = BoxDecoration(
-      gradient: LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [colors.gradientTop, colors.gradientTop, colors.gradientBottom],
-        stops: const [0.0, 0.35, 1.0],
-      ),
+    final background = ref.watch(
+      appThemeModeProvider.select((mode) => mode.playerBackground),
     );
 
-    return Container(
-      decoration: bgDecoration,
-      child: StreamBuilder<MediaItem?>(
-        stream: player.mediaItem,
-        builder: (context, snap) {
-          final item = snap.data;
+    return StreamBuilder<MediaItem?>(
+      stream: player.mediaItem,
+      builder: (context, snap) {
+        final item = snap.data;
 
-          if (item == null) {
-            return Center(
-              child: Text(
-                'No track',
-                style: TextStyle(color: colors.textSecondary),
-              ),
-            );
-          }
-
-          return Stack(
-            children: [
-              LayoutBuilder(
-                builder: (context, c) {
-                  final wide = isDesktop && c.maxWidth >= _wideBreakpoint;
-                  return Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-                    child: wide
-                        ? _buildHorizontalLayout(c, item, player, colors)
-                        : _buildVerticalLayout(item, player, colors),
-                  );
-                },
-              ),
-              QueueSheet(controller: _queueCtrl, player: player),
-            ],
-          );
-        },
-      ),
+        return PlayerBackground(
+          style: background,
+          colors: colors,
+          artwork: background == PlayerBackgroundStyle.blur
+              ? _artworkFor(item?.artUri?.toString())
+              : null,
+          animate: widget.active,
+          child: SafeArea(
+            child: item == null
+                ? Center(
+                    child: Text(
+                      'No track',
+                      style: TextStyle(color: colors.textSecondary),
+                    ),
+                  )
+                : Stack(
+                    children: [
+                      LayoutBuilder(
+                        builder: (context, c) {
+                          final wide =
+                              isDesktop && c.maxWidth >= _wideBreakpoint;
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+                            child: wide
+                                ? _buildHorizontalLayout(c, item, player, colors)
+                                : _buildVerticalLayout(item, player, colors),
+                          );
+                        },
+                      ),
+                      QueueSheet(controller: _queueCtrl, player: player),
+                    ],
+                  ),
+          ),
+        );
+      },
     );
+  }
+
+  String? _artworkUrl;
+  ImageProvider? _artwork;
+
+  /// Источник обложки для фона. Кэшируется по URL: build идёт на каждом
+  /// кадре перехода палитры, а разбор URL проверяет файл на диске. Ненайденный
+  /// файл не кэшируется: обложка может докачаться позже.
+  ImageProvider? _artworkFor(String? url) {
+    if (url == null || url.isEmpty) return null;
+    if (url != _artworkUrl || _artwork == null) {
+      _artworkUrl = url;
+      _artwork = artworkImageProvider(url);
+    }
+    return _artwork;
   }
 
   /// Ширина окна (на десктопе), при которой включается горизонтальная

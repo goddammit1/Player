@@ -168,13 +168,6 @@ void main() {
       expect(notifier.state, AppThemeMode.fixed);
     });
 
-    test('toggle switches fixed/dynamic', () async {
-      await notifier.toggle();
-      expect(notifier.state, AppThemeMode.dynamic);
-      await notifier.toggle();
-      expect(notifier.state, AppThemeMode.fixed);
-    });
-
     test('setMode updates', () async {
       await notifier.setMode(AppThemeMode.fixed);
       expect(notifier.state, AppThemeMode.fixed);
@@ -182,8 +175,29 @@ void main() {
       expect(notifier.state, AppThemeMode.dynamic);
     });
 
+    test('every mode persists and is restored by a new notifier', () async {
+      for (final mode in AppThemeMode.values) {
+        await notifier.setMode(mode);
+        final restored = await _readyNotifier(AppThemeModeNotifier());
+        expect(restored.state, mode, reason: mode.name);
+      }
+    });
+
     test('reload re-reads from DB', () async {
       await AppDatabase.instance.setSetting('app_theme_mode', 'fixed');
+      await notifier.reload();
+      expect(notifier.state, AppThemeMode.fixed);
+    });
+
+    test('legacy "dynamic" value is read as Classic', () async {
+      await AppDatabase.instance.setSetting('app_theme_mode', 'dynamic');
+      await notifier.reload();
+      expect(notifier.state, AppThemeMode.dynamic);
+      expect(notifier.state.paletteAlgorithm, PaletteAlgorithm.classic);
+    });
+
+    test('unknown stored value falls back to fixed', () async {
+      await AppDatabase.instance.setSetting('app_theme_mode', 'aurora');
       await notifier.reload();
       expect(notifier.state, AppThemeMode.fixed);
     });
