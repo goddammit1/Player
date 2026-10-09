@@ -22,6 +22,7 @@ import 'artwork.dart';
 import '../desktop/desktop_layout.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
+import 'soulseek_folder_sheet.dart';
 import '../../core/youtube_cache.dart';
 
 // =============================================================================
@@ -62,16 +63,14 @@ class _TrackSettingsSheet extends ConsumerStatefulWidget {
 }
 
 class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
-  /// ART-CACHE-01: Track, построенный из записи кэша Soulseek
-  /// (trackFromCacheEntry), не несёт artworkUrl — обложка подгружается
-  /// лениво только при воспроизведении (_warmArtwork в PlayerService),
-  /// поэтому в now_playing она есть, а в этом sheet'е — плейсхолдер.
+  /// ART-LAZY-01: Track без artworkUrl (например, из записи кэша Soulseek —
+  /// trackFromCacheEntry) получает обложку при открытии шторки, а не
+  /// только после воспроизведения.
   ///
-  /// Достаём URL синхронно из in-memory TTL-кэша ArtworkProvider:
-  /// трек, который уже играл в этой сессии, имеет найденный URL в
-  /// mem-кэше (его положил findArtwork при воспроизведении) — шторка
-  /// показывает его мгновенно. Строго без SQLite и сети: если трек в
-  /// сессии не играл, остаётся плейсхолдер.
+  /// In-memory кэш ArtworkProvider отдаёт URL синхронно (без мигания);
+  /// иначе — SQLite-кэш, затем Genius/iTunes через LazyArtworkLoader.
+  /// Найденный URL попадает и в Track для действий шторки (Add to playlist,
+  /// Play Next), чтобы трек уходил дальше уже с обложкой.
   Track? _enrichedTrack;
 
   @override
@@ -83,10 +82,21 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
   void _resolveArtworkIfNeeded() {
     final t = widget.track;
     if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) return;
+    if (t.artist.trim().isEmpty || t.title.trim().isEmpty) return;
     final url =
         ArtworkProvider.instance.getMemCachedArtworkUrl(t.artist, t.title);
-    if (url == null || url.isEmpty) return;
-    _enrichedTrack = t.copyWith(artworkUrl: url);
+    if (url != null && url.isNotEmpty) {
+      _enrichedTrack = t.copyWith(artworkUrl: url);
+      return;
+    }
+    unawaited(
+      LazyArtworkLoader.instance
+          .resolve(t.artist, t.title, isWanted: () => mounted)
+          .then((found) {
+        if (!mounted || found == null || found.isEmpty) return;
+        setState(() => _enrichedTrack = t.copyWith(artworkUrl: found));
+      }),
+    );
   }
 
   Track get _track => _enrichedTrack ?? widget.track;
@@ -687,6 +697,15 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         as SoulseekSource?;
   }
 
+  /// Soulseek-трек с известным пиром и каталогом — папку можно открыть.
+  bool get _soulseekFolderAvailable {
+    if (_soulseekSource == null) return false;
+    final remote = widget.track.extra['remoteFilename'] as String?;
+    return widget.track.extra['peerUsername'] is String &&
+        remote != null &&
+        SoulseekSource.folderOf(remote).isNotEmpty;
+  }
+
   /// PLAYER-DL-01: cacheKey для нативного кэша Soulseek (null — трек не
   /// Soulseek или данных недостаточно → fallback на YoutubeCache-путь).
   String? get _soulseekCacheKey {
@@ -829,6 +848,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
       }
 
       await YoutubeCache.instance.pin(_cacheId(widget.track));
+      await YoutubeCache.instance.registerTrack(widget.track);
 
       if (mounted) {
         setState(() {
@@ -994,6 +1014,18 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
                 title: 'Details',
                 onTap: () => _showDetails(context),
               ),
+              // Вся папка пира, в которой лежит Soulseek-трек.
+              if (_soulseekFolderAvailable)
+                _SettingsTileData(
+                  icon: Icons.folder_open_rounded,
+                  title: 'Open folder',
+                  subtitle: widget.track.extra['peerUsername'] as String?,
+                  onTap: () {
+                    final nav = Navigator.of(context);
+                    nav.pop();
+                    showSoulseekFolderSheet(nav.context, [widget.track]);
+                  },
+                ),
             ];
 
             return Container(

@@ -58,19 +58,36 @@ namespace Soulseek.Wrapper
         [JsonPropertyName("idleTimeoutMs")]
         public int IdleTimeoutMs { get; set; } = 2500;
 
-        /// <summary>Максимальное количество ответов (responses), по умолчанию 100.</summary>
+        /// <summary>Максимальное количество ответов (responses), по умолчанию 250.</summary>
         [JsonPropertyName("responseLimit")]
-        public int ResponseLimit { get; set; } = 100;
+        public int ResponseLimit { get; set; } = 250;
 
         /// <summary>
         ///   Максимальное количество файлов (после фильтров), по достижении которого
-        ///   поиск завершается досрочно. По умолчанию 200.
+        ///   поиск завершается досрочно. По умолчанию 2000.
         /// </summary>
         [JsonPropertyName("fileLimit")]
-        public int FileLimit { get; set; } = 200;
+        public int FileLimit { get; set; } = 2000;
 
         [JsonPropertyName("filters")]
         public SearchFiltersDto Filters { get; set; }
+    }
+
+    /// <summary>
+    ///   Запрос содержимого папки пира (FolderContentsRequest) из Kotlin.
+    /// </summary>
+    public class DirectoryRequestDto
+    {
+        [JsonPropertyName("username")]
+        public string Username { get; set; }
+
+        /// <summary>Полный путь каталога на стороне пира (как в именах файлов поиска).</summary>
+        [JsonPropertyName("directory")]
+        public string Directory { get; set; }
+
+        /// <summary>Таймаут ожидания ответа пира, мс.</summary>
+        [JsonPropertyName("timeoutMs")]
+        public int TimeoutMs { get; set; } = 20000;
     }
 
     /// <summary>
@@ -226,6 +243,14 @@ namespace Soulseek.Wrapper
         /// <summary>Текст исключения, если событие вызвано ошибкой (Exception.Message).</summary>
         [JsonPropertyName("exceptionMessage")]
         public string ExceptionMessage { get; set; }
+
+        /// <summary>searchProgress: id поиска, к которому относятся результаты.</summary>
+        [JsonPropertyName("requestId")]
+        public string RequestId { get; set; }
+
+        /// <summary>searchProgress: новые результаты с прошлого события (дельта).</summary>
+        [JsonPropertyName("results")]
+        public List<SearchResultDto> Results { get; set; }
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 // lib/ui/widgets/artwork.dart
 
+import 'dart:async';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -7,8 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/artwork_helper.dart';
 import '../../core/providers.dart';
+import '../../sources/artwork_provider.dart';
 
-class Artwork extends ConsumerWidget {
+class Artwork extends ConsumerStatefulWidget {
   const Artwork({
     super.key,
     required this.url,
@@ -17,6 +19,8 @@ class Artwork extends ConsumerWidget {
     this.borderRadius = 8,
     this.memCacheSize,
     this.aspectRatio = 1.0,
+    this.artist,
+    this.title,
   });
 
   final String? url;
@@ -26,19 +30,95 @@ class Artwork extends ConsumerWidget {
   final double? memCacheSize;
   final double aspectRatio;
 
+  /// ART-LAZY-01: artist/title для ленивого поиска обложки.
+  ///
+  /// Если [url] пуст и кастомной обложки нет, виджет сам ищет обложку
+  /// через [ArtworkProvider] в момент появления на экране (ListView.builder
+  /// строит только видимые плитки) — не дожидаясь воспроизведения трека.
+  /// Без artist/title — прежнее поведение (плейсхолдер).
+  final String? artist;
+  final String? title;
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<Artwork> createState() => _ArtworkState();
+}
+
+class _ArtworkState extends ConsumerState<Artwork> {
+  /// URL, найденный ленивым поиском для текущего [_lookupKey].
+  String? _lazyUrl;
+  String? _lookupKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _startLookupIfNeeded();
+  }
+
+  @override
+  void didUpdateWidget(Artwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Элемент списка может переиспользоваться под другой трек.
+    if (oldWidget.url != widget.url ||
+        oldWidget.trackId != widget.trackId ||
+        oldWidget.artist != widget.artist ||
+        oldWidget.title != widget.title) {
+      _startLookupIfNeeded();
+    }
+  }
+
+  bool get _hasOwnArtwork {
+    final url = widget.url;
+    if (url != null && url.isNotEmpty) return true;
+    final trackId = widget.trackId;
+    return trackId != null &&
+        ArtworkHelper.getCustomArtworkSync(trackId) != null;
+  }
+
+  void _startLookupIfNeeded() {
+    final artist = widget.artist?.trim() ?? '';
+    final title = widget.title?.trim() ?? '';
+    if (_hasOwnArtwork || artist.isEmpty || title.isEmpty) {
+      _lookupKey = null;
+      _lazyUrl = null;
+      return;
+    }
+    final key = '$artist|$title';
+    if (key == _lookupKey) return;
+    _lookupKey = key;
+
+    // Трек уже встречался в сессии — отдаём синхронно, без мигания.
+    _lazyUrl = ArtworkProvider.instance.getMemCachedArtworkUrl(artist, title);
+    if (_lazyUrl != null) return;
+
+    unawaited(
+      LazyArtworkLoader.instance
+          .resolve(artist, title, isWanted: () => mounted && _lookupKey == key)
+          .then((url) {
+        if (!mounted || _lookupKey != key) return;
+        if (url == null || url.isEmpty) return;
+        setState(() => _lazyUrl = url);
+      }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final colors = ref.watch(animatedPaletteProvider);
+    final size = widget.size;
     final dpr = MediaQuery.of(context).devicePixelRatio;
-    final cacheSize = (memCacheSize ?? size * dpr).round();
+    final cacheSize = (widget.memCacheSize ?? size * dpr).round();
+    final trackId = widget.trackId;
+    final url = (widget.url != null && widget.url!.isNotEmpty)
+        ? widget.url
+        : _lazyUrl;
 
     // 1. Проверяем наличие кастомной обложки на диске по trackId
     final customPath =
-        trackId != null ? ArtworkHelper.getCustomArtworkSync(trackId!) : null;
+        trackId != null ? ArtworkHelper.getCustomArtworkSync(trackId) : null;
     final effectiveUrl = customPath ?? url;
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(borderRadius),
+      borderRadius: BorderRadius.circular(widget.borderRadius),
       child: SizedBox(
         width: size,
         height: size,
@@ -47,7 +127,7 @@ class Artwork extends ConsumerWidget {
                 url: effectiveUrl,
                 size: size,
                 cacheSize: cacheSize,
-                aspectRatio: aspectRatio,
+                aspectRatio: widget.aspectRatio,
                 fadeInDuration: const Duration(milliseconds: 100),
                 placeholder: _Placeholder(colors: colors),
                 errorWidget: _Placeholder(colors: colors),
@@ -55,6 +135,81 @@ class Artwork extends ConsumerWidget {
             : _Placeholder(colors: colors),
       ),
     );
+  }
+}
+
+/// ART-LAZY-01: очередь ленивого поиска обложек для видимых плиток.
+///
+/// SQLite-кэш [ArtworkProvider] читается сразу, а сетевой поиск
+/// (Genius + iTunes) идёт не более чем в [_maxConcurrency] потоков —
+/// длинный список без обложек не устраивает сетевой шторм. Плитка,
+/// уехавшая с экрана до получения слота ([isWanted] == false), в сеть
+/// не ходит.
+class LazyArtworkLoader {
+  LazyArtworkLoader._();
+  static final LazyArtworkLoader instance = LazyArtworkLoader._();
+
+  static const int _maxConcurrency = 3;
+
+  int _active = 0;
+  final List<Completer<void>> _waiters = [];
+
+  /// Тестовый хук: false — ленивый поиск не выполняется. Выключается
+  /// глобально в test/flutter_test_config.dart: SQLite/Dio-таймеры
+  /// ArtworkProvider'а в fake-async виджет-тестах вешают тест или
+  /// оставляют pending timers.
+  @visibleForTesting
+  bool enabled = true;
+
+  /// Тестовый хук: подменяет поиск (SQLite-кэш + сеть) целиком.
+  @visibleForTesting
+  Future<String?> Function(String artist, String title)? resolverOverride;
+
+  Future<String?> resolve(
+    String artist,
+    String title, {
+    required bool Function() isWanted,
+  }) async {
+    if (!enabled) return null;
+    final override = resolverOverride;
+    if (override != null) return override(artist, title);
+    try {
+      final cached = await ArtworkProvider.instance
+          .getFreshCachedArtworkUrl(artist, title);
+      if (cached != null) return cached;
+      if (!isWanted()) return null;
+
+      await _acquire();
+      try {
+        if (!isWanted()) return null;
+        // preferredSize как у плеера/обогащения плейлистов: URL кэшируется
+        // по artist|title, поэтому размер должен подходить и now playing.
+        return await ArtworkProvider.instance
+            .findArtwork(artist, title, preferredSize: 600);
+      } finally {
+        _release();
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _acquire() async {
+    if (_active < _maxConcurrency) {
+      _active++;
+      return;
+    }
+    final completer = Completer<void>();
+    _waiters.add(completer);
+    await completer.future;
+  }
+
+  void _release() {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete();
+    } else {
+      _active--;
+    }
   }
 }
 

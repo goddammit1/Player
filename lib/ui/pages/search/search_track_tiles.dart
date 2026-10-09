@@ -490,6 +490,7 @@ class _QualityBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = track.qualityLabel;
     if (label == null || label.isEmpty) return const SizedBox.shrink();
+    final peerCount = (track.extra['peerCount'] as int?) ?? 1;
 
     // Цвет бейджа: lossless → зелёный, high quality → акцент, иначе — серый
     final isLossless = label.contains('FLAC') ||
@@ -536,6 +537,19 @@ class _QualityBadge extends StatelessWidget {
             ),
           ),
         ),
+        // Сколько полностью одинаковых файлов от разных пиров свёрнуто
+        // в этот трек (SoulseekSource: extra.peerCount).
+        if (peerCount > 1) ...[
+          const SizedBox(width: 4),
+          Text(
+            '×$peerCount',
+            style: TextStyle(
+              color: badgeColor.withValues(alpha: 0.8),
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ],
     );
   }

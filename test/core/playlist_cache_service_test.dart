@@ -603,6 +603,20 @@ class _FakeSoulseekChannel implements SoulseekChannel {
       transferInfo;
 
   @override
+  Stream<SoulseekSearchProgressEvent> get searchProgress => const Stream.empty();
+
+  @override
+  Future<void> cancelSearch(String requestId) async {}
+
+  @override
+  Future<List<SoulseekSearchResult>> getDirectoryContents({
+    required String username,
+    required String directory,
+    int timeoutMs = 20000,
+  }) async =>
+      const [];
+
+  @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       _transferController.stream;
 

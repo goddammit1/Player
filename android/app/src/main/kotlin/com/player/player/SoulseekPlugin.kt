@@ -267,6 +267,21 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             handleUpdateNativeSettings(call, result)
             return
         }
+        // Отмена поиска не должна поднимать сервис и ждать bind: без bridge
+        // отменять нечего.
+        if (call.method == "cancelSearch") {
+            val bridge = serviceBinder?.bridge
+            val requestId = call.argument<String>("requestId")
+            if (bridge == null || requestId == null) {
+                result.success(false)
+                return
+            }
+            ioScope.launch {
+                val cancelled = runCatching { bridge.cancelSearch(requestId) }.getOrDefault(false)
+                mainHandler.post { result.success(cancelled) }
+            }
+            return
+        }
         // Дефект №3: отсутствие binder у нового экземпляра плагина не
         // доказывает отсутствия соединения — foreground service может
         // продолжать работать (пересоздание Flutter engine). Если bind уже
@@ -472,6 +487,36 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     }
                 }
 
+                "getDirectoryContents" -> {
+                    val bridge = serviceBinder?.bridge
+                        ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
+                    val username = call.argument<String>("username")
+                        ?: run { result.error("INVALID_ARGS", "username is required", null); return }
+                    val directory = call.argument<String>("directory")
+                        ?: run { result.error("INVALID_ARGS", "directory is required", null); return }
+                    val json = JSONObject()
+                        .put("username", username)
+                        .put("directory", directory)
+                        .put("timeoutMs", call.argument<Number>("timeoutMs")?.toInt() ?: 20000)
+                        .toString()
+                    // Блокирует до ответа пира (секунды) — на IO dispatcher.
+                    ioScope.launch {
+                        val res = BridgeCallResult.parse(runCatching { bridge.getDirectoryContentsAsync(json) }
+                            .getOrElse { e ->
+                                "{\"success\":false,\"errorCode\":\"JNI_ERROR\",\"errorMessage\":\"${e.message?.replace("\"", "'")}\"}"
+                            })
+                        replyBridgeResult(result, res) { data ->
+                            // data — JSON-массив SearchResultDto, как у search.
+                            val arr = JSONArray(data)
+                            val list = ArrayList<Map<String, Any?>>(arr.length())
+                            for (i in 0 until arr.length()) {
+                                list.add(JsonInterop.toStandard(arr.getJSONObject(i)) as Map<String, Any?>)
+                            }
+                            list
+                        }
+                    }
+                }
+
                 "startDownload" -> {
                     val mgr = serviceBinder?.transferManager
                         ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
@@ -505,10 +550,16 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                         durationSeconds = durationSeconds
                     )
                     // ret может быть путём (cache hit) или downloadId.
+                    val cacheHit = ret != downloadId
+                    // Стриминг: путь .part, который C# bridge пишет последовательно
+                    // (тот же cacheDir + "<cacheKey>.part"); Dart читает его по мере роста.
+                    val partPath = if (cacheHit) null else serviceBinder?.cacheManager
+                        ?.let { runCatching { it.ensurePartFile(cacheKey).absolutePath }.getOrNull() }
                     val map = mapOf(
                         "downloadId" to downloadId,
                         "result" to ret,
-                        "cacheHit" to (ret != downloadId)
+                        "cacheHit" to cacheHit,
+                        "partPath" to partPath
                     )
                     result.success(map)
                 }
@@ -730,7 +781,10 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             "title" to it.title,
             "artist" to it.artist,
             "durationSeconds" to it.durationSeconds,
-            "extension" to it.extension
+            "extension" to it.extension,
+            // Дата кэширования для единого списка кэш-треков: mtime файла
+            // (пишется по завершении загрузки, LRU-touch его не меняет).
+            "cachedAt" to java.io.File(it.localPath).lastModified()
         )
 
     // ───────────────────────────────────────────────────────────────────
@@ -811,8 +865,8 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         obj.put("query", call.argument<String>("query") ?: "")
         obj.put("timeoutMs", (call.argument<Number>("timeoutMs")?.toInt() ?: 10000))
         obj.put("idleTimeoutMs", (call.argument<Number>("idleTimeoutMs")?.toInt() ?: 2500))
-        obj.put("responseLimit", (call.argument<Number>("responseLimit")?.toInt() ?: 100))
-        obj.put("fileLimit", (call.argument<Number>("fileLimit")?.toInt() ?: 200))
+        obj.put("responseLimit", (call.argument<Number>("responseLimit")?.toInt() ?: 250))
+        obj.put("fileLimit", (call.argument<Number>("fileLimit")?.toInt() ?: 2000))
 
         val filters = call.argument<Map<String, Any>>("filters")
         val filtersObj = JSONObject()

@@ -8,6 +8,7 @@ import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
 import 'search/search_bar_widgets.dart';
+import 'search/search_folder_tiles.dart';
 import 'search/search_track_tiles.dart';
 import 'search_history_page.dart';
 import 'settings_page.dart';
@@ -102,7 +103,6 @@ class _SearchPageState extends ConsumerState<SearchPage>
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(searchProvider);
-    final player = ref.read(playerServiceProvider);
     final searchCtl = ref.read(searchProvider.notifier);
     final sources = SourceRegistry.instance.searchable;
     final currentSourceId = state.sourceId;
@@ -197,75 +197,46 @@ class _SearchPageState extends ConsumerState<SearchPage>
                       ),
 
                     // === CONTENT: GRID OR LIST ===
-                    if (state.results.isEmpty && !state.loading)
+                    if (state.results.isEmpty &&
+                        !state.loading &&
+                        state.isolatedResults.isEmpty &&
+                        !state.isolatedLoading)
                       SliverFillRemaining(
                         hasScrollBody: false,
                         child: SearchEmptyState(colors: colors),
                       )
-                    else if (viewMode == SearchViewMode.grid)
-                      SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 132),
-                        sliver: StreamBuilder<MediaItem?>(
-                          stream: player.mediaItem,
-                          builder: (context, mediaSnap) {
-                            final currentId = mediaSnap.data?.id;
-                            return SliverGrid(
-                              gridDelegate:
-                                  const SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 2,
-                                    crossAxisSpacing: 8,
-                                    mainAxisSpacing: 8,
-                                    childAspectRatio: 1.0,
-                                  ),
-                              delegate: SliverChildBuilderDelegate((
-                                context,
-                                i,
-                              ) {
-                                final t = state.results[i];
-                                final isPlaying =
-                                    currentId != null &&
-                                    currentId == t.globalId;
-                                return SearchTrackTileGrid(
-                                  track: t,
-                                  isPlaying: isPlaying,
-                                  onTap: () => _playTrack(t),
-                                  colors: colors,
-                                );
-                              }, childCount: state.results.length),
-                            );
-                          },
+                    else ...[
+                      _buildTracksSliver(state.results, viewMode, colors),
+
+                      // === ISOLATED SECTION (Soulseek) ===
+                      // Медленные источники — отдельной секцией под основной
+                      // выдачей. Пока они ищут, на месте секции стоит
+                      // плейсхолдер фиксированной высоты: ответ меняет только
+                      // то, что ниже шапки, уже показанные треки не сдвигаются.
+                      if (state.isolatedLoading ||
+                          state.isolatedResults.isNotEmpty) ...[
+                        SliverToBoxAdapter(
+                          child: SearchSectionHeader(
+                            title: _isolatedSectionTitle(
+                              searchCtl.isolatedSourceIds,
+                            ),
+                            loading: state.isolatedLoading,
+                            colors: colors,
+                          ),
                         ),
-                      )
-                    else
-                      SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 132),
-                        sliver: StreamBuilder<MediaItem?>(
-                          stream: player.mediaItem,
-                          builder: (context, mediaSnap) {
-                            final currentId = mediaSnap.data?.id;
-                            return SliverList(
-                              delegate: SliverChildBuilderDelegate((
-                                context,
-                                i,
-                              ) {
-                                final t = state.results[i];
-                                final isPlaying =
-                                    currentId != null &&
-                                    currentId == t.globalId;
-                                return SearchTrackTileList(
-                                  track: t,
-                                  isPlaying: isPlaying,
-                                  duration: t.duration != null
-                                      ? _formatDuration(t.duration!)
-                                      : null,
-                                  onTap: () => _playTrack(t),
-                                  colors: colors,
-                                );
-                              }, childCount: state.results.length),
-                            );
-                          },
-                        ),
-                      ),
+                        if (state.isolatedResults.isEmpty)
+                          SliverToBoxAdapter(
+                            child: SearchSectionPlaceholder(colors: colors),
+                          )
+                        else
+                          _buildTracksSliver(
+                            state.isolatedResults,
+                            viewMode,
+                            colors,
+                          ),
+                      ],
+                      const SliverToBoxAdapter(child: SizedBox(height: 132)),
+                    ],
                   ],
                 ),
               ),
@@ -278,6 +249,101 @@ class _SearchPageState extends ConsumerState<SearchPage>
     );
   }
 
+  /// Сетка или список треков [tracks] в текущем режиме отображения.
+  /// Треки папок Soulseek ([groupSearchEntries]) сворачиваются в карточки.
+  Widget _buildTracksSliver(
+    List<Track> tracks,
+    SearchViewMode viewMode,
+    dynamic colors,
+  ) {
+    final player = ref.read(playerServiceProvider);
+    final entries = groupSearchEntries(tracks);
+    bool playing(SearchEntry e, String? currentId) =>
+        currentId != null && e.tracks.any((t) => t.globalId == currentId);
+    if (viewMode == SearchViewMode.grid) {
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: StreamBuilder<MediaItem?>(
+          stream: player.mediaItem,
+          builder: (context, mediaSnap) {
+            final currentId = mediaSnap.data?.id;
+            return SliverGrid(
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
+                childAspectRatio: 1.0,
+              ),
+              delegate: SliverChildBuilderDelegate((context, i) {
+                final e = entries[i];
+                if (e.isFolder) {
+                  return SearchFolderTileGrid(
+                    tracks: e.tracks,
+                    isPlaying: playing(e, currentId),
+                    colors: colors,
+                  );
+                }
+                final t = e.tracks.single;
+                return SearchTrackTileGrid(
+                  track: t,
+                  isPlaying: playing(e, currentId),
+                  onTap: () => _playTrack(t),
+                  colors: colors,
+                );
+              }, childCount: entries.length),
+            );
+          },
+        ),
+      );
+    }
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      sliver: StreamBuilder<MediaItem?>(
+        stream: player.mediaItem,
+        builder: (context, mediaSnap) {
+          final currentId = mediaSnap.data?.id;
+          return SliverList(
+            delegate: SliverChildBuilderDelegate((context, i) {
+              final e = entries[i];
+              if (e.isFolder) {
+                return SearchFolderTileList(
+                  tracks: e.tracks,
+                  isPlaying: playing(e, currentId),
+                  onPlay: () => _playFolder(e.tracks),
+                  colors: colors,
+                );
+              }
+              final t = e.tracks.single;
+              return SearchTrackTileList(
+                track: t,
+                isPlaying: playing(e, currentId),
+                duration: t.duration != null
+                    ? _formatDuration(t.duration!)
+                    : null,
+                onTap: () => _playTrack(t),
+                colors: colors,
+              );
+            }, childCount: entries.length),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Папка Soulseek с первого трека; очередь — только треки папки.
+  void _playFolder(List<Track> tracks) {
+    ref.read(playerServiceProvider).setQueue(List.of(tracks));
+  }
+
+  /// Заголовок изолированной секции — имена её источников («Soulseek»).
+  String _isolatedSectionTitle(Set<String> isolatedSourceIds) {
+    final names = [
+      for (final id in isolatedSourceIds)
+        if (SourceRegistry.instance.get(id) case final s?) s.displayName,
+    ];
+    return names.join(' · ');
+  }
+
   String _formatDuration(Duration d) {
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
@@ -288,9 +354,17 @@ class _SearchPageState extends ConsumerState<SearchPage>
   /// результатов и находя индекс по [globalId]. Это защищает от
   /// неверного [startIndex], если список обновился между build и тапом
   /// (например, подгрузились обложки или добавился источник).
+  ///
+  /// Очередь — основная выдача + изолированная секция, в порядке на экране,
+  /// без треков папок Soulseek: они свёрнуты в карточки и играют своей
+  /// очередью ([_playFolder], шторка папки).
   void _playTrack(Track track) {
     final player = ref.read(playerServiceProvider);
-    final results = ref.read(searchProvider).results;
+    final results = ref
+        .read(searchProvider)
+        .allResults
+        .where((t) => t.extra['folderKey'] == null)
+        .toList();
     final startIndex = results.indexWhere((t) => t.globalId == track.globalId);
     if (startIndex == -1 || results.isEmpty) return;
     player.setQueue(List.of(results), startIndex: startIndex);

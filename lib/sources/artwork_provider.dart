@@ -211,12 +211,10 @@ class ArtworkProvider {
   }
 
   /// ART-CACHE-01: синхронный lookup только по in-memory кэшу — без
-  /// SQLite и без сети. Для UI-шторок (track settings sheet): трек,
-  /// который уже играл в этой сессии, имеет найденный обложкой URL в
-  /// [_memCache] (его положил сюда [findArtwork] при воспроизведении),
-  /// поэтому шторка отдаёт его мгновенно, без await и побочных эффектов.
-  /// Если трек в сессии не играл — null (плейсхолдер), сеть из меню
-  /// не дёргаем.
+  /// SQLite и без сети. Для UI (Artwork, track settings sheet): URL,
+  /// уже найденный [findArtwork] в этой сессии, отдаётся мгновенно, без
+  /// await и мигания плейсхолдера. null — дальше UI ищет асинхронно
+  /// (см. LazyArtworkLoader).
   String? getMemCachedArtworkUrl(String artist, String title) {
     final key = _key(artist, title);
     final mem = _memCache[key];

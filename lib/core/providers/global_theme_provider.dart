@@ -1,13 +1,15 @@
-import 'dart:io'; // <-- КРИТИЧЕСКИ ВАЖНО ДЛЯ FileImage
 import 'package:audio_service/audio_service.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:palette_generator/palette_generator.dart';
 
 import 'appearance_provider.dart';
+import 'color_space.dart';
 import 'dynamic_colors.dart';
+import 'perceptual_colors.dart';
+import '../artwork_image_provider.dart';
 import '../providers.dart' show playerServiceProvider;
 
 // ── Media item stream ──────────────────────────────────────────────────────
@@ -19,39 +21,42 @@ final _mediaItemProvider = StreamProvider<MediaItem?>((ref) {
 
 // ── Palette from artwork URL ───────────────────────────────────────────────
 
+/// Ключ палитры: обложка и алгоритм, которым из неё извлекаются цвета.
+typedef _PaletteKey = (String url, PaletteAlgorithm algorithm);
+
 final _appColorsForUrlProvider =
-    FutureProvider.autoDispose.family<AppColors, String>((ref, url) async {
+    FutureProvider.autoDispose.family<AppColors, _PaletteKey>((ref, key) async {
+  final (url, algorithm) = key;
   try {
-    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
-    final ImageProvider imageProvider;
+    final imageProvider = artworkImageProvider(url);
+    if (imageProvider == null) return AppColors.fixed;
 
-    // ПРАВИЛЬНОЕ РАЗДЕЛЕНИЕ: FileImage для локальных обложек, CachedNetworkImageProvider для сети
-    if (isLocalFile) {
-      final filePath = url.startsWith('file://')
-          ? Uri.parse(url).toFilePath()
-          : url;
-      final file = File(filePath);
-      if (!file.existsSync()) return AppColors.fixed;
-      imageProvider = FileImage(file);
-    } else {
-      imageProvider = CachedNetworkImageProvider(url);
+    switch (algorithm) {
+      case PaletteAlgorithm.classic:
+        return await _classicColors(imageProvider);
+      case PaletteAlgorithm.perceptual:
+        final palette = await perceptualPaletteFromImage(imageProvider);
+        return palette == null
+            ? AppColors.fixed
+            : AppColors.fromPerceptualPalette(palette);
     }
-
-    final palette = await PaletteGenerator.fromImageProvider(
-      imageProvider,
-      size: const Size(200, 200),
-      maximumColorCount: 32,
-      timeout: const Duration(seconds: 5),
-    );
-
-    final extractor = PaletteExtractor();
-    final dynamicPalette = extractor.fromPalette(palette);
-    if (dynamicPalette == null) return AppColors.fixed;
-    return AppColors.fromDynamicPalette(dynamicPalette);
   } catch (e) {
     return AppColors.fixed;
   }
 });
+
+Future<AppColors> _classicColors(ImageProvider imageProvider) async {
+  final palette = await PaletteGenerator.fromImageProvider(
+    imageProvider,
+    size: const Size(200, 200),
+    maximumColorCount: 32,
+    timeout: const Duration(seconds: 5),
+  );
+
+  final dynamicPalette = PaletteExtractor().fromPalette(palette);
+  if (dynamicPalette == null) return AppColors.fixed;
+  return AppColors.fromDynamicPalette(dynamicPalette);
+}
 
 // ── Current palette (instant, no animation) ────────────────────────────────
 
@@ -69,27 +74,33 @@ class CurrentPaletteNotifier extends StateNotifier<AppColors> {
 
   final Ref _ref;
   ProviderSubscription<AsyncValue<AppColors>>? _paletteSub;
-  String? _activeUrl;
+
+  /// Текущий ключ палитры; `null` — палитра фиксированная (начальное
+  /// состояние нотифаера).
+  _PaletteKey? _activeKey;
 
   void _recompute() {
-    final mode = _ref.read(appThemeModeProvider);
-    final url = mode == AppThemeMode.dynamic
-        ? (_ref.read(_mediaItemProvider).value?.artUri?.toString() ?? '')
-        : '';
+    final algorithm = _ref.read(appThemeModeProvider).paletteAlgorithm;
+    // Fixed-тема не зависит от плеера: медиа-поток читаем только для тем
+    // из обложки (в виджет-тестах плеер не переопределён, и чтение бросает).
+    final url = algorithm == null
+        ? ''
+        : (_ref.read(_mediaItemProvider).value?.artUri?.toString() ?? '');
+    final key = (algorithm == null || url.isEmpty) ? null : (url, algorithm);
 
-    if (url == _activeUrl) return;
-    _activeUrl = url;
+    if (key == _activeKey) return;
+    _activeKey = key;
 
     _paletteSub?.close();
     _paletteSub = null;
 
-    if (url.isEmpty) {
+    if (key == null) {
       state = AppColors.fixed;
       return;
     }
 
     _paletteSub = _ref.listen(
-      _appColorsForUrlProvider(url),
+      _appColorsForUrlProvider(key),
       (_, asyncColors) {
         asyncColors.whenData((colors) => state = colors);
       },
@@ -178,6 +189,7 @@ class AppColors {
     required this.accent,
     required this.gradientTop,
     required this.gradientBottom,
+    required this.meshColors,
     required this.isDynamic,
   });
 
@@ -194,6 +206,12 @@ class AppColors {
     accent: Color(0xFF747474),
     gradientTop: Color(0xFF000000),
     gradientBottom: Color(0xFF000000),
+    meshColors: [
+      Color(0xFF000000),
+      Color(0xFF161618),
+      Color(0xFF747474),
+      Color(0xFF000000),
+    ],
     isDynamic: false,
   );
 
@@ -215,6 +233,30 @@ class AppColors {
       accent: p.accent,
       gradientTop: p.gradientTop,
       gradientBottom: p.gradientBottom,
+      meshColors: List.unmodifiable(
+        [p.gradientTop, p.elevated, p.accent, p.gradientBottom],
+      ),
+      isDynamic: true,
+    );
+  }
+
+  /// Строит палитру приложения из [PerceptualPalette] (perceptual_colors.dart):
+  /// роли на HCT с гарантированным контрастом.
+  factory AppColors.fromPerceptualPalette(PerceptualPalette p) {
+    return AppColors._(
+      background: p.background,
+      elevated: p.elevated,
+      elevatedVariant: p.elevatedVariant,
+      elevatedHi: p.elevatedHi,
+      elevatedProgressBar: p.elevatedHi.withValues(alpha: 0.4),
+      outline: p.outline,
+      textPrimary: p.textPrimary,
+      textSecondary: p.textPrimary.withValues(alpha: 0.7),
+      textTertiary: p.textPrimary.withValues(alpha: 0.5),
+      accent: p.accent,
+      gradientTop: p.gradientTop,
+      gradientBottom: p.gradientBottom,
+      meshColors: p.meshColors,
       isDynamic: true,
     );
   }
@@ -231,23 +273,32 @@ class AppColors {
   final Color accent;
   final Color gradientTop;
   final Color gradientBottom;
+
+  /// [meshColorCount] цветов для mesh-фона страницы плеера.
+  final List<Color> meshColors;
   final bool isDynamic;
 
+  /// Цвета смешиваются в OKLCh: конечные палитры те же, что с [Color.lerp],
+  /// но середина перехода не проваливается в серое.
   static AppColors lerp(AppColors a, AppColors b, double t) {
     return AppColors._(
-      background: Color.lerp(a.background, b.background, t)!,
-      elevated: Color.lerp(a.elevated, b.elevated, t)!,
-      elevatedVariant: Color.lerp(a.elevatedVariant, b.elevatedVariant, t)!,
-      elevatedHi: Color.lerp(a.elevatedHi, b.elevatedHi, t)!,
+      background: lerpOklch(a.background, b.background, t),
+      elevated: lerpOklch(a.elevated, b.elevated, t),
+      elevatedVariant: lerpOklch(a.elevatedVariant, b.elevatedVariant, t),
+      elevatedHi: lerpOklch(a.elevatedHi, b.elevatedHi, t),
       elevatedProgressBar:
-          Color.lerp(a.elevatedProgressBar, b.elevatedProgressBar, t)!,
-      outline: Color.lerp(a.outline, b.outline, t)!,
-      textPrimary: Color.lerp(a.textPrimary, b.textPrimary, t)!,
-      textSecondary: Color.lerp(a.textSecondary, b.textSecondary, t)!,
-      textTertiary: Color.lerp(a.textTertiary, b.textTertiary, t)!,
-      accent: Color.lerp(a.accent, b.accent, t)!,
-      gradientTop: Color.lerp(a.gradientTop, b.gradientTop, t)!,
-      gradientBottom: Color.lerp(a.gradientBottom, b.gradientBottom, t)!,
+          lerpOklch(a.elevatedProgressBar, b.elevatedProgressBar, t),
+      outline: lerpOklch(a.outline, b.outline, t),
+      textPrimary: lerpOklch(a.textPrimary, b.textPrimary, t),
+      textSecondary: lerpOklch(a.textSecondary, b.textSecondary, t),
+      textTertiary: lerpOklch(a.textTertiary, b.textTertiary, t),
+      accent: lerpOklch(a.accent, b.accent, t),
+      gradientTop: lerpOklch(a.gradientTop, b.gradientTop, t),
+      gradientBottom: lerpOklch(a.gradientBottom, b.gradientBottom, t),
+      meshColors: List.unmodifiable([
+        for (var i = 0; i < meshColorCount; i++)
+          lerpOklch(a.meshColors[i], b.meshColors[i], t),
+      ]),
       isDynamic: t > 0.5 ? b.isDynamic : a.isDynamic,
     );
   }
@@ -268,6 +319,7 @@ class AppColors {
           accent == other.accent &&
           gradientTop == other.gradientTop &&
           gradientBottom == other.gradientBottom &&
+          listEquals(meshColors, other.meshColors) &&
           isDynamic == other.isDynamic;
 
   @override
@@ -284,6 +336,7 @@ class AppColors {
         accent,
         gradientTop,
         gradientBottom,
+        Object.hashAll(meshColors),
         isDynamic,
       );
 

@@ -178,6 +178,12 @@ class _FakePlayer implements PlayerServiceInterface {
   List<Track> get trackQueue => const [];
 }
 
+/// Нотифаер темы без записи в БД (см. тест выбора темы на AppearancePage).
+class _InMemoryThemeMode extends AppThemeModeNotifier {
+  @override
+  Future<void> setMode(AppThemeMode mode) async => state = mode;
+}
+
 void main() {
   TestHarness.ensureInitialized();
 
@@ -236,6 +242,36 @@ void main() {
       // Плитка версии на месте (точный текст зависит от mock buildNumber,
       // поэтому проверяем только саму плитку).
       expect(find.text('Version'), findsOneWidget);
+    });
+
+    testWidgets('AppearancePage lists all five themes and selects one',
+        (tester) async {
+      // Запись настройки в sqflite из fake-async зоны testWidgets не
+      // завершается и держит блокировку БД, поэтому выбор проверяем на
+      // нотифаере без записи. Сохранение покрыто в test/state/providers_test.dart.
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            playerServiceProvider.overrideWithValue(_FakePlayer()),
+            appThemeModeProvider.overrideWith((_) => _InMemoryThemeMode()),
+          ],
+          child: const MaterialApp(home: AppearancePage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      for (final label in ['Fixed', 'Classic', 'Perceptual', 'Mesh', 'Blur']) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+
+      await tester.ensureVisible(find.text('Mesh'));
+      await tester.tap(find.text('Mesh'));
+      await tester.pumpAndSettle();
+
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(AppearancePage)),
+      );
+      expect(container.read(appThemeModeProvider), AppThemeMode.mesh);
     });
 
     testWidgets(

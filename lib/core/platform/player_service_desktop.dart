@@ -377,6 +377,11 @@ class DesktopPlayerService implements PlayerServiceInterface {
     _currentIndex = index; _currentIndexSubject.add(index);
     final track = _queue[index];
     _emitMediaItem(track);
+    // Как в мобильном PlayerService: файл играющего трека открыт плеером
+    // (на Windows его нельзя удалить) — защищаем от эвикта и очистки.
+    YoutubeCache.instance.setProtectedId(
+      YoutubeCache.cacheIdFor(sourceId: track.sourceId, trackId: track.id),
+    );
     _log('[$gen] play $index "${track.title}" ${isRetry ? "(RETRY)" : ""}');
     try {
       final src = SourceRegistry.instance.require(track.sourceId);

@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../models/playlist.dart';
+import '../../sources/source_registry.dart';
 import '../database/app_database.dart';
 import '../artwork_helper.dart';
 import '../repositories/history_repository.dart';
@@ -212,5 +213,9 @@ class FullBackup {
     // Сбрасываем флаг _initialized, чтобы init() перечитал БД заново.
     ArtworkHelper.resetInit();
     await ArtworkHelper.init();
+
+    // Настройки Soulseek тоже в таблице settings: перечитываем флаг поиска,
+    // фильтры/таймаут источника и синхронизируем натив (порт, кэш и т.д.).
+    await SourceRegistry.reloadSoulseekSettings();
   }
 }

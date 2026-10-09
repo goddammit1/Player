@@ -94,6 +94,20 @@ class _FakeChannel implements SoulseekChannel {
   Future<SoulseekTransferInfo?> getTransfer(String downloadId) async => null;
 
   @override
+  Stream<SoulseekSearchProgressEvent> get searchProgress => const Stream.empty();
+
+  @override
+  Future<void> cancelSearch(String requestId) async {}
+
+  @override
+  Future<List<SoulseekSearchResult>> getDirectoryContents({
+    required String username,
+    required String directory,
+    int timeoutMs = 20000,
+  }) async =>
+      const [];
+
+  @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       const Stream<SoulseekTransferEvent>.empty();
 }

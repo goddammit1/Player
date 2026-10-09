@@ -1,7 +1,7 @@
 name: player
 description: "Music player with multi-source parsing"
 publish_to: 'none'
-version: 3.0.2+33
+version: 3.3.0+36
 
 environment:
   sdk: ^3.11.4
@@ -13,6 +13,9 @@ dependencies:
   meta: ^1.12.0
   cupertino_icons: ^1.0.8
   palette_generator: ^0.3.3+3
+  # HCT, квантизация Celebi и Score для темы Perceptual. Версию держит
+  # Flutter SDK (транзитивно через flutter), поэтому ограничение мягкое.
+  material_color_utilities: ^0.13.0
   shared_preferences: ^2.5.3
   flutter_color_models: ^1.3.3
   blur: ^3.1.0
@@ -77,6 +80,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  shaders:
+    - shaders/mesh_gradient.frag
 
   fonts:
     - family: Geist

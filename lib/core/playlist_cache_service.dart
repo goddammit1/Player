@@ -190,6 +190,7 @@ class PlaylistCacheService {
       if (await _cache.hasFile(cacheId)) {
         await _cache.pin(cacheId);
         await _cache.touch(cacheId);
+        await _cache.registerTrack(track);
         skippedCached++;
         emit(track.title, 1.0);
         continue;
@@ -222,6 +223,7 @@ class PlaylistCacheService {
 
         await File(partPath).rename(file.path);
         await _cache.pin(cacheId);
+        await _cache.registerTrack(track);
         downloaded++;
         emit(track.title, 1.0);
       } on DioException catch (e) {

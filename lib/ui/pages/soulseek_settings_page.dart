@@ -34,8 +34,8 @@ import '../desktop/desktop_layout.dart';
 import '../widgets/app_dialogs.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
-import '../widgets/soulseek_cache_sheet.dart';
 import '../widgets/soulseek_transfer_sheet.dart';
+import 'cached_tracks_page.dart';
 
 /// Репозиторий настроек Soulseek (SQLite). Дефолты и ключи — там же
 /// (раньше здесь был класс SoulseekPrefs с SharedPreferences-ключами).
@@ -60,7 +60,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   // ── Параметры (дефолты — из SoulseekSettingsRepository) ──
   int _listenPort = SoulseekSettingsRepository.defaultListenPort;
-  int _cacheLimitMB = SoulseekSettingsRepository.defaultCacheLimitMB;
   int _maxParallelDownloads =
       SoulseekSettingsRepository.defaultMaxParallelDownloads;
   bool _preferLossless = SoulseekSettingsRepository.defaultPreferLossless;
@@ -68,6 +67,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   int _maxFileSizeMB = SoulseekSettingsRepository.defaultMaxFileSizeMB;
   int _searchTimeoutSec = SoulseekSettingsRepository.defaultSearchTimeoutSec;
   String _sharingDirectory = '';
+  bool _streamingEnabled = SoulseekSettingsRepository.defaultStreamingEnabled;
 
   // ── Состояние подключения ──
   SoulseekConnectionState _connectionState =
@@ -91,12 +91,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   // ── Доступные форматы для multi-select ──
   static const List<String> _allFormats = [
     'flac', 'wav', 'alac', 'mp3', 'aac', 'ogg',
-  ];
-
-  // ── Опции лимита кэша ──
-  static const List<int> _cacheLimitOptions = [500, 1024, 2048, 5120, 0];
-  static const List<String> _cacheLimitLabels = [
-    '500 MB', '1 GB', '2 GB', '5 GB', 'Unlimited',
   ];
 
   bool get _isAvailable => SoulseekPlatformChannel.instance.isAvailable;
@@ -134,13 +128,13 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
         _enabled = settings.enabled;
         _listenPort = settings.listenPort;
-        _cacheLimitMB = settings.cacheLimitMB;
         _maxParallelDownloads = settings.maxParallelDownloads;
         _preferLossless = settings.preferLossless;
         _allowedFormats = settings.allowedFormats;
         _maxFileSizeMB = settings.maxFileSizeMB;
         _searchTimeoutSec = settings.searchTimeoutSec;
         _sharingDirectory = settings.sharingDirectory;
+        _streamingEnabled = settings.streamingEnabled;
       });
     }
 
@@ -160,6 +154,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           maxFileSizeMB: _maxFileSizeMB,
           preferLossless: _preferLossless,
           searchTimeoutSec: _searchTimeoutSec,
+          streamingEnabled: _streamingEnabled,
         );
     await _repo.applyToSource(source, settings: s);
   }
@@ -469,14 +464,15 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     await _repo.setListenPort(port);
   }
 
-  Future<void> _updateCacheLimit(int mb) async {
-    setState(() => _cacheLimitMB = mb);
-    await _repo.setCacheLimitMB(mb);
-  }
-
   Future<void> _updateMaxParallel(int value) async {
     setState(() => _maxParallelDownloads = value);
     await _repo.setMaxParallelDownloads(value);
+  }
+
+  Future<void> _toggleStreaming(bool value) async {
+    setState(() => _streamingEnabled = value);
+    await _repo.setStreamingEnabled(value);
+    await _applyFiltersToSource();
   }
 
   Future<void> _togglePreferLossless(bool value) async {
@@ -696,12 +692,13 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         ),
         const SizedBox(height: 8),
 
-        // === CACHE ===
+        // === DOWNLOADS ===
+        // Лимит размера кэша — на общей странице Cache.
         _Section(
-          title: 'Cache',
+          title: 'Downloads',
           colors: colors,
           children: [
-            _buildCacheSection(colors),
+            _buildDownloadsSection(colors),
           ],
         ),
         const SizedBox(height: 8),
@@ -1061,39 +1058,36 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     );
   }
 
-  // ── CACHE SECTION ──
+  // ── DOWNLOADS SECTION ──
 
-  Widget _buildCacheSection(dynamic colors) {
+  Widget _buildDownloadsSection(dynamic colors) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Cache size limit',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
+          // Стриминг: воспроизведение во время загрузки (.part).
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              'Play while downloading',
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontWeight: FontWeight.w500,
+              ),
             ),
+            subtitle: Text(
+              'Start playback before the file is fully downloaded',
+              style: TextStyle(color: colors.textSecondary, fontSize: 13),
+            ),
+            value: _streamingEnabled,
+            onChanged: _toggleStreaming,
+            activeThumbColor: colors.accent,
+            activeTrackColor: colors.accent.withValues(alpha: 0.3),
+            inactiveThumbColor: colors.textSecondary,
+            inactiveTrackColor: colors.elevated,
           ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: List.generate(_cacheLimitOptions.length, (i) {
-              final mb = _cacheLimitOptions[i];
-              final label = _cacheLimitLabels[i];
-              final isSelected = _cacheLimitMB == mb;
-              return _LimitChip(
-                label: label,
-                isSelected: isSelected,
-                colors: colors,
-                onTap: () => _updateCacheLimit(mb),
-              );
-            }),
-          ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
 
           // Max parallel downloads
           Text(
@@ -1136,14 +1130,16 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           ),
           const SizedBox(height: 10),
 
-          // Quick access: cached files
+          // Quick access: общий список кэшированных треков
           SizedBox(
             width: double.infinity,
             child: _ActionButton(
-              label: 'Cached files',
+              label: 'Cached tracks',
               icon: Icons.storage_rounded,
               colors: colors,
-              onTap: () => showSoulseekCacheSheet(context),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CachedTracksPage()),
+              ),
             ),
           ),
         ],
@@ -1590,54 +1586,6 @@ class _FormatChip extends StatelessWidget {
               color: selected ? colors.accent : colors.textSecondary,
               fontSize: 13,
               fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LimitChip extends StatelessWidget {
-  const _LimitChip({
-    required this.label,
-    required this.isSelected,
-    required this.colors,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool isSelected;
-  final dynamic colors;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: isSelected
-          ? colors.accent.withValues(alpha: 0.15)
-          : colors.elevated,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: isSelected
-                  ? colors.accent.withValues(alpha: 0.4)
-                  : colors.outline,
-              width: 1,
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: isSelected ? colors.accent : colors.textSecondary,
-              fontSize: 13,
-              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
             ),
           ),
         ),

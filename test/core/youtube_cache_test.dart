@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:player/core/database/app_database.dart';
 import 'package:player/core/artwork_helper.dart';
 import 'package:player/core/youtube_cache.dart';
+import 'package:player/models/track.dart';
 
 import '../setup/test_harness.dart';
 
@@ -329,6 +330,72 @@ void main() {
       expect(await files.artFile.exists(), false);
       expect(await files.customFile.exists(), false);
       expect(ArtworkHelper.getCustomArtworkSync('some_id'), isNull);
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════════════
+  //  Индекс метаданных и листинг (единый список кэш-треков)
+  // ═════════════════════════════════════════════════════════════════
+
+  group('metadata index / listAudioFiles', () {
+    setUp(() async => await TestHarness.setUpDb());
+    tearDown(() async => await TestHarness.tearDownDb());
+
+    Track track(String id) =>
+        Track(id: id, sourceId: 'muzmo', title: 'T$id', artist: 'A');
+
+    test('parseCacheId — обратная операция к cacheIdFor', () {
+      expect(YoutubeCache.parseCacheId('muzmo_123'),
+          (sourceId: 'muzmo', trackId: '123'));
+      expect(YoutubeCache.parseCacheId('soundcloud_a_b'),
+          (sourceId: 'soundcloud', trackId: 'a_b'));
+      expect(YoutubeCache.parseCacheId('dQw4w'),
+          (sourceId: 'youtube', trackId: 'dQw4w'));
+    });
+
+    test('listAudioFiles: только аудио, без .part/.mime, с флагом pinned',
+        () async {
+      File(p.join(audioDir.path, 'muzmo_1.mp3')).writeAsStringSync('x' * 10);
+      File(p.join(audioDir.path, 'muzmo_1.mp3.mime')).writeAsStringSync('m');
+      File(p.join(audioDir.path, 'muzmo_2.mp3.part')).writeAsStringSync('p');
+      File(p.join(audioDir.path, 'legacy.m4a')).writeAsStringSync('y' * 5);
+      await YoutubeCache.instance.pin('legacy');
+
+      final files = await YoutubeCache.instance.listAudioFiles();
+      final byId = {for (final f in files) f.cacheId: f};
+
+      expect(byId.keys, unorderedEquals(['muzmo_1', 'legacy']));
+      expect(byId['muzmo_1']!.sizeBytes, 10);
+      expect(byId['muzmo_1']!.pinned, isFalse);
+      expect(byId['legacy']!.pinned, isTrue);
+
+      await YoutubeCache.instance.unpin('legacy');
+    });
+
+    test('fileForTrack запоминает метаданные трека', () async {
+      await YoutubeCache.instance.fileForTrack(track('7'));
+      // registerTrack из fileForTrack — fire-and-forget.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final index = await AppDatabase.instance.getAudioCacheIndex();
+      expect(index['muzmo_7']?.track.title, 'T7');
+    });
+
+    test('evict и clearAudioCache чистят индекс', () async {
+      for (final id in ['1', '2', 'playing']) {
+        await YoutubeCache.instance.registerTrack(track(id));
+        File(p.join(audioDir.path, 'muzmo_$id.mp3')).writeAsStringSync('x');
+      }
+
+      await YoutubeCache.instance.evict('muzmo_1');
+      expect((await AppDatabase.instance.getAudioCacheIndex()).keys,
+          unorderedEquals(['muzmo_2', 'muzmo_playing']));
+
+      // ignore: invalid_use_of_visible_for_testing_member
+      YoutubeCache.instance.setProtectedId('muzmo_playing');
+      await YoutubeCache.instance.clearAudioCache();
+      expect((await AppDatabase.instance.getAudioCacheIndex()).keys,
+          ['muzmo_playing']);
     });
   });
 }
