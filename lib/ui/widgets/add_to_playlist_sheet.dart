@@ -9,9 +9,10 @@ import '../desktop/desktop_layout.dart';
 import '../../core/platform/haptic_helper.dart';
 
 Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
-  // Защита от двойного открытия sheet'а при быстром тапе.
+  // Защита от двойного открытия sheet'а при быстром тапе. Контекст без
+  // маршрута (контекстное меню, плеер-бар на десктопе) — открываем.
   final route = ModalRoute.of(context);
-  if (route == null || !route.isCurrent) return Future.value();
+  if (route != null && !route.isCurrent) return Future.value();
   return showDesktopModalSheet<void>(
     context: context,
     maxWidth: 560,

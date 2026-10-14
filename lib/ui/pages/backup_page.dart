@@ -94,8 +94,8 @@ class BackupPage extends ConsumerWidget {
                         ),
                         onTap: () async {
                           try {
-                            await FullBackup.exportAndShare();
-                            if (context.mounted) {
+                            final saved = await FullBackup.exportAndShare();
+                            if (saved && context.mounted) {
                               showSuccessSnack(context, 'Backup exported');
                             }
                           } catch (e) {

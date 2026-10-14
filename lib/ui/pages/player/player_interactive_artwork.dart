@@ -7,7 +7,7 @@ import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/artwork_helper.dart';
+import '../../../core/cover_actions.dart';
 import '../../../core/platform/haptic_helper.dart';
 import '../../../core/player_service_interface.dart';
 import '../../widgets/artwork.dart';
@@ -56,13 +56,9 @@ class _PlayerInteractiveArtworkState
 
     final trackId = widget.item.extras?['trackId'] as String? ?? widget.item.id;
 
-    final newPath = await ArtworkHelper.pickAndSaveArtwork(trackId);
-
-    if (newPath != null && mounted) {
-      // Это обновит MediaItem на Uri.file(newPath), что автоматически запустит
-      // перерасчет динамических цветов в animatedPaletteProvider!
-      await widget.player.updateCustomArtwork(trackId, newPath);
-    }
+    // Обновит MediaItem на Uri.file(newPath), что автоматически запустит
+    // перерасчет динамических цветов в animatedPaletteProvider!
+    await CoverActions.change(widget.player, trackId);
   }
 
   Future<void> _onResetAlbum() async {
@@ -71,13 +67,13 @@ class _PlayerInteractiveArtworkState
 
     final trackId = widget.item.extras?['trackId'] as String? ?? widget.item.id;
 
-    await widget.player.resetCustomArtwork(trackId);
+    await CoverActions.reset(widget.player, trackId);
   }
 
   @override
   Widget build(BuildContext context) {
     final trackId = widget.item.extras?['trackId'] as String? ?? widget.item.id;
-    final hasCustomArt = ArtworkHelper.getCustomArtworkSync(trackId) != null;
+    final hasCustomArt = CoverActions.hasCustom(trackId);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,

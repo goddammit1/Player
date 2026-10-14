@@ -1,29 +1,23 @@
 // lib/ui/sheets/track_settings_sheet.dart
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/player_service.dart' show SleepTimerMode;
 import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
+import '../../core/track_actions.dart';
 import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
 import '../../sources/artwork_provider.dart';
 import '../../sources/soulseek_models.dart';
-import '../../sources/soulseek_platform_channel.dart';
-import '../../sources/soulseek_source.dart';
-import '../../sources/source_registry.dart';
 import 'artwork.dart';
 import '../desktop/desktop_layout.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import 'soulseek_folder_sheet.dart';
-import '../../core/youtube_cache.dart';
 
 // =============================================================================
 // PUBLIC API
@@ -34,7 +28,10 @@ Future<void> showTrackSettingsSheet(
   required Track track,
   MediaItem? currentMediaItem,
 }) {
-  if (ModalRoute.of(context)?.isCurrent != true) return Future.value();
+  // Поверх другой шторки не открываем. Контекст без маршрута (десктопный
+  // плеер-бар выше Navigator'а, rootNavigatorKey) — допустим.
+  final route = ModalRoute.of(context);
+  if (route != null && !route.isCurrent) return Future.value();
   return showDesktopModalSheet<void>(
     context: context,
     maxWidth: 520,
@@ -171,14 +168,11 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
             const SizedBox(height: 8),
 
             // ── Boost slider ──
-            // Громкость-буст реализован через AndroidLoudnessEnhancer —
-            // только на Android/iOS. На десктопе слайдер бесполезен, поэтому
-            // прячем его, чтобы не вводить в заблуждение.
-            if (Platform.isAndroid || Platform.isIOS)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: _BoostSlider(player: player, colors: colors),
-              ),
+            // Android: AndroidLoudnessEnhancer, Windows: громкость mpv > 100%.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: BoostSlider(player: player, colors: colors),
+            ),
 
             const SizedBox(height: 20),
 
@@ -200,7 +194,7 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
             // ── Settings group (Download + Sleep Timer + Details) ──
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _SettingsGroup(
+              child: TrackActionsGroup(
                 track: t,
                 colors: colors,
                 player: player, // <--- передаем player
@@ -223,7 +217,7 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
     PlayerServiceInterface player,
     Track track,
   ) {
-    player.insertToQueue(track);
+    TrackActions.playNext(player, track);
     Navigator.of(ctx).pop();
     ScaffoldMessenger.of(ctx).showSnackBar(
       SnackBar(
@@ -389,17 +383,24 @@ class _ActionButton extends StatelessWidget {
 // VOLUME SLIDER
 // =============================================================================
 
-class _BoostSlider extends ConsumerStatefulWidget {
-  const _BoostSlider({required this.player, required this.colors});
+/// Слайдер усиления громкости (0..[kMaxBoostDb] dB).
+class BoostSlider extends ConsumerStatefulWidget {
+  const BoostSlider({
+    super.key,
+    required this.player,
+    required this.colors,
+    this.label = 'Volume',
+  });
 
   final PlayerServiceInterface player;
   final AppColors colors;
+  final String label;
 
   @override
-  ConsumerState<_BoostSlider> createState() => _BoostSliderState();
+  ConsumerState<BoostSlider> createState() => _BoostSliderState();
 }
 
-class _BoostSliderState extends ConsumerState<_BoostSlider>
+class _BoostSliderState extends ConsumerState<BoostSlider>
     with SingleTickerProviderStateMixin {
   double? _dragFraction;
 
@@ -438,7 +439,7 @@ class _BoostSliderState extends ConsumerState<_BoostSlider>
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Volume',
+                  widget.label,
                   style: TextStyle(
                     color: widget.colors.textPrimary,
                     fontSize: 16,
@@ -653,103 +654,93 @@ class _BoostPainter extends CustomPainter {
 // SETTINGS GROUP
 // =============================================================================
 
-class _SettingsGroup extends ConsumerStatefulWidget {
-  const _SettingsGroup({
+/// Группа «Download / Sleep timer / Details / Open folder».
+///
+/// Используется в шторке настроек трека и на десктопной вкладке «Track»
+/// панели очереди ([insideSheet] = false: «Open folder» не закрывает
+/// текущий маршрут). Пересоздавайте с `key` по треку. Состояние кэша
+/// перечитывается по [TrackActions.cacheChanges] (загрузка / удаление из
+/// контекстного меню или другой шторки).
+class TrackActionsGroup extends ConsumerStatefulWidget {
+  const TrackActionsGroup({
+    super.key,
     required this.track,
     required this.colors,
     required this.player,
+    this.insideSheet = true,
+    this.tileColor,
+    this.separatorColor,
   });
 
   final Track track;
   final AppColors colors;
   final PlayerServiceInterface player;
+  final bool insideSheet;
+
+  /// Фон плиток (по умолчанию `colors.elevated`, как в шторке).
+  final Color? tileColor;
+
+  /// Цвет 4-px разделителей (по умолчанию `colors.background`).
+  final Color? separatorColor;
 
   @override
-  ConsumerState<_SettingsGroup> createState() => _SettingsGroupState();
+  ConsumerState<TrackActionsGroup> createState() => _TrackActionsGroupState();
 }
 
-class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
+class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
   bool _isCached = false;
   bool _checking = true;
   bool _downloading = false;
   double? _progress;
   StreamSubscription<SoulseekTransferEvent>? _transferSub;
+  StreamSubscription<String>? _cacheChangesSub;
 
   @override
   void initState() {
     super.initState();
+    _cacheChangesSub = TrackActions.cacheChanges
+        .where((id) => id == widget.track.globalId)
+        .listen((_) => _checkCache());
     _checkCache();
   }
 
   @override
   void dispose() {
     _transferSub?.cancel();
+    _cacheChangesSub?.cancel();
     super.dispose();
-  }
-
-  String _cacheId(Track track) =>
-      YoutubeCache.cacheIdFor(sourceId: track.sourceId, trackId: track.id);
-
-  /// PLAYER-DL-01: Soulseek-источник, если трек из Soulseek.
-  SoulseekSource? get _soulseekSource {
-    if (widget.track.sourceId != SoulseekSource.sourceId) return null;
-    return SourceRegistry.instance.get(SoulseekSource.sourceId)
-        as SoulseekSource?;
-  }
-
-  /// Soulseek-трек с известным пиром и каталогом — папку можно открыть.
-  bool get _soulseekFolderAvailable {
-    if (_soulseekSource == null) return false;
-    final remote = widget.track.extra['remoteFilename'] as String?;
-    return widget.track.extra['peerUsername'] is String &&
-        remote != null &&
-        SoulseekSource.folderOf(remote).isNotEmpty;
-  }
-
-  /// PLAYER-DL-01: cacheKey для нативного кэша Soulseek (null — трек не
-  /// Soulseek или данных недостаточно → fallback на YoutubeCache-путь).
-  String? get _soulseekCacheKey {
-    final source = _soulseekSource;
-    if (source == null) return null;
-    return source.cacheKeyFor(widget.track);
   }
 
   Future<void> _checkCache() async {
     setState(() => _checking = true);
-    try {
-      // PLAYER-DL-01: source-aware проверка — Soulseek-треки живут в
-      // нативном кэше, а не в YoutubeCache.
-      final cacheKey = _soulseekCacheKey;
-      final source = _soulseekSource;
-      if (source != null && cacheKey != null) {
-        final entry = await source.getCacheEntry(cacheKey);
-        _isCached = entry != null && entry.complete;
-        if (mounted && !_isCached) {
-          // Снимок активной загрузки — sheet открыли во время трансфера.
-          final info = await source.getTransfer('dl_$cacheKey');
-          if (info != null && info.state.isActive) {
-            _downloading = true;
-            _progress = info.progress;
-            _listenTransfers(source, cacheKey);
-          }
-        }
-      } else {
-        _isCached = await YoutubeCache.instance.hasFile(_cacheId(widget.track));
+    final status = await TrackActions.cacheStatus(widget.track);
+    if (!mounted) return;
+    final joinStreaming = status.isDownloading &&
+        !_downloading &&
+        TrackActions.soulseekDownloadId(widget.track) == null;
+    setState(() {
+      _isCached = status.isCached;
+      _checking = false;
+      if (status.isDownloading) {
+        // Снимок активной загрузки — sheet открыли во время трансфера.
+        _downloading = true;
+        _progress = status.progress;
       }
-    } catch (_) {
-      _isCached = false;
-    } finally {
-      if (mounted) setState(() => _checking = false);
+    });
+    if (joinStreaming) {
+      // Загрузку начали в другом месте — присоединяемся ради прогресса.
+      unawaited(_download());
+    } else if (status.isDownloading) {
+      _listenTransfers();
     }
   }
 
   /// PLAYER-DL-01: подписка на transfer-события по downloadId `dl_$cacheKey`.
-  void _listenTransfers(SoulseekSource source, String cacheKey) {
+  void _listenTransfers() {
     _transferSub?.cancel();
-    final downloadId = 'dl_$cacheKey';
-    _transferSub = source.transferEvents.listen(
+    _transferSub = TrackActions.soulseekTransfers(widget.track).listen(
       (event) {
-        if (!mounted || event.downloadId != downloadId) return;
+        if (!mounted) return;
         switch (event.state) {
           case SoulseekTransferState.completed:
             setState(() {
@@ -781,7 +772,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
     );
   }
 
-  void _showSnack(String message) {
+  void _showSnack(String message, {Duration? duration}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -789,68 +780,29 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
         backgroundColor: widget.colors.elevated,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        duration: const Duration(seconds: 3),
+        duration: duration ?? const Duration(seconds: 3),
       ),
     );
   }
 
   Future<void> _download() async {
-    // PLAYER-DL-01: Soulseek-треки качаются нативным механизмом (prefetch →
-    // startDownload с dedupe по downloadId), без dio-копии в YoutubeCache —
-    // одна загрузка, корректное расширение файла. Прогресс приходит из
-    // подписки transferEvents (см. _listenTransfers).
-    final soulseek = _soulseekSource;
-    final cacheKey = _soulseekCacheKey;
-    if (soulseek != null && cacheKey != null) {
-      await downloadSoulseek(soulseek, cacheKey);
-      return;
-    }
-
+    // Soulseek: прогресс приходит из подписки transferEvents, а download()
+    // завершается сразу после старта нативной загрузки.
+    final isSoulseek = TrackActions.soulseekDownloadId(widget.track) != null;
     setState(() {
       _downloading = true;
-      _progress = 0.0;
+      _progress = isSoulseek ? null : 0.0;
     });
+    if (isSoulseek) _listenTransfers();
 
     try {
-      final source = SourceRegistry.instance.require(widget.track.sourceId);
-      final url = await source.resolveStreamUrl(widget.track);
-
-      final cacheFile = await YoutubeCache.instance.fileFor(
-        _cacheId(widget.track),
-        extension: 'mp3',
+      await TrackActions.download(
+        widget.track,
+        onProgress: (p) {
+          if (mounted) setState(() => _progress = p);
+        },
       );
-
-      final partPath = '${cacheFile.path}.part';
-      final dio = Dio(
-        BaseOptions(
-          connectTimeout: const Duration(seconds: 15),
-          receiveTimeout: const Duration(seconds: 30),
-        ),
-      );
-
-      try {
-        await dio.download(
-          url,
-          partPath,
-          onReceiveProgress: (received, total) {
-            if (total > 0 && mounted) {
-              setState(() => _progress = (received / total).clamp(0.0, 1.0));
-            }
-          },
-        );
-        await File(partPath).rename(cacheFile.path);
-      } catch (_) {
-        try {
-          final part = File(partPath);
-          if (await part.exists()) await part.delete();
-        } catch (_) {}
-        rethrow;
-      }
-
-      await YoutubeCache.instance.pin(_cacheId(widget.track));
-      await YoutubeCache.instance.registerTrack(widget.track);
-
-      if (mounted) {
+      if (mounted && !isSoulseek) {
         setState(() {
           _isCached = true;
           _downloading = false;
@@ -863,94 +815,19 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
           _downloading = false;
           _progress = null;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Download failed: $e'),
-            backgroundColor: widget.colors.elevated,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-    }
-  }
-
-  /// Запускает нативную загрузку Soulseek и подписывается на прогресс.
-  Future<void> downloadSoulseek(SoulseekSource source, String cacheKey) async {
-    setState(() {
-      _downloading = true;
-      _progress = null;
-    });
-    _listenTransfers(source, cacheKey);
-    try {
-      await source.prefetch(widget.track);
-    } on Object catch (e) {
-      if (mounted) {
-        setState(() {
-          _downloading = false;
-          _progress = null;
-        });
-        _transferSub?.cancel();
+        if (isSoulseek) _transferSub?.cancel();
         _showSnack('Download failed: $e');
       }
     }
   }
 
   Future<void> _deleteCache() async {
-    // PLAYER-DL-01: native-delete для Soulseek (removeCache + forgetCacheKey,
-    // паттерн кэш-листа) — YoutubeCache.evict не знает про native-кэш.
-    final soulseek = _soulseekSource;
-    final cacheKey = _soulseekCacheKey;
-    if (soulseek != null && cacheKey != null) {
-      setState(() => _checking = true);
-      try {
-        await SoulseekPlatformChannel.instance.removeCache(cacheKey);
-        soulseek.forgetCacheKey(cacheKey);
-        if (mounted) setState(() => _isCached = false);
-      } on UnsupportedError {
-        // Не Android — native-кэша нет, статуса тоже.
-        if (mounted) setState(() => _isCached = false);
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to delete: $e'),
-              backgroundColor: widget.colors.elevated,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      } finally {
-        if (mounted) setState(() => _checking = false);
-      }
-      return;
-    }
-
     setState(() => _checking = true);
     try {
-      await YoutubeCache.instance.evict(_cacheId(widget.track));
+      await TrackActions.deleteCache(widget.track);
       if (mounted) setState(() => _isCached = false);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete: $e'),
-            backgroundColor: widget.colors.elevated,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
+      _showSnack('Failed to delete: $e', duration: const Duration(seconds: 2));
     } finally {
       if (mounted) setState(() => _checking = false);
     }
@@ -1015,12 +892,16 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
                 onTap: () => _showDetails(context),
               ),
               // Вся папка пира, в которой лежит Soulseek-трек.
-              if (_soulseekFolderAvailable)
+              if (TrackActions.soulseekFolderAvailable(widget.track))
                 _SettingsTileData(
                   icon: Icons.folder_open_rounded,
                   title: 'Open folder',
                   subtitle: widget.track.extra['peerUsername'] as String?,
                   onTap: () {
+                    if (!widget.insideSheet) {
+                      showSoulseekFolderSheet(context, [widget.track]);
+                      return;
+                    }
                     final nav = Navigator.of(context);
                     nav.pop();
                     showSoulseekFolderSheet(nav.context, [widget.track]);
@@ -1030,7 +911,7 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
 
             return Container(
               decoration: BoxDecoration(
-                color: colors.elevated,
+                color: widget.tileColor ?? colors.elevated,
                 borderRadius: BorderRadius.circular(16),
               ),
               clipBehavior: Clip.hardEdge,
@@ -1045,7 +926,10 @@ class _SettingsGroupState extends ConsumerState<_SettingsGroup> {
                       colors: colors,
                     ),
                     if (i < tiles.length - 1)
-                      Container(height: 4, color: colors.background),
+                      Container(
+                        height: 4,
+                        color: widget.separatorColor ?? colors.background,
+                      ),
                   ],
                 ],
               ),

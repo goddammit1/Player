@@ -7,11 +7,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
+import '../../core/player_conversions.dart';
 import '../../core/player_service_interface.dart';
 import '../../core/providers.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/artwork.dart';
+import '../widgets/sleep_timer_sheet.dart';
 import 'design/dimens.dart';
+import 'desktop_ui_state.dart';
+import 'now_playing_panel.dart' show desktopTrackMeta;
+import 'track_context_menu.dart';
 
 class DesktopPlayerBar extends ConsumerWidget {
   const DesktopPlayerBar({super.key});
@@ -61,7 +66,12 @@ class DesktopPlayerBar extends ConsumerWidget {
                       alignment: Alignment.centerLeft,
                       child: ConstrainedBox(
                         constraints: BoxConstraints(maxWidth: maxSideWidth),
-                        child: _TrackInfo(item: item, colors: colors),
+                        child: _TrackInfo(
+                          item: item,
+                          colors: colors,
+                          onContextMenu: (pos) =>
+                              _showCurrentTrackMenu(context, item, pos),
+                        ),
                       ),
                     ),
 
@@ -77,12 +87,31 @@ class DesktopPlayerBar extends ConsumerWidget {
                       ),
                     ),
 
-                    // 3. Блок громкости (прижат к правому краю)
+                    // 3. Sleep timer, меню трека и громкость (прижаты вправо)
                     Align(
                       alignment: Alignment.centerRight,
                       child: Padding(
                         padding: const EdgeInsets.only(right: 16.0), // <-- Отступ от правого края
-                        child: _VolumeSlider(player: player, colors: colors),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _SleepTimerIndicator(
+                              player: player,
+                              colors: colors,
+                            ),
+                            _BarIconButton(
+                              key: const Key('bar_track_menu'),
+                              icon: Icons.more_horiz_rounded,
+                              size: 20,
+                              colors: colors,
+                              onPressed: () {},
+                              onPressedAt: (pos) =>
+                                  _showCurrentTrackMenu(context, item, pos),
+                            ),
+                            const SizedBox(width: 4),
+                            _VolumeSlider(player: player, colors: colors),
+                          ],
+                        ),
                       ),
                     ),
                   ],
@@ -96,22 +125,53 @@ class DesktopPlayerBar extends ConsumerWidget {
   }
 }
 
-/// Увеличенная обложка 72x72 и информация о треке
-class _TrackInfo extends StatelessWidget {
-  const _TrackInfo({required this.item, required this.colors});
+/// Меню играющего трека (правый клик по треку или кнопка «…»).
+/// Панель живёт выше Navigator'а — меню и шторки идут через rootNavigatorKey.
+void _showCurrentTrackMenu(BuildContext context, MediaItem item, Offset pos) {
+  // QUALITY-01: Track из extras — с качеством и extra (cacheKey, peer…).
+  showTrackContextMenu(
+    context,
+    track: PlayerConversions.trackFromExtras(item),
+    position: pos,
+    isCurrent: true,
+  );
+}
+
+/// Увеличенная обложка 72x72 и информация о треке. Клик — вкладка «Track»
+/// правой панели.
+class _TrackInfo extends ConsumerWidget {
+  const _TrackInfo({
+    required this.item,
+    required this.colors,
+    required this.onContextMenu,
+  });
 
   final MediaItem item;
   final AppColors colors;
+  final ValueChanged<Offset> onContextMenu;
 
   @override
-  Widget build(BuildContext context) {
-    final sourceId = (item.extras?['sourceId'] as String?)?.toUpperCase();
-    final quality = (item.extras?['qualityLabel'] as String?)?.toUpperCase();
-    final meta = [
-      if (sourceId != null && sourceId.isNotEmpty) sourceId else 'Muzmo',
-      if (quality != null && quality.isNotEmpty) quality else '320 kbps'
-    ].join(' • ');
+  Widget build(BuildContext context, WidgetRef ref) {
+    final meta = desktopTrackMeta(
+      item.extras?['sourceId'] as String?,
+      item.extras?['qualityLabel'] as String?,
+    );
 
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        key: const Key('bar_track_info'),
+        behavior: HitTestBehavior.opaque,
+        onTap: () => ref
+            .read(desktopSidePanelProvider.notifier)
+            .showTrack(MediaQuery.sizeOf(context).width),
+        onSecondaryTapDown: (d) => onContextMenu(d.globalPosition),
+        child: _buildContent(meta),
+      ),
+    );
+  }
+
+  Widget _buildContent(String meta) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -149,17 +209,19 @@ class _TrackInfo extends StatelessWidget {
                   fontWeight: FontWeight.w500,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                meta,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+              if (meta.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  meta,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -225,13 +287,8 @@ class _ControlsAndTimeline extends StatelessWidget {
             ),
             // Repeat
             _LoopButton(player: player, colors: colors),
-            // Queue / Lyrics
-            _BarIconButton(
-              icon: Icons.queue_music_rounded,
-              size: 19,
-              colors: colors,
-              onPressed: () {},
-            ),
+            // Показать / скрыть панель очереди
+            _QueueToggleButton(colors: colors),
           ],
         ),
         const SizedBox(height: 2),
@@ -244,9 +301,11 @@ class _ControlsAndTimeline extends StatelessWidget {
 /// Кнопка панели с плавной hover-подложкой
 class _BarIconButton extends StatefulWidget {
   const _BarIconButton({
+    super.key,
     required this.icon,
     required this.colors,
     required this.onPressed,
+    this.onPressedAt,
     this.size = 20,
     this.color,
   });
@@ -257,6 +316,10 @@ class _BarIconButton extends StatefulWidget {
   final AppColors colors;
   final VoidCallback onPressed;
 
+  /// Вместо [onPressed], когда нужна точка нажатия (глобальные координаты) —
+  /// например, чтобы открыть меню у кнопки.
+  final ValueChanged<Offset>? onPressedAt;
+
   @override
   State<_BarIconButton> createState() => _BarIconButtonState();
 }
@@ -264,6 +327,7 @@ class _BarIconButton extends StatefulWidget {
 class _BarIconButtonState extends State<_BarIconButton> {
   bool _isHovered = false;
   bool _isPressed = false;
+  Offset _downAt = Offset.zero;
 
   @override
   Widget build(BuildContext context) {
@@ -281,10 +345,15 @@ class _BarIconButtonState extends State<_BarIconButton> {
       }),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => setState(() => _isPressed = true),
+        onTapDown: (d) => setState(() {
+          _isPressed = true;
+          _downAt = d.globalPosition;
+        }),
         onTapUp: (_) => setState(() => _isPressed = false),
         onTapCancel: () => setState(() => _isPressed = false),
-        onTap: widget.onPressed,
+        onTap: widget.onPressedAt != null
+            ? () => widget.onPressedAt!(_downAt)
+            : widget.onPressed,
         child: SizedBox(
           width: 38,
           height: 38,
@@ -321,6 +390,134 @@ class _BarIconButtonState extends State<_BarIconButton> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Кнопка очереди: показывает / скрывает правую панель (в узком окне —
+/// оверлей). Подсвечена, пока видна вкладка «Queue».
+class _QueueToggleButton extends ConsumerWidget {
+  const _QueueToggleButton({required this.colors});
+
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final width = MediaQuery.sizeOf(context).width;
+    final panel = ref.watch(desktopSidePanelProvider);
+    final active = panel.visibleAt(width) && panel.tab == DesktopSideTab.queue;
+    return _BarIconButton(
+      key: const Key('bar_queue_toggle'),
+      icon: Icons.queue_music_rounded,
+      size: 19,
+      color: active ? colors.elevatedHi : null,
+      colors: colors,
+      onPressed: () =>
+          ref.read(desktopSidePanelProvider.notifier).toggleQueue(width),
+    );
+  }
+}
+
+/// Остаток sleep timer рядом с громкостью; клик — шторка таймера.
+/// Пока таймер выключен, не занимает места.
+class _SleepTimerIndicator extends StatefulWidget {
+  const _SleepTimerIndicator({required this.player, required this.colors});
+
+  final PlayerServiceInterface player;
+  final AppColors colors;
+
+  @override
+  State<_SleepTimerIndicator> createState() => _SleepTimerIndicatorState();
+}
+
+class _SleepTimerIndicatorState extends State<_SleepTimerIndicator> {
+  Timer? _tick;
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  /// Минуты пересчитываются раз в 15 с, только пока таймер по времени.
+  void _syncTicker(bool timed) {
+    if (timed && _tick == null) {
+      _tick = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!timed && _tick != null) {
+      _tick!.cancel();
+      _tick = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final player = widget.player;
+    return StreamBuilder<SleepTimerMode>(
+      stream: player.sleepTimerModeStream,
+      initialData: player.sleepTimerMode,
+      builder: (context, modeSnap) {
+        final mode = modeSnap.data ?? SleepTimerMode.off;
+        return StreamBuilder<DateTime?>(
+          stream: player.sleepTimerEndTimeStream,
+          initialData: player.sleepTimerEndTime,
+          builder: (context, endSnap) {
+            _syncTicker(mode == SleepTimerMode.time);
+            if (mode == SleepTimerMode.off) return const SizedBox.shrink();
+
+            final String label;
+            if (mode == SleepTimerMode.endOfTrack) {
+              label = 'End of song';
+            } else {
+              final end = endSnap.data;
+              final left = end?.difference(DateTime.now()).inMinutes ?? 0;
+              label = left > 0 ? '$left min' : '<1 min';
+            }
+            return Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Material(
+                color: widget.colors.elevatedHi.withValues(alpha: 0.35),
+                shape: const StadiumBorder(),
+                child: InkWell(
+                  key: const Key('bar_sleep_timer'),
+                  customBorder: const StadiumBorder(),
+                  onTap: () {
+                    final ctx = rootNavigatorKey.currentContext;
+                    if (ctx != null) showSleepTimerSheet(ctx);
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.bedtime_outlined,
+                          size: 16,
+                          color: widget.colors.textPrimary,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          label,
+                          style: TextStyle(
+                            color: widget.colors.textPrimary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

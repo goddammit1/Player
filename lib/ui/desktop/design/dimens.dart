@@ -34,4 +34,8 @@ abstract final class Dimens {
 
   /// Ширина правой колонки очереди.
   static const double queuePanelWidth = 340.0;
+
+  /// Ширина окна, начиная с которой панель очереди стоит колонкой;
+  /// уже — выезжает оверлеем справа.
+  static const double queueDockBreakpoint = 960.0;
 }

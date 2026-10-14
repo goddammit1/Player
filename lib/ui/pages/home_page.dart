@@ -1,10 +1,7 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/backup/playlist_backup.dart';
 import '../../core/providers.dart';
-import '../../core/platform/haptic_helper.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../desktop/desktop_layout.dart';
@@ -12,6 +9,7 @@ import '../widgets/now_playing_overlay.dart';
 import '../widgets/playlist_reorder_scope.dart';
 import '../widgets/reorderable_playlist_card.dart';
 import '../widgets/app_dialogs.dart';
+import '../widgets/playlist_import.dart';
 
 
 
@@ -599,68 +597,13 @@ class _AddNewCard extends ConsumerWidget {
                 ),
                 onTap: () async {
                   Navigator.of(sheetCtx).pop();
-                  await _importPlaylist(context, ref);
+                  await importPlaylistFromFile(context, ref);
                 },
               ),
             ],
           ),
         );
       },
-    );
-  }
-
-  Future<void> _importPlaylist(BuildContext context, WidgetRef ref) async {
-    FilePickerResult? picked;
-    try {
-      picked = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['json'],
-        withData: false,
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      HapticHelper.error(ref: ref);
-      _showInfo(context, title: 'Import failed', body: e.toString());
-      return;
-    }
-
-    final path = picked?.files.single.path;
-    if (path == null) return; // отмена выбора
-
-    if (!context.mounted) return;
-
-    try {
-      final result = await PlaylistBackup.importFromFile(path);
-      if (!context.mounted) return;
-
-      HapticHelper.success(ref: ref);
-      _showInfo(
-        context,
-        title: 'Import complete',
-        body: 'Added: ${result.added}',
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-
-      HapticHelper.error(ref: ref);
-      _showInfo(
-        context,
-        title: 'Import failed',
-        body: e is FormatException ? e.message : e.toString(),
-      );
-    }
-  }
-
-  void _showInfo(
-    BuildContext context, {
-    required String title,
-    required String body,
-  }) {
-    showAppInfoDialog(
-      context: context,
-      title: title,
-      subtitle: body,
-      okLabel: 'OK',
     );
   }
 }

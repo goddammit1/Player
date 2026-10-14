@@ -8,6 +8,7 @@ import '../../core/repositories/history_repository.dart';
 import '../../models/track.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
+import '../desktop/track_context_menu.dart';
 import '../widgets/artwork.dart';
 import '../widgets/wave_bars.dart';
 import '../widgets/now_playing_overlay.dart';
@@ -675,6 +676,21 @@ class _HistoryTile extends ConsumerWidget {
             HapticHelper.medium(ref: ref);
             showTrackSettingsSheet(context, track: track);
           },
+          onSecondaryTapDown: isDesktop
+              ? (d) => showTrackContextMenu(
+                    context,
+                    track: track,
+                    position: d.globalPosition,
+                    trailing: [
+                      TrackMenuAction(
+                        icon: Icons.delete_outline_rounded,
+                        label: 'Remove from history',
+                        destructive: true,
+                        onSelected: onDismissed,
+                      ),
+                    ],
+                  )
+              : null,
           borderRadius: borderRadius,
           child: Container(
             decoration: BoxDecoration(

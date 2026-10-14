@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
+import '../widgets/playlist_import.dart';
 import '../widgets/playlist_reorder_scope.dart';
 import '../widgets/reorderable_playlist_card.dart';
 import 'design/dimens.dart';
@@ -75,6 +76,8 @@ class DesktopHomePage extends ConsumerWidget {
                       return _NewPlaylistCard(
                         colors: colors,
                         onTap: () => _showCreateDialog(context, ref, colors),
+                        onContextMenu: (pos) =>
+                            _showNewPlaylistMenu(context, ref, colors, pos),
                       );
                     }
                     final p = playlists[i];
@@ -98,6 +101,63 @@ class DesktopHomePage extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  /// Правый клик по карточке «new playlist»: создать или импортировать.
+  Future<void> _showNewPlaylistMenu(
+    BuildContext context,
+    WidgetRef ref,
+    AppColors colors,
+    Offset position,
+  ) async {
+    final v = await showMenu<String>(
+      context: context,
+      color: colors.background,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+      ),
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx + 1,
+        position.dy + 1,
+      ),
+      items: [
+        PopupMenuItem(
+          value: 'new',
+          child: Row(
+            children: [
+              Icon(Icons.add_rounded, size: 18, color: colors.textPrimary),
+              const SizedBox(width: 10),
+              Text('New playlist', style: TextStyle(color: colors.textPrimary)),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'import',
+          child: Row(
+            children: [
+              Icon(
+                Icons.file_download_outlined,
+                size: 18,
+                color: colors.textPrimary,
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Import from file',
+                style: TextStyle(color: colors.textPrimary),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+    if (v == null || !context.mounted) return;
+    if (v == 'new') {
+      await _showCreateDialog(context, ref, colors);
+    } else if (v == 'import') {
+      await importPlaylistFromFile(context, ref);
+    }
   }
 
   Future<void> _showCreateDialog(
@@ -400,10 +460,12 @@ class _NewPlaylistCard extends StatefulWidget {
   const _NewPlaylistCard({
     required this.colors,
     required this.onTap,
+    required this.onContextMenu,
   });
 
   final AppColors colors;
   final VoidCallback onTap;
+  final ValueChanged<Offset> onContextMenu;
 
   @override
   State<_NewPlaylistCard> createState() => _NewPlaylistCardState();
@@ -434,6 +496,7 @@ class _NewPlaylistCardState extends State<_NewPlaylistCard> {
         onTapUp: (_) => setState(() => _isPressed = false),
         onTapCancel: () => setState(() => _isPressed = false),
         onTap: widget.onTap,
+        onSecondaryTapDown: (d) => widget.onContextMenu(d.globalPosition),
         child: Column(
           children: [
             Expanded(

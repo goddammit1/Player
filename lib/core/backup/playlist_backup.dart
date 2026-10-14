@@ -1,11 +1,15 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../models/playlist.dart';
 import '../../sources/source_registry.dart';
+import '../../ui/desktop/desktop_layout.dart' show isDesktop;
 import '../database/app_database.dart';
 import '../artwork_helper.dart';
 import '../repositories/history_repository.dart';
@@ -17,8 +21,9 @@ const int _maxSupportedVersion = 1;
 /// Экспорт/импорт пользовательских плейлистов в один JSON-файл.
 ///
 /// Назначение — «бэкап, который переживёт удаление приложения»: файл
-/// уходит в системный share-sheet (Drive, Files, отправить себе), а при
-/// импорте читается обратно. Формат — самодостаточный JSON со схемой
+/// уходит в системный share-sheet (Drive, Files, отправить себе), на
+/// десктопе — сохраняется через «Сохранить как…», а при импорте читается
+/// обратно. Формат — самодостаточный JSON со схемой
 /// плейлистов из [Playlist.toJson], так что ничего нового сериализовать
 /// не нужно.
 ///
@@ -110,32 +115,19 @@ class PlaylistBackup {
     return result;
   }
 
-  /// Пишет бэкап во временный файл и отдаёт в системный share-sheet.
+  /// Выгружает бэкап: на мобильных — в системный share-sheet, на десктопе —
+  /// диалогом «Сохранить как…».
   ///
-  /// Возвращает число выгруженных плейлистов.
-  static Future<int> exportAndShare(List<Playlist> playlists) async {
-    final json = encode(playlists);
-    final dir = await getTemporaryDirectory();
-    final stamp = DateTime.now()
-        .toIso8601String()
-        .replaceAll(':', '-')
-        .split('.')
-        .first;
-    final file = File('${dir.path}/playlists_backup_$stamp.json');
-    await file.writeAsString(json);
-    try {
-      await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'application/json')],
-        subject: 'Player playlists backup',
-      );
-    } finally {
-      // Удаляем временный файл после завершения share-sheet.
-      // Игнорируем ошибки удаления — файл всё равно во временной директории.
-      try {
-        await file.delete();
-      } catch (_) {}
-    }
-    return playlists.length;
+  /// Возвращает `false`, если пользователь отменил сохранение.
+  static Future<bool> exportAndShare(List<Playlist> playlists) {
+    final name = playlists.length == 1
+        ? _safeFileName(playlists.single.name)
+        : 'playlists_backup';
+    return deliverBackupFile(
+      json: encode(playlists),
+      fileName: '${name}_${backupStamp()}.json',
+      subject: 'Player playlists backup',
+    );
   }
 
   /// Читает файл бэкапа с диска и импортирует в репозиторий.
@@ -147,6 +139,63 @@ class PlaylistBackup {
     final playlists = decode(raw);
     return await PlaylistRepository.instance.importPlaylists(playlists);
   }
+}
+
+/// Метка времени для имени файла бэкапа: `2026-10-13T01-32-05`.
+String backupStamp() =>
+    DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+
+/// Имя плейлиста без символов, запрещённых в именах файлов Windows.
+String _safeFileName(String name) {
+  final clean =
+      name.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_').trim();
+  return clean.isEmpty ? 'playlist' : clean;
+}
+
+/// Тестовая подмена диалога «Сохранить как…»: получает предложенное имя,
+/// возвращает выбранный путь или `null` (отмена).
+@visibleForTesting
+Future<String?> Function(String fileName)? saveFileDialogOverride;
+
+/// Отдаёт готовый JSON пользователю. На десктопе share-sheet бесполезен
+/// (на Windows `Share.shareXFiles` открывает системное окно «Поделиться»
+/// без сохранения в файл), поэтому там — «Сохранить как…». Возвращает
+/// `false`, если пользователь отменил диалог сохранения.
+Future<bool> deliverBackupFile({
+  required String json,
+  required String fileName,
+  required String subject,
+}) async {
+  if (isDesktop) {
+    final picked = await (saveFileDialogOverride?.call(fileName) ??
+        FilePicker.platform.saveFile(
+          dialogTitle: 'Save backup',
+          fileName: fileName,
+          type: FileType.custom,
+          allowedExtensions: const ['json'],
+        ));
+    if (picked == null) return false;
+    // Диалог Windows не дописывает расширение сам.
+    final path = p.extension(picked).isEmpty ? '$picked.json' : picked;
+    await File(path).writeAsString(json, flush: true);
+    return true;
+  }
+
+  final dir = await getTemporaryDirectory();
+  final file = File(p.join(dir.path, fileName));
+  await file.writeAsString(json);
+  try {
+    await Share.shareXFiles(
+      [XFile(file.path, mimeType: 'application/json')],
+      subject: subject,
+    );
+  } finally {
+    // Временный файл после share-sheet не нужен; ошибки удаления не важны.
+    try {
+      await file.delete();
+    } catch (_) {}
+  }
+  return true;
 }
 
 /// Статистика импорта для отображения пользователю.
@@ -176,27 +225,15 @@ class ImportResult {
 class FullBackup {
   FullBackup._();
 
-  /// Экспортирует все данные в JSON и отправляет через share-sheet.
-  static Future<void> exportAndShare() async {
+  /// Экспортирует все данные в JSON: share-sheet на мобильных, «Сохранить
+  /// как…» на десктопе. Возвращает `false`, если сохранение отменено.
+  static Future<bool> exportAndShare() async {
     final json = await AppDatabase.instance.exportFullBackup();
-    final dir = await getTemporaryDirectory();
-    final stamp = DateTime.now()
-        .toIso8601String()
-        .replaceAll(':', '-')
-        .split('.')
-        .first;
-    final file = File('${dir.path}/player_full_backup_$stamp.json');
-    await file.writeAsString(json);
-    try {
-      await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'application/json')],
-        subject: 'Player full backup',
-      );
-    } finally {
-      try {
-        await file.delete();
-      } catch (_) {}
-    }
+    return deliverBackupFile(
+      json: json,
+      fileName: 'player_full_backup_${backupStamp()}.json',
+      subject: 'Player full backup',
+    );
   }
 
   /// Импортирует данные из JSON-файла, полностью замещая текущие.

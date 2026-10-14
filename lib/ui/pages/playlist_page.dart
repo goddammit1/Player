@@ -15,6 +15,7 @@ import '../widgets/artwork.dart';
 import '../widgets/wave_bars.dart';
 import '../../core/artwork_helper.dart';
 import '../desktop/desktop_layout.dart';
+import '../desktop/track_context_menu.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/playlist_cache_progress_sheet.dart';
 import '../widgets/snack.dart';
@@ -424,8 +425,14 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
 
   Future<void> _exportPlaylist(BuildContext context, Playlist p) async {
     try {
-      await PlaylistBackup.exportAndShare([p]);
+      final saved = await PlaylistBackup.exportAndShare([p]);
+      if (!saved) return;
       HapticHelper.success(ref: ref);
+      // На мобильных исход виден в share-sheet; «Сохранить как…» на
+      // десктопе закрывается молча — подтверждаем.
+      if (isDesktop && context.mounted) {
+        showSuccessSnack(context, 'Playlist exported');
+      }
     } catch (e) {
       if (!context.mounted) return;
       HapticHelper.error(ref: ref);
@@ -1560,6 +1567,25 @@ class _TrackTile extends ConsumerWidget {
             HapticHelper.medium(ref: ref);
             showTrackSettingsSheet(context, track: track);
           },
+          onSecondaryTapDown: isDesktop
+              ? (d) => showTrackContextMenu(
+                    context,
+                    track: track,
+                    position: d.globalPosition,
+                    // В режиме ручной сортировки удаление выключено, как и
+                    // свайп.
+                    trailing: [
+                      if (enableDismiss)
+                        TrackMenuAction(
+                          icon: Icons.delete_outline_rounded,
+                          label: 'Remove from playlist',
+                          destructive: true,
+                          onSelected: () =>
+                              repo.removeTrack(playlist.id, track.globalId),
+                        ),
+                    ],
+                  )
+              : null,
           borderRadius: borderRadius,
           child: Container(
             decoration: BoxDecoration(

@@ -6,11 +6,14 @@ import 'package:figma_squircle/figma_squircle.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/artwork_helper.dart';
+import '../../../core/artwork_image_provider.dart';
 import '../../../models/track.dart';
 import '../../../sources/soulseek_source.dart';
 import '../../widgets/add_to_playlist_sheet.dart';
 import '../../widgets/artwork.dart';
 import '../../widgets/track_settings_sheet.dart';
+import '../../desktop/desktop_layout.dart';
+import '../../desktop/track_context_menu.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LIST TRACK TILE
@@ -45,6 +48,13 @@ class SearchTrackTileList extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onLongPress: () => showTrackSettingsSheet(context, track: track),
+          onSecondaryTapDown: isDesktop
+              ? (d) => showTrackContextMenu(
+                    context,
+                    track: track,
+                    position: d.globalPosition,
+                  )
+              : null,
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -179,6 +189,13 @@ class _SearchTrackTileGridState extends State<SearchTrackTileGrid> {
     return GestureDetector(
       onTap: widget.onTap,
       onLongPress: () => showTrackSettingsSheet(context, track: track),
+      onSecondaryTapDown: isDesktop
+          ? (d) => showTrackContextMenu(
+                context,
+                track: track,
+                position: d.globalPosition,
+              )
+          : null,
       child: SizedBox(
         width: 160,
         height: 160,
@@ -442,10 +459,8 @@ class _SearchTileImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
-    final filePath = url.startsWith('file://')
-        ? Uri.parse(url).toFilePath()
-        : url;
+    final isLocalFile = isLocalArtworkUrl(url);
+    final filePath = localArtworkPath(url);
 
     if (isLocalFile) {
       final file = File(filePath);

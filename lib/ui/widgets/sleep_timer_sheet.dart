@@ -9,7 +9,10 @@ import '../../core/providers.dart';
 import '../desktop/desktop_layout.dart';
 
 Future<void> showSleepTimerSheet(BuildContext context) {
-  if (ModalRoute.of(context)?.isCurrent != true) return Future.value();
+  // Поверх другой шторки не открываем. Контекст без маршрута (десктопный
+  // плеер-бар выше Navigator'а, rootNavigatorKey) — допустим.
+  final route = ModalRoute.of(context);
+  if (route != null && !route.isCurrent) return Future.value();
   return showDesktopModalSheet<void>(
     context: context,
     maxWidth: 520,

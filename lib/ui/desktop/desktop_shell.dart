@@ -12,6 +12,7 @@ import 'design/dimens.dart';
 import 'design/floating_panel.dart';
 import 'desktop_home_page.dart';
 import 'desktop_top_bar.dart';
+import 'desktop_ui_state.dart';
 import 'queue_panel.dart';
 
 enum DesktopSection {
@@ -86,7 +87,11 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
       content = _contentStack.last;
     }
 
-    final bool showQueue = MediaQuery.sizeOf(context).width >= 960;
+    final width = MediaQuery.sizeOf(context).width;
+    final panel = ref.watch(desktopSidePanelProvider);
+    final bool wide = width >= Dimens.queueDockBreakpoint;
+    final bool showDocked = wide && panel.docked;
+    final bool showOverlay = !wide && panel.overlayOpen;
 
     return Scaffold(
       backgroundColor: colors.background,
@@ -104,30 +109,73 @@ class _DesktopShellState extends ConsumerState<DesktopShell> {
             const SizedBox(height: Dimens.gap),
             // 2. Центральная область: сайдбар + контент + очередь
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+              child: Stack(
                 children: [
-                  SizedBox(
-                    width: Dimens.navRailWidth,
-                    child: _CompactNavRail(
-                      selected: _section,
-                      onSelect: _selectSection,
-                      colors: colors,
-                      showBack: isSearching || _contentStack.isNotEmpty,
-                      onBack: isSearching ? _clearSearch : _closeContent,
+                  Positioned.fill(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          width: Dimens.navRailWidth,
+                          child: _CompactNavRail(
+                            selected: _section,
+                            onSelect: _selectSection,
+                            colors: colors,
+                            showBack: isSearching || _contentStack.isNotEmpty,
+                            onBack: isSearching ? _clearSearch : _closeContent,
+                          ),
+                        ),
+                        const SizedBox(width: Dimens.gap),
+                        Expanded(
+                          child: FloatingPanel(
+                            padding: EdgeInsets.zero,
+                            child: content,
+                          ),
+                        ),
+                        if (showDocked) ...[
+                          const SizedBox(width: Dimens.gap),
+                          const QueuePanel(width: Dimens.queuePanelWidth),
+                        ],
+                      ],
                     ),
                   ),
-                  const SizedBox(width: Dimens.gap),
-                  Expanded(
-                    child: FloatingPanel(
-                      padding: EdgeInsets.zero,
-                      child: content,
+                  // Узкое окно: панель выезжает справа поверх контента.
+                  if (showOverlay)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        key: const Key('queue_overlay_scrim'),
+                        behavior: HitTestBehavior.opaque,
+                        onTap: ref
+                            .read(desktopSidePanelProvider.notifier)
+                            .closeOverlay,
+                        child: ColoredBox(
+                          color: Colors.black.withValues(alpha: 0.3),
+                        ),
+                      ),
+                    ),
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    right: 0,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      transitionBuilder: (child, animation) => SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(1.05, 0),
+                          end: Offset.zero,
+                        ).animate(animation),
+                        child: child,
+                      ),
+                      child: showOverlay
+                          ? const QueuePanel(
+                              key: ValueKey('queue_overlay'),
+                              width: Dimens.queuePanelWidth,
+                            )
+                          : const SizedBox.shrink(),
                     ),
                   ),
-                  if (showQueue) ...[
-                    const SizedBox(width: Dimens.gap),
-                    const QueuePanel(width: Dimens.queuePanelWidth),
-                  ],
                 ],
               ),
             ),
@@ -302,7 +350,9 @@ class _CompactNavItemState extends State<_CompactNavItem>
                         height: 32,
                         decoration: BoxDecoration(
                           color: hoverColor,
-                          borderRadius: BorderRadius.circular(Dimens.radiusPill),
+                          borderRadius: BorderRadius.circular(
+                            Dimens.radiusPill,
+                          ),
                         ),
                       ),
                     ),
@@ -321,7 +371,9 @@ class _CompactNavItemState extends State<_CompactNavItem>
                             height: 32,
                             decoration: BoxDecoration(
                               color: selectedColor,
-                              borderRadius: BorderRadius.circular(Dimens.radiusPill),
+                              borderRadius: BorderRadius.circular(
+                                Dimens.radiusPill,
+                              ),
                             ),
                           ),
                         );
@@ -349,7 +401,9 @@ class _CompactNavItemState extends State<_CompactNavItem>
                 style: TextStyle(
                   color: foregroundColor,
                   fontSize: 12,
-                  fontWeight: widget.selected ? FontWeight.w600 : FontWeight.w500,
+                  fontWeight: widget.selected
+                      ? FontWeight.w600
+                      : FontWeight.w500,
                 ),
               ),
             ],
@@ -359,5 +413,3 @@ class _CompactNavItemState extends State<_CompactNavItem>
     );
   }
 }
-
-
