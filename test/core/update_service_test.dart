@@ -20,7 +20,7 @@ AppRelease _release(String version) => AppRelease(
       version: version,
       name: 'test',
       notes: 'notes',
-      apkUrl: 'https://example.com/app-release.apk',
+      assetUrl: 'https://example.com/app-release.apk',
       pageUrl: 'https://example.com/release',
     );
 
@@ -106,11 +106,14 @@ void main() {
       dio = Dio();
       adapter = DioAdapter(dio: dio);
       UpdateService.setDioForTesting(dio);
+      // Тесты идут и на Windows-хосте: по умолчанию проверяем APK-сценарий.
+      UpdateService.setAssetNameForTesting(UpdateService.androidAssetName);
       _mockPackageInfo('2.5.2');
     });
 
     tearDown(() {
       UpdateService.setDioForTesting(null);
+      UpdateService.setAssetNameForTesting(null);
     });
 
     Map<String, dynamic> ghRelease({
@@ -176,7 +179,7 @@ void main() {
       expect(result.release.isBeta, isTrue);
       expect(result.release.notes, 'beta notes');
       expect(
-        result.release.apkUrl,
+        result.release.assetUrl,
         'https://github.com/goddammit1/Player/releases/download/x/app-release.apk',
       );
       expect(
@@ -236,6 +239,45 @@ void main() {
           (e) => e.message,
           'message',
           contains('app-release.apk'),
+        )),
+      );
+    });
+
+    test('Windows: берётся zip, APK игнорируется', () async {
+      UpdateService.setAssetNameForTesting(UpdateService.windowsAssetName);
+      adapter.onGet(
+        'https://api.github.com/repos/goddammit1/Player/releases?per_page=10',
+        (server) => server.reply(200, [
+          ghRelease(
+            tag: 'v3.4.0',
+            assets: [apkAsset(), apkAsset('player-windows-x64.zip')],
+          ),
+        ]),
+      );
+
+      final result = await UpdateService.check();
+      expect(
+        result.release.assetUrl,
+        'https://github.com/goddammit1/Player/releases/download/x/'
+        'player-windows-x64.zip',
+      );
+    });
+
+    test('Windows: релиз без zip — ошибка с именем ассета', () async {
+      UpdateService.setAssetNameForTesting(UpdateService.windowsAssetName);
+      adapter.onGet(
+        'https://api.github.com/repos/goddammit1/Player/releases?per_page=10',
+        (server) => server.reply(200, [
+          ghRelease(tag: 'v3.4.0', assets: [apkAsset()]),
+        ]),
+      );
+
+      expect(
+        () => UpdateService.check(),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('player-windows-x64.zip'),
         )),
       );
     });

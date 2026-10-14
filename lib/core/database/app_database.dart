@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../models/playlist.dart';
@@ -17,6 +16,7 @@ import 'playlist_dao.dart';
 import 'search_history_dao.dart';
 import 'settings_dao.dart';
 import 'track_row_codec.dart';
+import '../platform/app_paths.dart';
 import '../repositories/history_repository.dart';
 
 /// Единая база данных приложения (SQLite).
@@ -27,11 +27,11 @@ import '../repositories/history_repository.dart';
 ///
 /// ## Восстановление после переустановки
 ///
-/// База создаётся в `getApplicationDocumentsDirectory()` — стандартном
-/// каталоге документов приложения. На Android этот каталог автоматически
-/// попадает в системный авто-бэкап (Android 6+) через `<include>` правил
-/// в `backup_rules.xml`. На iOS каталог `Documents/` по умолчанию
-/// бэкапится iCloud.
+/// База создаётся в [AppPaths.dataDir]: на мобильных — каталог документов
+/// приложения. На Android этот каталог автоматически попадает в системный
+/// авто-бэкап (Android 6+) через `<include>` правил в `backup_rules.xml`.
+/// На iOS каталог `Documents/` по умолчанию бэкапится iCloud. На Windows —
+/// `%APPDATA%\com.player\player` (см. `WindowsDataMigration`).
 ///
 /// ## Таблицы
 ///
@@ -71,19 +71,18 @@ class AppDatabase {
   Database? _db;
 
   /// Переопределение пути для тестов. Если задано — используется вместо
-  /// `getApplicationDocumentsDirectory()`.
+  /// [AppPaths.dataDir].
   @visibleForTesting
   // ignore: invalid_use_of_visible_for_testing_member
   static String? testDbPath;
 
   /// Путь, по которому лежит (или будет создан) файл базы.
   ///
-  /// Используется `getApplicationDocumentsDirectory()` — стандартный каталог
-  /// документов приложения. На Android этот каталог автоматически попадает
-  /// в системный авто-бэкап (Android 6+), на iOS — бэкапится iCloud.
+  /// Каталог — [AppPaths.dataDir]: на мобильных документы приложения
+  /// (авто-бэкап Android 6+ / iCloud), на Windows — `%APPDATA%`.
   Future<String> get _dbPath async {
     if (testDbPath != null) return testDbPath!;
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await AppPaths.dataDir();
     return p.join(dir.path, AppDatabaseSchema.dbName);
   }
 
@@ -555,6 +554,33 @@ class AppDatabase {
   /// Удаляет legacy-ключи custom_art_ (без версионного суффикса v1).
   Future<void> cleanupLegacyCustomArtKeys() async {
     await _settingsDao.cleanupLegacyCustomArtKeys(await database);
+  }
+
+  /// Заменяет подстроки во всех текстовых значениях всех таблиц — перенос
+  /// абсолютных путей при смене каталога данных (`WindowsDataMigration`).
+  /// Возвращает число изменённых строк.
+  Future<int> replaceInAllText(List<(String, String)> replacements) async {
+    final db = await database;
+    return db.transaction((txn) async {
+      var changed = 0;
+      final tables = await txn.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+      );
+      for (final table in tables.map((r) => r['name'] as String)) {
+        final columns = await txn.rawQuery('PRAGMA table_info("$table")');
+        for (final column in columns.map((r) => r['name'] as String)) {
+          for (final (from, to) in replacements) {
+            changed += await txn.rawUpdate(
+              'UPDATE "$table" SET "$column" = replace("$column", ?, ?) '
+              'WHERE typeof("$column") = \'text\' AND instr("$column", ?) > 0',
+              [from, to, from],
+            );
+          }
+        }
+      }
+      return changed;
+    });
   }
 
   // ==============================================================

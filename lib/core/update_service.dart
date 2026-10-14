@@ -6,19 +6,24 @@ import 'package:meta/meta.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'windows_update_installer.dart';
+
 class AppRelease {
   const AppRelease({
     required this.version,
     required this.name,
     required this.notes,
-    required this.apkUrl,
+    required this.assetUrl,
     required this.pageUrl,
   });
 
   final String version;
   final String name;
   final String notes;
-  final String apkUrl;
+
+  /// Ссылка на пакет для текущей платформы: APK на Android, zip на Windows
+  /// (см. [UpdateService.releaseAssetName]).
+  final String assetUrl;
   final String pageUrl;
 
   /// Бета-релиз: версия манифеста (тег GitHub-релиза) содержит
@@ -39,7 +44,22 @@ class UpdateCheckResult {
   final bool updateAvailable;
 }
 
-enum InstallOutcome { started, permissionRequired }
+enum InstallOutcome {
+  /// Android: системный установщик открыт.
+  started,
+
+  /// Android: система увела за разрешением «Установка неизвестных
+  /// приложений»; файл сохранён.
+  permissionRequired,
+
+  /// Windows: файлы распакованы, скрипт замены запущен — приложение
+  /// закрывается и перезапускается уже обновлённым.
+  restarting,
+
+  /// Windows: папка приложения недоступна на запись — обновить можно
+  /// только вручную со страницы релиза.
+  manualRequired,
+}
 
 class UpdateService {
   UpdateService._();
@@ -54,7 +74,7 @@ class UpdateService {
       headers: const {
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': 'Player-Android-Updater',
+        'User-Agent': 'Player-Updater',
       },
     ),
   );
@@ -70,6 +90,26 @@ class UpdateService {
   @visibleForTesting
   static void setDioForTesting(Dio? dio) => _testDio = dio;
 
+  /// Имя пакета обновления в GitHub-релизе для Windows: результат
+  /// `tools/build_windows.ps1 -Zip`.
+  static const windowsAssetName = 'player-windows-x64.zip';
+
+  /// Имя пакета обновления для Android: канонический fat APK.
+  static const androidAssetName = 'app-release.apk';
+
+  static String? _assetNameOverride;
+
+  /// Подменяет платформу в [releaseAssetName] (тесты идут на Windows-хосте,
+  /// а проверяют и APK-сценарий); `null` — по текущей платформе.
+  @visibleForTesting
+  static void setAssetNameForTesting(String? name) =>
+      _assetNameOverride = name;
+
+  /// Какой ассет релиза нужен текущей платформе.
+  static String get releaseAssetName =>
+      _assetNameOverride ??
+      (Platform.isWindows ? windowsAssetName : androidAssetName);
+
   static Future<UpdateCheckResult> check() async {
     final packageInfo = await PackageInfo.fromPlatform();
 
@@ -82,7 +122,7 @@ class UpdateService {
           version: '',
           name: '',
           notes: '',
-          apkUrl: '',
+          assetUrl: '',
           pageUrl: '',
         ),
         updateAvailable: false,
@@ -113,26 +153,28 @@ class UpdateService {
       throw StateError('GitHub returned no published releases.');
     }
 
+    final assetName = releaseAssetName;
     final assets = data['assets'];
-    String? apkUrl;
+    String? assetUrl;
     if (assets is List) {
       for (final asset in assets) {
         if (asset is! Map) continue;
         final name = asset['name']?.toString() ?? '';
         final url = asset['browser_download_url']?.toString() ?? '';
-        // Only use the canonical fat APK so architecture and signing
-        // always match the locally built release artifact.
-        if (name.toLowerCase() == 'app-release.apk' && url.isNotEmpty) {
-          apkUrl = url;
+        // Only use the canonical package (fat APK / Windows zip) so
+        // architecture and signing always match the locally built release
+        // artifact.
+        if (name.toLowerCase() == assetName && url.isNotEmpty) {
+          assetUrl = url;
           break;
         }
       }
     }
 
-    if (apkUrl == null) {
+    if (assetUrl == null) {
       throw StateError(
-        'The newest GitHub release does not contain app-release.apk. '
-        'Make sure the release artifact is named exactly app-release.apk.',
+        'The newest GitHub release does not contain $assetName. '
+        'Make sure the release artifact is named exactly $assetName.',
       );
     }
 
@@ -145,7 +187,7 @@ class UpdateService {
       version: tag.replaceFirst(RegExp(r'^v', caseSensitive: false), ''),
       name: data['name']?.toString().trim() ?? '',
       notes: data['body']?.toString().trim() ?? '',
-      apkUrl: apkUrl,
+      assetUrl: assetUrl,
       pageUrl: data['html_url']?.toString() ?? '',
     );
 
@@ -157,39 +199,41 @@ class UpdateService {
     );
   }
 
-  /// Скачивает APK один раз и кэширует его во временной папке.
-  /// Если файл этого же релиза уже загружен — переиспользуем его,
-  /// чтобы возврат из системных настроек не запускал скачивание заново.
+  /// Скачивает пакет обновления (APK / zip) один раз и кэширует его во
+  /// временной папке. Если файл этого же релиза уже загружен —
+  /// переиспользуем его, чтобы возврат из системных настроек не запускал
+  /// скачивание заново.
   static Future<String> download(
     AppRelease release, {
     required void Function(double progress) onProgress,
   }) async {
-    if (!Platform.isAndroid) {
+    if (!Platform.isAndroid && !Platform.isWindows) {
       throw UnsupportedError(
-        'In-app installation is available only on Android.',
+        'In-app installation is available only on Android and Windows.',
       );
     }
 
     final tempDirectory = await getTemporaryDirectory();
     final sep = Platform.pathSeparator;
-    final apk = File(
-      '${tempDirectory.path}${sep}player-update-${release.version}.apk',
+    final ext = Platform.isWindows ? 'zip' : 'apk';
+    final package = File(
+      '${tempDirectory.path}${sep}player-update-${release.version}.$ext',
     );
 
-    // Уже скачан валидный APK этого релиза — не качаем повторно.
-    if (await apk.exists() && await apk.length() > 0) {
+    // Уже скачан валидный пакет этого релиза — не качаем повторно.
+    if (await package.exists() && await package.length() > 0) {
       onProgress(1);
-      return apk.path;
+      return package.path;
     }
 
     // Чистим устаревшие/битые файлы.
     final legacy = File('${tempDirectory.path}${sep}player-update.apk');
     if (await legacy.exists()) await legacy.delete();
-    final partial = File('${apk.path}.part');
+    final partial = File('${package.path}.part');
     if (await partial.exists()) await partial.delete();
 
     await _dio.download(
-      release.apkUrl,
+      release.assetUrl,
       partial.path,
       deleteOnError: true,
       options: Options(
@@ -202,19 +246,23 @@ class UpdateService {
     );
 
     if (!await partial.exists() || await partial.length() == 0) {
-      throw StateError('The downloaded APK is empty.');
+      throw StateError('The downloaded update package is empty.');
     }
 
     // Переименовываем только полностью скачанный файл — так в кэше
-    // никогда не окажется обрезанный APK, пригодный для переиспользования.
-    await partial.rename(apk.path);
-    return apk.path;
+    // никогда не окажется обрезанный пакет, пригодный для переиспользования.
+    await partial.rename(package.path);
+    return package.path;
   }
 
-  /// Запускает установку уже скачанного APK. Возвращает [InstallOutcome]:
-  /// либо установщик открыт, либо система увела за разрешением
-  /// «Установка неизвестных приложений» (файл при этом сохранён).
-  static Future<InstallOutcome> install(String apkPath) async {
+  /// Запускает установку уже скачанного пакета. Android: либо установщик
+  /// открыт, либо система увела за разрешением «Установка неизвестных
+  /// приложений» (файл при этом сохранён). Windows: см.
+  /// [WindowsUpdateInstaller.install].
+  static Future<InstallOutcome> install(String packagePath) async {
+    if (Platform.isWindows) {
+      return WindowsUpdateInstaller().install(packagePath);
+    }
     if (!Platform.isAndroid) {
       throw UnsupportedError(
         'In-app installation is available only on Android.',
@@ -223,7 +271,7 @@ class UpdateService {
 
     final status = await _installChannel.invokeMethod<String>(
       'installApk',
-      {'path': apkPath},
+      {'path': packagePath},
     );
     return status == 'permissionRequired'
         ? InstallOutcome.permissionRequired

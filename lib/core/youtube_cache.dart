@@ -10,6 +10,7 @@ import '../models/track.dart';
 import '../sources/artwork_provider.dart';
 import 'database/app_database.dart';
 import 'artwork_helper.dart';
+import 'platform/app_paths.dart';
 
 /// Аудио-файл в дисковом кэше (без `.part`/`.mime`-спутников).
 class CachedAudioFile {
@@ -33,7 +34,8 @@ class CachedAudioFile {
 /// Дисковый кэш приложения.
 ///
 /// Аудио (`yt_audio_cache`): LRU-кэш по mtime файлов с лимитом в МБ.
-/// Сюда пишут LockCachingAudioSource (muzmo/soundcloud — всегда mp3) и
+/// Сюда пишет кэширующий стриминг (мобилка: LockCachingAudioSource,
+/// десктоп: StreamProxy; muzmo/soundcloud — всегда mp3) и
 /// ручное скачивание из шторки трека. Файлы m4a/webm — легаси от
 /// отключённого YouTube-источника: они по-прежнему учитываются в
 /// размере и эвиктятся.
@@ -120,7 +122,7 @@ class YoutubeCache {
   /// Удобный хелпер: файл кэша для трека с учётом его источника.
   /// Попутно запоминает метаданные трека в индексе (см. [registerTrack]).
   ///
-  /// Источники зовут его перед стримингом через LockCachingAudioSource,
+  /// Источники зовут его перед кэширующим стримингом ([RemoteStream]),
   /// т.е. когда файла ещё нет: дата кэширования сбрасывается на «сейчас»,
   /// иначе трек, однажды пропущенный и докачанный через месяц, попал бы
   /// в группу дня первой попытки.
@@ -244,12 +246,12 @@ class YoutubeCache {
   Future<void>? _evictInFlight;
 
   /// id трека, который играет прямо сейчас: его файл нельзя эвиктить
-  /// или удалять при «Clear audio cache» — LockCachingAudioSource держит
+  /// или удалять при «Clear audio cache» — плеер держит
   /// его открытым, удаление на лету роняет воспроизведение.
   String? _protectedId;
 
   /// id вручную скачанных («закреплённых») треков. Они лежат в общем
-  /// аудио-каталоге (чтобы LockCachingAudioSource играл их из кэша, в т.ч.
+  /// аудио-каталоге (чтобы плеер играл их из кэша, в т.ч.
   /// офлайн), но LRU-эвиктор их не трогает.
   final Set<String> _pinnedIds = <String>{};
   bool _pinnedLoaded = false;
@@ -308,7 +310,10 @@ class YoutubeCache {
   Future<void> _init() async {
     final tmp = await getTemporaryDirectory();
 
-    _audioDir = Directory(p.join(tmp.path, 'yt_audio_cache'));
+    // Аудио — в постоянном каталоге кэша (на Windows не %TEMP%: там его
+    // чистит «Очистка диска» вместе с закреплёнными треками).
+    final cache = await AppPaths.cacheDir();
+    _audioDir = Directory(p.join(cache.path, 'yt_audio_cache'));
     if (!await _audioDir!.exists()) {
       await _audioDir!.create(recursive: true);
     }
@@ -527,8 +532,12 @@ class YoutubeCache {
 
   Future<bool> _hasActiveDownload(Directory dir, String id) async {
     for (final ext in audioExtensions) {
-      final part = File(p.join(dir.path, '$id.$ext.part'));
-      if (await part.exists()) return true;
+      // `.part` — ручная загрузка / кэш плейлиста, `.stream.part` — прокси
+      // десктопного плеера.
+      for (final suffix in const ['part', 'stream.part']) {
+        final part = File(p.join(dir.path, '$id.$ext.$suffix'));
+        if (await part.exists()) return true;
+      }
     }
     return false;
   }
