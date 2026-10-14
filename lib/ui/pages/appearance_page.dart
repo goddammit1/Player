@@ -80,8 +80,11 @@ class AppearancePage extends ConsumerWidget {
                           const SizedBox(height: 8),
                           _SearchViewSection(colors: colors),
                           const SizedBox(height: 8),
-                          _HapticsSection(colors: colors),
-                          const SizedBox(height: 8),
+                          // Вибрации на десктопе нет — секция бессмысленна.
+                          if (!isDesktop) ...[
+                            _HapticsSection(colors: colors),
+                            const SizedBox(height: 8),
+                          ],
                         ],
                       ),
                     ],
@@ -98,7 +101,7 @@ class AppearancePage extends ConsumerWidget {
 }
 
 // =====================================================================
-//  APPEARANCE CONTENT (тема: Fixed / Classic / Perceptual / Mesh / Blur)
+//  APPEARANCE CONTENT (тема: Fixed / Classic / Perceptual / Blur)
 // =====================================================================
 
 class _AppearanceSection extends ConsumerWidget {
@@ -190,12 +193,6 @@ const List<_ThemeOptionData> _themeOptions = [
     label: 'Perceptual',
     description: 'Artwork colors with even brightness and contrast.',
     icon: Icons.contrast_rounded,
-  ),
-  (
-    mode: AppThemeMode.mesh,
-    label: 'Mesh',
-    description: 'Animated artwork color mesh behind the player.',
-    icon: Icons.gradient_rounded,
   ),
   (
     mode: AppThemeMode.blur,

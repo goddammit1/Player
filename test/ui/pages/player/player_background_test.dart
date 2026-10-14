@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:player/core/providers/appearance_provider.dart';
 import 'package:player/core/providers/global_theme_provider.dart';
-import 'package:player/ui/pages/player/mesh_background.dart';
 import 'package:player/ui/pages/player/player_background.dart';
 
 /// PNG 8×8, залитый одним цветом.
@@ -189,26 +188,5 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.state(find.byType(_Content)), same(state));
-  });
-
-  testWidgets('mesh: шейдер поверх градиента из цветов палитры',
-      (tester) async {
-    await tester.pumpWidget(_host(PlayerBackgroundStyle.mesh));
-
-    final mesh = tester.widget<MeshBackground>(find.byType(MeshBackground));
-    expect(mesh.colors, AppColors.fixed.meshColors);
-    expect(_gradient(), findsOneWidget);
-    expect(find.byType(Image), findsNothing);
-  });
-
-  testWidgets('mesh: в свёрнутом плеере тикер шейдера стоит', (tester) async {
-    await tester.pumpWidget(
-      _host(PlayerBackgroundStyle.mesh, animate: false),
-    );
-
-    expect(
-      TickerMode.valuesOf(tester.element(find.byType(MeshBackground))).enabled,
-      isFalse,
-    );
   });
 }

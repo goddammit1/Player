@@ -13,7 +13,7 @@ enum PaletteAlgorithm {
 }
 
 /// Фон страницы плеера.
-enum PlayerBackgroundStyle { gradient, mesh, blur }
+enum PlayerBackgroundStyle { gradient, blur }
 
 /// Тема приложения.
 ///
@@ -29,9 +29,6 @@ enum AppThemeMode {
 
   /// Цвета из обложки перцептивным алгоритмом.
   perceptual(PaletteAlgorithm.perceptual, PlayerBackgroundStyle.gradient),
-
-  /// Perceptual + анимированный mesh из цветов обложки на странице плеера.
-  mesh(PaletteAlgorithm.perceptual, PlayerBackgroundStyle.mesh),
 
   /// Perceptual + размытая обложка на странице плеера.
   blur(PaletteAlgorithm.perceptual, PlayerBackgroundStyle.blur);

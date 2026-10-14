@@ -30,9 +30,7 @@ void main() {
       );
     });
 
-    test('mesh и blur берут цвета из perceptual, меняют только фон плеера', () {
-      expect(AppThemeMode.mesh.paletteAlgorithm, PaletteAlgorithm.perceptual);
-      expect(AppThemeMode.mesh.playerBackground, PlayerBackgroundStyle.mesh);
+    test('blur берёт цвета из perceptual, меняет только фон плеера', () {
       expect(AppThemeMode.blur.paletteAlgorithm, PaletteAlgorithm.perceptual);
       expect(AppThemeMode.blur.playerBackground, PlayerBackgroundStyle.blur);
     });

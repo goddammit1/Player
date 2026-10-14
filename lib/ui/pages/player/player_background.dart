@@ -4,10 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../../core/providers/appearance_provider.dart';
 import '../../../core/providers/global_theme_provider.dart';
-import 'mesh_background.dart';
 
-/// Фон страницы плеера: градиент из палитры, mesh из цветов обложки или
-/// размытая обложка.
+/// Фон страницы плеера: градиент из палитры или размытая обложка.
 ///
 /// Градиент рисуется всегда и служит подложкой: он виден, пока обложка
 /// грузится, если она не загрузилась или её нет.
@@ -64,10 +62,6 @@ class PlayerBackground extends StatelessWidget {
             child: switch (style) {
               PlayerBackgroundStyle.blur when artwork != null =>
                 _BlurredArtwork(key: ValueKey(artwork), artwork: artwork),
-              PlayerBackgroundStyle.mesh => MeshBackground(
-                  key: const ValueKey(PlayerBackgroundStyle.mesh),
-                  colors: colors.meshColors,
-                ),
               _ => const SizedBox.shrink(),
             },
           ),
