@@ -1,6 +1,5 @@
-import 'package:just_audio/just_audio.dart';
-
 import '../models/track.dart';
+import 'playback_source.dart';
 
 /// Источник, который умеет отдавать выдачу по мере поступления (Soulseek:
 /// ответы пиров приходят секундами). SearchController показывает снимки
@@ -34,20 +33,22 @@ abstract class TrackSource {
   /// перед воспроизведением.
   Future<String> resolveStreamUrl(Track track);
 
-  /// Создать готовый [AudioSource] для just_audio.
+  /// Описать, что играть для трека ([PlaybackSource]), не завязываясь на
+  /// аудиодвижок: бэкенд воспроизведения сам решает, как это проиграть.
   ///
-  /// Дефолтная реализация — обёртка над [resolveStreamUrl] в [AudioSource.uri].
-  /// Источники могут переопределить, чтобы:
-  /// - проксировать байты в обход блокировок (см. YoutubeAudioSource),
-  /// - использовать DASH/HLS-манифест,
-  /// - подмешивать заголовки авторизации и т.п.
-  Future<AudioSource> createAudioSource(Track track) async {
+  /// Дефолтная реализация — [resolveStreamUrl] как поток без записи в кэш.
+  /// Источники переопределяют, чтобы:
+  /// - играть офлайн-кэш ([LocalFile]),
+  /// - писать поток в аудиокэш ([RemoteStream.cachePath]),
+  /// - отдавать HLS-манифест ([Hls]) или растущий файл ([GrowingFile]),
+  /// - подмешивать заголовки.
+  Future<PlaybackSource> createPlaybackSource(Track track) async {
     final url = await resolveStreamUrl(track);
-    return AudioSource.uri(Uri.parse(url));
+    return RemoteStream(Uri.parse(url));
   }
 
   /// Опциональный «прогрев» источника для трека (например, скачать манифест
-  /// заранее, чтобы [createAudioSource] позже был мгновенным).
+  /// заранее, чтобы [createPlaybackSource] позже был мгновенным).
   ///
   /// Дефолтная реализация — no-op. Источники могут переопределить.
   Future<void> prefetch(Track track) async {}

@@ -4,13 +4,13 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/playlist_cache_service.dart';
 import 'package:player/core/youtube_cache.dart';
 import 'package:player/models/track.dart';
+import 'package:player/sources/playback_source.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
 import 'package:player/sources/source_registry.dart';
@@ -528,7 +528,7 @@ class _FakeSource extends TrackSource {
   }
 
   @override
-  Future<AudioSource> createAudioSource(Track track) =>
+  Future<PlaybackSource> createPlaybackSource(Track track) =>
       throw UnimplementedError('not needed in tests');
 }
 
@@ -619,6 +619,9 @@ class _FakeSoulseekChannel implements SoulseekChannel {
   @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       _transferController.stream;
+
+  @override
+  Future<bool> cancelDownload(String downloadId) async => true;
 
   void close() {
     _transferController.close();

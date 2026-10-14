@@ -28,7 +28,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
@@ -127,9 +126,6 @@ class _FakePlayer implements PlayerServiceInterface {
   @override
   Stream<bool> get playingStream => BehaviorSubject.seeded(false).stream;
 
-  @override
-  AudioPlayer get rawPlayer =>
-      throw UnimplementedError('not used in soulseek connect tests');
 
   @override
   Future<void> play() async {}
@@ -184,6 +180,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => const [];
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

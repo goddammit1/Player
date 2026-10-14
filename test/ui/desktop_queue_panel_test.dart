@@ -20,7 +20,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
@@ -119,8 +118,6 @@ class _FakePlayer implements PlayerServiceInterface {
   Stream<bool> get playingStream =>
       BehaviorSubject.seeded(false).stream;
 
-  @override
-  AudioPlayer get rawPlayer => throw UnimplementedError('not used in queue test');
 
   @override
   Future<void> play() async {}
@@ -175,6 +172,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => queue;
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 Widget _wrap(_FakePlayer player) {
@@ -284,7 +288,10 @@ void main() {
 
     // РџРµСЂРµРєР»СЋС‡Р°РµРјСЃСЏ РЅР° РІРєР»Р°РґРєСѓ В«TrackВ».
     await tester.tap(find.text('Track'));
-    await tester.pumpAndSettle();
+    // Not pumpAndSettle: the Download tile spins while the cache status
+    // is read from disk (real IO never completes under FakeAsync).
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
 
     // Р”Р°РЅРЅС‹Рµ Сѓ desktop-РїР»РµРµСЂР° РѕРґРёРЅ вЂ” С‚Р° Р¶Рµ trackQueue. РџСѓСЃС‚С‹С… Р·Р°РіР»СѓС€РµРє РЅРµС‚.
     expect(find.text('Only Track'), findsOneWidget);

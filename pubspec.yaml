@@ -1,7 +1,7 @@
 name: player
 description: "Music player with multi-source parsing"
 publish_to: 'none'
-version: 3.3.0+36
+version: 4.0.0+37
 
 environment:
   sdk: ^3.11.4
@@ -24,11 +24,13 @@ dependencies:
   image_picker: ^1.2.3
 
   # --- Audio / background playback ---
+  # Мобильный движок (Android: ExoPlayer). На десктопе AudioPlayer не
+  # создаётся — там media_kit.
   just_audio: ^0.9.40
-  # just_audio на Windows не имеет встроенной реализации — нужен
-  # отдельный endorsed-плагин (WinRT MediaPlayer). Без него AudioPlayer()
-  # на Windows падает при инициализации (MissingPluginException).
-  just_audio_windows: ^0.2.3
+  # Десктопный движок (Windows): libmpv (video-сборка media_kit; ffmpeg в
+  # ней урезан — аудиофильтров для лимитера нет, см. media_kit_backend.dart).
+  media_kit: ^1.2.6
+  media_kit_libs_windows_video: ^1.0.11
   audio_service: ^0.18.15
   audio_session: ^0.1.21
 
@@ -48,6 +50,8 @@ dependencies:
   sqflite: ^2.4.1
   path_provider: ^2.1.5
   path: ^1.9.0
+  # FFI для моста Soulseek на Windows (hostfxr / CoreCLR внутри процесса).
+  ffi: ^2.1.0
 
   # --- UI ---
   cached_network_image: ^3.4.1
@@ -80,9 +84,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-
-  shaders:
-    - shaders/mesh_gradient.frag
 
   fonts:
     - family: Geist

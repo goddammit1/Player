@@ -34,7 +34,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/artwork_helper.dart';
 import 'package:player/core/database/app_database.dart';
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/core/youtube_cache.dart';
@@ -134,6 +133,9 @@ class _TestChannel implements SoulseekChannel {
   Stream<SoulseekTransferEvent> get transferEvents =>
       _transferController.stream;
 
+  @override
+  Future<bool> cancelDownload(String downloadId) async => true;
+
   void emitTransfer(SoulseekTransferInfo info) {
     _transferController.add(SoulseekTransferEvent(info));
   }
@@ -231,9 +233,6 @@ class _FakePlayer implements PlayerServiceInterface {
   @override
   Stream<bool> get playingStream => BehaviorSubject.seeded(false).stream;
 
-  @override
-  AudioPlayer get rawPlayer =>
-      throw UnimplementedError('not used in stage 3 ui tests');
 
   @override
   Future<void> play() async {}
@@ -290,6 +289,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => const [];
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

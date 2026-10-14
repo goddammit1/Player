@@ -11,7 +11,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
@@ -120,8 +119,6 @@ class _FakePlayer implements PlayerServiceInterface {
   @override
   void cancelSleepTimer() {}
 
-  @override
-  AudioPlayer get rawPlayer => throw UnimplementedError('not used in bar');
 
   @override
   Future<void> play() async {}
@@ -173,6 +170,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => const [];
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 Widget _wrap(_FakePlayer player) {

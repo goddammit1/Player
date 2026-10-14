@@ -1,7 +1,7 @@
-import 'package:just_audio/just_audio.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/track.dart';
+import 'playback_source.dart';
 import 'track_source.dart';
 import '../core/youtube_cache.dart';
 
@@ -11,8 +11,8 @@ void _ytLog(String msg) => print('[YoutubeSource] $msg');
 /// YouTube-based track source.
 ///
 /// Search and stream resolution both go through `youtube_explode_dart`.
-/// For playback we use `just_audio`'s [LockCachingAudioSource]: it
-/// downloads the audio into a local file in the background and serves
+/// For playback we return a [RemoteStream] with a cache path: the player
+/// backend downloads the audio into a local file in the background and serves
 /// every byte-range request (including seek-back) from that file once
 /// it is fully cached. The cached file is reused for repeated playback
 /// of the same track and is evicted by [YoutubeCache] (LRU, max 5 files).
@@ -343,7 +343,7 @@ class YoutubeSource implements TrackSource {
     return info.url.toString();
   }
 
-  /// Wrap the YouTube URL in a [LockCachingAudioSource] so that:
+  /// Describe the YouTube URL as a cached [RemoteStream] so that:
   /// 1) the file is downloaded once and saved on disk,
   /// 2) all subsequent reads (seek-back, replay) are served from the
   ///    local file — no more `416 Range Not Satisfiable` from YouTube
@@ -352,20 +352,19 @@ class YoutubeSource implements TrackSource {
   /// The cache is bounded by [YoutubeCache.maxEntries] (LRU eviction)
   /// so storage doesn't grow unboundedly.
   @override
-  Future<AudioSource> createAudioSource(Track track) async {
+  Future<PlaybackSource> createPlaybackSource(Track track) async {
     final info = await _getStreamInfo(track.id);
     final container = info.container.name.toLowerCase().contains('webm')
         ? 'webm'
         : 'm4a';
     final cacheFile = await cache.fileForTrack(track, extension: container);
 
-    return LockCachingAudioSource(
+    return RemoteStream(
       Uri.parse(info.url.toString()),
-      // Без headers — just_audio открывает соединение Dart HttpClient'ом
-      // напрямую к youtube/googlevideo. Дефолтный User-Agent YouTube
-      // принимает (по крайней мере для androidVr URL'ов).
-      cacheFile: cacheFile,
-      tag: track.globalId,
+      // Без headers — соединение открывается Dart HttpClient'ом напрямую
+      // к youtube/googlevideo. Дефолтный User-Agent YouTube принимает
+      // (по крайней мере для androidVr URL'ов).
+      cachePath: cacheFile.path,
     );
   }
 
@@ -381,7 +380,7 @@ class YoutubeSource implements TrackSource {
   }
 
   /// Invalidate cached stream info for a specific video. Use this if
-  /// playback fails — next `createAudioSource` will fetch a fresh URL.
+  /// playback fails — next `createPlaybackSource` will fetch a fresh URL.
   void invalidate(String videoId) {
     _streamInfoCache.remove(videoId);
   }

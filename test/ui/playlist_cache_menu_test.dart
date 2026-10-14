@@ -34,7 +34,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:rxdart/rxdart.dart';
 
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/playlist_cache_service.dart';
 import 'package:player/core/providers.dart';
@@ -132,9 +131,6 @@ class _FakePlayer implements PlayerServiceInterface {
   @override
   Stream<bool> get playingStream => BehaviorSubject.seeded(false).stream;
 
-  @override
-  AudioPlayer get rawPlayer =>
-      throw UnimplementedError('not used in playlist cache menu tests');
 
   @override
   Future<void> play() async {}
@@ -189,6 +185,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => const [];
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 /// Фейковый сервис пакетного кэширования с полностью управляемым

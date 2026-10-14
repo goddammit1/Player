@@ -4,12 +4,12 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:just_audio/just_audio.dart';
 
 import '../core/youtube_cache.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
+import 'playback_source.dart';
 import 'soundcloud_parser.dart';
 import 'track_source.dart';
 
@@ -50,7 +50,7 @@ class SoundCloudSource implements TrackSource {
 
   /// Session-scoped cache of successfully resolved stream URLs.
   /// Key: `${track.id}|${mediaUri}` — one entry per play source, so a
-  /// repeated `resolveStreamUrl` / `createAudioSource` for the same track
+  /// repeated `resolveStreamUrl` / `createPlaybackSource` for the same track
   /// does NOT re-run the transcode cascade (which may issue several HTTP
   /// requests). In-memory only: cleared on next source instance.
   final Map<String, String> _streamResolveCache = {};
@@ -233,10 +233,11 @@ class SoundCloudSource implements TrackSource {
 
   void enrichArtworksInBackground(
     List<Track> tracks,
-    void Function(List<Track> updated) onUpdate,
-  ) {
+    void Function(List<Track> updated) onUpdate, {
+    bool Function()? isCancelled,
+  }) {
     final mutable = List<Track>.of(tracks);
-    unawaited(_enrichArtworks(mutable, onUpdate));
+    unawaited(_enrichArtworks(mutable, onUpdate, isCancelled));
   }
 
   /// Приоритетный индекс: треки переставляются так, чтобы первые N
@@ -256,8 +257,9 @@ class SoundCloudSource implements TrackSource {
 
   Future<void> _enrichArtworks(
     List<Track> tracks,
-    void Function(List<Track> updated) onUpdate,
-  ) async {
+    void Function(List<Track> updated) onUpdate, [
+    bool Function()? isCancelled,
+  ]) async {
     const concurrency = 6;
     final order = _priorityIndices(tracks.length);
     var pos = 0;
@@ -272,6 +274,9 @@ class SoundCloudSource implements TrackSource {
 
     Future<void> worker() async {
       while (true) {
+        // Поиск сменился — не занимаем общую очередь ArtworkProvider
+        // обложками выдачи, которую уже никто не увидит.
+        if (isCancelled?.call() ?? false) return;
         final i = pos++;
         if (i >= order.length) return;
         final idx = order[i];
@@ -280,7 +285,7 @@ class SoundCloudSource implements TrackSource {
         try {
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 4));
+              .timeout(ArtworkProvider.enrichLookupTimeout);
           if (url != null && url.isNotEmpty) {
             tracks[idx] = t.copyWith(artworkUrl: url);
             scheduleNotify();
@@ -618,13 +623,13 @@ class SoundCloudSource implements TrackSource {
   }
 
   @override
-  Future<AudioSource> createAudioSource(Track track) async {
+  Future<PlaybackSource> createPlaybackSource(Track track) async {
     if (kDebugMode) {
       debugPrint('[SoundCloud] === Запуск воспроизведения: "${track.artist} - ${track.title}" ===');
     }
 
     final offlineSource =
-        await offline.createOfflineAudioSource(track, cache: cache);
+        await offline.createOfflinePlaybackSource(track, cache: cache);
     if (offlineSource != null) {
       return offlineSource;
     }
@@ -642,17 +647,13 @@ class SoundCloudSource implements TrackSource {
 
       if (isHls) {
         if (kDebugMode) {
-          debugPrint('[SoundCloud] Создаем HLS AudioSource.uri');
+          debugPrint('[SoundCloud] HLS-поток');
         }
-        return AudioSource.uri(
-          Uri.parse(directUrl),
-          headers: headers,
-          tag: track.globalId,
-        );
+        return Hls(Uri.parse(directUrl), headers: headers);
       }
 
       if (kDebugMode) {
-        debugPrint('[SoundCloud] Создаем LockCachingAudioSource (MP3)');
+        debugPrint('[SoundCloud] MP3-поток с записью в кэш');
       }
 
       final cacheFile = await cache.fileForTrack(
@@ -660,15 +661,14 @@ class SoundCloudSource implements TrackSource {
         extension: 'mp3',
       );
 
-      return LockCachingAudioSource(
+      return RemoteStream(
         Uri.parse(directUrl),
         headers: headers,
-        cacheFile: cacheFile,
-        tag: track.globalId,
+        cachePath: cacheFile.path,
       );
     } catch (e, st) {
       if (kDebugMode) {
-        debugPrint('[SoundCloud] Ошибка в createAudioSource: $e');
+        debugPrint('[SoundCloud] Ошибка в createPlaybackSource: $e');
         debugPrint('$st');
       }
       rethrow;

@@ -19,7 +19,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:rxdart/rxdart.dart';
 
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
@@ -119,9 +118,6 @@ class _FakePlayer implements PlayerServiceInterface {
   @override
   Stream<bool> get playingStream => BehaviorSubject.seeded(false).stream;
 
-  @override
-  AudioPlayer get rawPlayer =>
-      throw UnimplementedError('not used in settings subpage tests');
 
   @override
   Future<void> play() async {}
@@ -176,6 +172,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => const [];
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 /// Нотифаер темы без записи в БД (см. тест выбора темы на AppearancePage).
@@ -244,7 +247,7 @@ void main() {
       expect(find.text('Version'), findsOneWidget);
     });
 
-    testWidgets('AppearancePage lists all five themes and selects one',
+    testWidgets('AppearancePage lists all four themes and selects one',
         (tester) async {
       // Запись настройки в sqflite из fake-async зоны testWidgets не
       // завершается и держит блокировку БД, поэтому выбор проверяем на
@@ -260,18 +263,18 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      for (final label in ['Fixed', 'Classic', 'Perceptual', 'Mesh', 'Blur']) {
+      for (final label in ['Fixed', 'Classic', 'Perceptual', 'Blur']) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
 
-      await tester.ensureVisible(find.text('Mesh'));
-      await tester.tap(find.text('Mesh'));
+      await tester.ensureVisible(find.text('Blur'));
+      await tester.tap(find.text('Blur'));
       await tester.pumpAndSettle();
 
       final container = ProviderScope.containerOf(
         tester.element(find.byType(AppearancePage)),
       );
-      expect(container.read(appThemeModeProvider), AppThemeMode.mesh);
+      expect(container.read(appThemeModeProvider), AppThemeMode.blur);
     });
 
     testWidgets(

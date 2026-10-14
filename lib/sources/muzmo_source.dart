@@ -7,12 +7,12 @@ import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:html/parser.dart' as html_parser;
-import 'package:just_audio/just_audio.dart';
 
 import '../core/youtube_cache.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
 import 'offline_audio_source.dart' as offline;
+import 'playback_source.dart';
 import 'track_source.dart';
 
 class MuzmoSource implements TrackSource {
@@ -46,7 +46,7 @@ class MuzmoSource implements TrackSource {
 
   /// Wave 2: кэш CDN-резолва (redirect-URL → финальный URL). Резолв
   /// [_resolveCdnUrl] делает отдельный HTTP-заход (Range bytes=0-0) ради
-  /// чтения Location; повторять его при resolveBitrate, раз createAudioSource
+  /// чтения Location; повторять его при resolveBitrate, раз createPlaybackSource
   /// уже резолвил тот же URL, незачем. Ключ — исходный (не-резолвленный) URL.
   final Map<String, String> _cdnResolveCache = {};
 
@@ -385,11 +385,11 @@ class MuzmoSource implements TrackSource {
   }
 
   // ---------------------------------------------------------------------
-  //  CDN resolve + AudioSource
+  //  CDN resolve + PlaybackSource
   // ---------------------------------------------------------------------
 
   Future<String> _resolveCdnUrl(String muzmoUrl) async {
-    // Wave 2: если createAudioSource уже резолвил этот URL, не повторяем
+    // Wave 2: если createPlaybackSource уже резолвил этот URL, не повторяем
     // CDN-заход — resolveBitrate берёт результат из кэша.
     final cached = _cdnResolveCache[muzmoUrl];
     if (cached != null && cached.isNotEmpty) return cached;
@@ -418,8 +418,8 @@ class MuzmoSource implements TrackSource {
   }
 
   @override
-  Future<AudioSource> createAudioSource(Track track) async {
-    final offlineSource = await offline.createOfflineAudioSource(
+  Future<PlaybackSource> createPlaybackSource(Track track) async {
+    final offlineSource = await offline.createOfflinePlaybackSource(
       track,
       cache: cache,
     );
@@ -433,14 +433,13 @@ class MuzmoSource implements TrackSource {
       extension: 'mp3',
     );
 
-    return LockCachingAudioSource(
+    return RemoteStream(
       Uri.parse(directUrl),
       headers: const {
         'User-Agent': _userAgent,
         'Referer': '$_baseUrl/',
       },
-      cacheFile: cacheFile,
-      tag: track.globalId,
+      cachePath: cacheFile.path,
     );
   }
 
@@ -582,10 +581,11 @@ class MuzmoSource implements TrackSource {
 
   void enrichArtworksInBackground(
     List<Track> tracks,
-    void Function(List<Track> updated) onUpdate,
-  ) {
+    void Function(List<Track> updated) onUpdate, {
+    bool Function()? isCancelled,
+  }) {
     final mutable = List<Track>.of(tracks);
-    unawaited(_enrichArtworks(mutable, onUpdate));
+    unawaited(_enrichArtworks(mutable, onUpdate, isCancelled));
   }
 
   /// Приоритетный индекс: треки переставляются так, чтобы первые N
@@ -609,6 +609,7 @@ class MuzmoSource implements TrackSource {
   Future<void> _enrichArtworks(
     List<Track> tracks, [
     void Function(List<Track> updated)? onUpdate,
+    bool Function()? isCancelled,
   ]) async {
     const concurrency = 6;
     final order = _priorityIndices(tracks.length);
@@ -625,6 +626,9 @@ class MuzmoSource implements TrackSource {
 
     Future<void> worker() async {
       while (true) {
+        // Поиск сменился — не занимаем общую очередь ArtworkProvider
+        // обложками выдачи, которую уже никто не увидит.
+        if (isCancelled?.call() ?? false) return;
         final i = pos++;
         if (i >= order.length) return;
         final idx = order[i];
@@ -632,7 +636,7 @@ class MuzmoSource implements TrackSource {
         try {
           final url = await ArtworkProvider.instance
               .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 4));
+              .timeout(ArtworkProvider.enrichLookupTimeout);
           if (url != null && url.isNotEmpty) {
             tracks[idx] = t.copyWith(artworkUrl: url);
             scheduleNotify();

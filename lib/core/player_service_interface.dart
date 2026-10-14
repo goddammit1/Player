@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'package:audio_service/audio_service.dart';
-import 'package:just_audio/just_audio.dart';
+import 'package:just_audio/just_audio.dart' show LoopMode;
 import '../models/track.dart';
-import 'player_service.dart' show SleepTimerMode;
+
+enum SleepTimerMode { off, time, endOfTrack }
 
 abstract class PlayerServiceInterface {
   bool get isLoading;
@@ -38,7 +39,6 @@ abstract class PlayerServiceInterface {
   Stream<Duration> get positionStream;
   Stream<Duration?> get durationStream;
   Stream<bool> get playingStream;
-  AudioPlayer get rawPlayer;
 
   Future<void> play();
   Future<void> pause();
@@ -56,12 +56,19 @@ abstract class PlayerServiceInterface {
   Future<void> reorderQueueItem(int oldIndex, int newIndex);
   Future<void> shuffleQueue();
 
+  /// Останавливает воспроизведение и очищает очередь (и сохранённую сессию).
+  Future<void> clearQueue();
+
   Future<void> updateCustomArtwork(String trackId, String newPath);
   Future<void> resetCustomArtwork(String trackId);
 
   Future<void> saveSession();
 
   List<Track> get trackQueue;
+
+  /// Снимок очереди после каждой мутации (add / insert / remove / reorder /
+  /// shuffle / clear / обновление обложки).
+  Stream<List<Track>> get trackQueueStream;
 }
 
 const double kMaxBoostDb = 12.0;

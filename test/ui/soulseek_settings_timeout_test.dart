@@ -34,7 +34,6 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:player/core/player_service.dart' show SleepTimerMode;
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/core/soulseek_settings_repository.dart';
@@ -110,6 +109,9 @@ class _FakeChannel implements SoulseekChannel {
   @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       const Stream<SoulseekTransferEvent>.empty();
+
+  @override
+  Future<bool> cancelDownload(String downloadId) async => true;
 }
 
 /// Минимальный фейковый плеер (паттерн settings_subpages_test.dart).
@@ -199,9 +201,6 @@ class _FakePlayer implements PlayerServiceInterface {
   @override
   Stream<bool> get playingStream => BehaviorSubject.seeded(false).stream;
 
-  @override
-  AudioPlayer get rawPlayer =>
-      throw UnimplementedError('not used in soulseek timeout tests');
 
   @override
   Future<void> play() async {}
@@ -256,6 +255,13 @@ class _FakePlayer implements PlayerServiceInterface {
 
   @override
   List<Track> get trackQueue => const [];
+
+  @override
+  Stream<List<Track>> get trackQueueStream =>
+      Stream<List<Track>>.value(trackQueue);
+
+  @override
+  Future<void> clearQueue() async {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
