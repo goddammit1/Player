@@ -1,6 +1,8 @@
 ﻿// <copyright file="PeerConnectionManager.cs" company="JP Dillingham">
 //     Copyright (c) JP Dillingham.
 //
+//     Modified: unsolicited inbound indirect message connections are capped
+//
 //     This program is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU General Public License as published by
 //     the Free Software Foundation, version 3.
@@ -40,6 +42,13 @@ namespace Soulseek.Network
     /// </summary>
     internal sealed class PeerConnectionManager : IPeerConnectionManager
     {
+        /// <summary>
+        ///     The maximum number of open message connections established on behalf of unsolicited 'P' ConnectToPeer requests.
+        /// </summary>
+        private const int MaximumUnsolicitedMessageConnections = 400;
+
+        private int unsolicitedMessageConnectionCount;
+
         /// <summary>
         ///     Initializes a new instance of the <see cref="PeerConnectionManager"/> class.
         /// </summary>
@@ -344,13 +353,42 @@ namespace Soulseek.Network
             {
                 cached = false;
 
+                // behind a VPN the local tunnel accepts every connect at once, so the socket count is bounded by connections
+                // that are open, not by ones being established. the slot is held until the connection is disconnected.
+                if (Interlocked.Increment(ref unsolicitedMessageConnectionCount) > MaximumUnsolicitedMessageConnections)
+                {
+                    Interlocked.Decrement(ref unsolicitedMessageConnectionCount);
+                    throw new ConnectionException($"Too many unsolicited message connections ({MaximumUnsolicitedMessageConnections})");
+                }
+
+                var released = 0;
+
+                void ReleaseSlot()
+                {
+                    if (Interlocked.Exchange(ref released, 1) == 0)
+                    {
+                        Interlocked.Decrement(ref unsolicitedMessageConnectionCount);
+                    }
+                }
+
                 Diagnostic.Debug($"Attempting inbound indirect message connection to {r.Username} ({r.IPEndPoint}) for token {r.Token}");
 
-                var connection = ConnectionFactory.GetMessageConnection(
-                    r.Username,
-                    r.IPEndPoint,
-                    SoulseekClient.Options.PeerConnectionOptions);
+                IMessageConnection connection;
 
+                try
+                {
+                    connection = ConnectionFactory.GetMessageConnection(
+                        r.Username,
+                        r.IPEndPoint,
+                        SoulseekClient.Options.PeerConnectionOptions);
+                }
+                catch
+                {
+                    ReleaseSlot();
+                    throw;
+                }
+
+                connection.Disconnected += (sender, e) => ReleaseSlot();
                 connection.Type = ConnectionTypes.Inbound | ConnectionTypes.Indirect;
                 connection.MessageRead += SoulseekClient.PeerMessageHandler.HandleMessageRead;
                 connection.MessageReceived += SoulseekClient.PeerMessageHandler.HandleMessageReceived;
@@ -371,6 +409,7 @@ namespace Soulseek.Network
                     catch
                     {
                         connection.Dispose();
+                        ReleaseSlot();
                         throw;
                     }
                     finally

@@ -2,6 +2,7 @@
 # Analogichno tools/build_release.ps1 dlya APK. Vse dopolnitelnye argumenty
 # probrasyvayutsya v flutter build (napr. --debug, --dart-define=X=y).
 # Flag -Zip pakuet papku s ispolnyaemym failom v build\player-windows-x64.zip.
+# Most Soulseek (.NET, papka soulseek\) sobiraetsya CMake-shagom; nuzhen .NET 9 SDK.
 # NOTE: derzhat etot fayl ASCII-only. Windows PowerShell 5.1 chitaet .ps1 kak
 # ANSI, poetomu ne-ASCII simvoly bez BOM lomayut parsering (kak v install_release.ps1).
 param(
@@ -59,11 +60,28 @@ try {
         exit 1
     }
 
+    $exeDir = Split-Path $exe -Parent
+
+    # Soulseek bridge (.NET, self-contained): published and installed into
+    # soulseek\ by the CMake build (windows/CMakeLists.txt). Without it the
+    # app runs, but Soulseek is unavailable - do not ship such a build.
+    $bridgeDir = Join-Path $exeDir 'soulseek'
+    $bridgeFiles = @('soulseek-desktop.dll', 'soulseek-desktop.runtimeconfig.json',
+        'hostfxr.dll', 'coreclr.dll', 'Soulseek.dll',
+        'LICENSE.Soulseek.NET.txt', 'NOTICE.Soulseek.NET.txt', 'THIRD_PARTY_NOTICES.md')
+    foreach ($f in $bridgeFiles) {
+        if (-not (Test-Path (Join-Path $bridgeDir $f))) {
+            Write-Error "Soulseek bridge file missing: soulseek\$f. Install the .NET 9 SDK (dotnet on PATH) and rebuild."
+            exit 1
+        }
+    }
+    $bridgeSize = (Get-ChildItem $bridgeDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+
     Write-Host ''
     Write-Host 'Build succeeded.' -ForegroundColor Green
     $exeSize = (Get-Item $exe).Length
     Write-Host ('EXE: {0} ({1:N1} MB)' -f $exe, ($exeSize / 1MB))
-    $exeDir = Split-Path $exe -Parent
+    Write-Host ('Soulseek bridge: {0} ({1:N1} MB)' -f $bridgeDir, ($bridgeSize / 1MB))
     Write-Host "Release folder: $exeDir"
     Write-Host 'Note: build is unsigned. To sign it use: signtool.exe sign /a /fd SHA256 <exe>'
 
@@ -79,6 +97,8 @@ try {
             $ProgressPreference = $oldProgress
         }
         Write-Host ('Zip: {0} ({1:N1} MB)' -f $zipPath, ((Get-Item $zipPath).Length / 1MB))
+        # The in-app updater (lib/core/update_service.dart) looks for this exact asset name.
+        Write-Host 'Attach it to the GitHub release as player-windows-x64.zip (next to app-release.apk).'
     }
 } finally {
     Pop-Location

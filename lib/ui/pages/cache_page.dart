@@ -19,7 +19,7 @@ import 'cached_tracks_page.dart';
 /// Страница управления кэшем.
 ///
 /// - Audio cache: общий для всех источников — стриминговый кэш
-///   (muzmo/SoundCloud, легаси YouTube) и Soulseek (только Android).
+///   (muzmo/SoundCloud, легаси YouTube) и Soulseek (Android и Windows).
 ///   Размер и очистка — суммарные, лимиты у хранилищ раздельные
 ///   (у каждого своя LRU-эвикция). Список треков — [CachedTracksPage].
 /// - Artwork cache: обложки (CachedNetworkImage хранит сам, мы лишь

@@ -102,6 +102,75 @@ install(CODE "
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
+# Soulseek bridge: .NET library (soulseek-wrapper/desktop) hosted inside
+# player.exe. Published self-contained (its own CoreCLR) into soulseek/ next to
+# the executable; republished only when the bridge sources change. Without the
+# .NET SDK the build still succeeds - Soulseek is then unavailable in the app.
+set(SOULSEEK_WRAPPER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../soulseek-wrapper")
+set(SOULSEEK_BRIDGE_OUT "${CMAKE_BINARY_DIR}/soulseek_bridge")
+set(SOULSEEK_BRIDGE_STAMP "${CMAKE_BINARY_DIR}/soulseek_bridge.stamp")
+find_program(DOTNET_EXECUTABLE dotnet)
+# dotnet.exe is also present with only a runtime or an older SDK installed;
+# the bridge targets net9.0, so require a .NET 9+ SDK.
+set(SOULSEEK_HAVE_SDK FALSE)
+if(DOTNET_EXECUTABLE)
+  execute_process(COMMAND "${DOTNET_EXECUTABLE}" --list-sdks
+    OUTPUT_VARIABLE DOTNET_SDKS ERROR_QUIET RESULT_VARIABLE DOTNET_SDKS_RESULT)
+  if(DOTNET_SDKS_RESULT EQUAL 0)
+    string(REPLACE "\n" ";" DOTNET_SDK_LINES "${DOTNET_SDKS}")
+    foreach(DOTNET_SDK_LINE IN LISTS DOTNET_SDK_LINES)
+      if(DOTNET_SDK_LINE MATCHES "^(9|[1-9][0-9])[.]")
+        set(SOULSEEK_HAVE_SDK TRUE)
+      endif()
+    endforeach()
+  endif()
+endif()
+if(SOULSEEK_HAVE_SDK)
+  file(GLOB_RECURSE SOULSEEK_BRIDGE_DESKTOP_SOURCES CONFIGURE_DEPENDS
+    "${SOULSEEK_WRAPPER_DIR}/desktop/*.cs"
+    "${SOULSEEK_WRAPPER_DIR}/desktop/*.csproj")
+  list(FILTER SOULSEEK_BRIDGE_DESKTOP_SOURCES EXCLUDE REGEX "/(bin|obj)/")
+  set(SOULSEEK_BRIDGE_SOURCES
+    "${SOULSEEK_WRAPPER_DIR}/SoulseekBridgeCore.cs"
+    "${SOULSEEK_WRAPPER_DIR}/SoulseekDtos.cs"
+    ${SOULSEEK_BRIDGE_DESKTOP_SOURCES})
+  add_custom_command(
+    OUTPUT "${SOULSEEK_BRIDGE_STAMP}"
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory "${SOULSEEK_BRIDGE_OUT}"
+    COMMAND "${DOTNET_EXECUTABLE}" publish
+      "${SOULSEEK_WRAPPER_DIR}/desktop/SoulseekDesktop.csproj"
+      -c Release -o "${SOULSEEK_BRIDGE_OUT}" -p:DebugType=none --nologo
+      -nodeReuse:false -p:UseSharedCompilation=false
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${SOULSEEK_WRAPPER_DIR}/desktop/third_party/Soulseek.NET/LICENSE"
+      "${SOULSEEK_BRIDGE_OUT}/LICENSE.Soulseek.NET.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${SOULSEEK_WRAPPER_DIR}/desktop/third_party/Soulseek.NET/NOTICE"
+      "${SOULSEEK_BRIDGE_OUT}/NOTICE.Soulseek.NET.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${SOULSEEK_WRAPPER_DIR}/THIRD_PARTY_NOTICES.md"
+      "${SOULSEEK_BRIDGE_OUT}/THIRD_PARTY_NOTICES.md"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${SOULSEEK_BRIDGE_STAMP}"
+    DEPENDS ${SOULSEEK_BRIDGE_SOURCES}
+      "${SOULSEEK_WRAPPER_DIR}/THIRD_PARTY_NOTICES.md"
+      "${SOULSEEK_WRAPPER_DIR}/desktop/third_party/Soulseek.NET/LICENSE"
+      "${SOULSEEK_WRAPPER_DIR}/desktop/third_party/Soulseek.NET/NOTICE"
+    COMMENT "Publishing Soulseek bridge (.NET)"
+    VERBATIM)
+  add_custom_target(soulseek_bridge ALL DEPENDS "${SOULSEEK_BRIDGE_STAMP}")
+  add_dependencies(${BINARY_NAME} soulseek_bridge)
+  # Unchanged files are skipped by install (up-to-date check), so a rebuild
+  # does not recopy the ~76 MB runtime.
+  install(DIRECTORY "${SOULSEEK_BRIDGE_OUT}/"
+    DESTINATION "${CMAKE_INSTALL_PREFIX}/soulseek"
+    COMPONENT Runtime)
+else()
+  message(WARNING "No .NET 9 SDK found: Soulseek bridge is not built, Soulseek will be unavailable")
+  # Do not leave a bridge from an earlier build next to the new executable.
+  install(CODE "file(REMOVE_RECURSE \"${CMAKE_INSTALL_PREFIX}/soulseek\")"
+    COMPONENT Runtime)
+endif()
+
 # Install the AOT library on non-Debug builds only.
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release

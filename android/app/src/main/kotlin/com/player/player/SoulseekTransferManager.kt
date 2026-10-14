@@ -46,8 +46,13 @@ class SoulseekTransferManager(
         /** Фаза B: верхняя граница параллелизма (защита от кривых значений БД). */
         private const val MAX_CONCURRENT_CAP = 8
 
-        /** Максимальное число попыток для retryable-ошибок. */
-        private const val MAX_RETRY_ATTEMPTS = 3
+        /**
+         * Максимальное число попыток для retryable-ошибок. 5 — повторы через
+         * ~4, 8, 16 с покрывают переподключение Soulseek после обрыва сети
+         * (падение/переподключение VPN — ~25–30 с), пока плеер ещё ждёт
+         * прироста `.part` (stallTimeout 45 с в GrowingFileReader).
+         */
+        private const val MAX_RETRY_ATTEMPTS = 5
 
         /** Базовая задержка retry, мс (экспоненциальный backoff: base * 2^attempt). */
         private const val RETRY_BASE_DELAY_MS = 2_000L

@@ -9,6 +9,7 @@ import '../../core/platform/haptic_helper.dart';
 import '../../core/providers.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
+import '../desktop/track_context_menu.dart';
 import '../widgets/app_dialogs.dart';
 import '../widgets/artwork.dart';
 import '../widgets/byte_format.dart';
@@ -170,6 +171,32 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
     if (mounted) await _refresh();
   }
 
+  /// Десктоп: правый клик. Кэшем управляет сам экран (pin / remove через
+  /// [_service] знает оба хранилища), поэтому Download-пункт меню скрыт.
+  void _showContextMenu(CachedTrack item, Offset position) {
+    showTrackContextMenu(
+      context,
+      track: item.track,
+      position: position,
+      showCacheAction: false,
+      leading: [
+        TrackMenuAction(
+          icon: item.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+          label: item.pinned ? 'Unpin' : 'Pin',
+          onSelected: () => _togglePin(item),
+        ),
+      ],
+      trailing: [
+        TrackMenuAction(
+          icon: Icons.delete_outline_rounded,
+          label: 'Remove from cache',
+          destructive: true,
+          onSelected: () => _remove(item),
+        ),
+      ],
+    );
+  }
+
   Future<void> _remove(CachedTrack item) async {
     // Dismissible требует убрать плитку из дерева синхронно; загрузка,
     // начатая до удаления, устаревает.
@@ -250,6 +277,7 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
           colors: colors,
           onPlay: (item) => _play(item, visible),
           onMenu: _showTrackMenu,
+          onContextMenu: _showContextMenu,
           onRemove: _remove,
           onTogglePin: _togglePin,
           onClear: _confirmClear,
@@ -318,6 +346,7 @@ class _CachedBody extends StatelessWidget {
     required this.colors,
     required this.onPlay,
     required this.onMenu,
+    required this.onContextMenu,
     required this.onRemove,
     required this.onTogglePin,
     required this.onClear,
@@ -329,6 +358,7 @@ class _CachedBody extends StatelessWidget {
   final AppColors colors;
   final void Function(CachedTrack) onPlay;
   final void Function(CachedTrack) onMenu;
+  final void Function(CachedTrack, Offset globalPosition) onContextMenu;
   final void Function(CachedTrack) onRemove;
   final void Function(CachedTrack) onTogglePin;
   final VoidCallback onClear;
@@ -459,6 +489,7 @@ class _CachedBody extends StatelessWidget {
                   isLast: item.isLast,
                   onTap: () => onPlay(cached),
                   onLongPress: () => onMenu(cached),
+                  onContextMenu: (pos) => onContextMenu(cached, pos),
                   onDismissed: () => onRemove(cached),
                   onTogglePin: () => onTogglePin(cached),
                 );
@@ -502,6 +533,7 @@ class _CachedTile extends ConsumerWidget {
     required this.onLongPress,
     required this.onDismissed,
     required this.onTogglePin,
+    required this.onContextMenu,
   });
 
   final CachedTrack item;
@@ -511,6 +543,7 @@ class _CachedTile extends ConsumerWidget {
   final VoidCallback onLongPress;
   final VoidCallback onDismissed;
   final VoidCallback onTogglePin;
+  final ValueChanged<Offset> onContextMenu;
 
   String _subtitle() {
     final source = SourceRegistry.instance.get(item.track.sourceId);
@@ -558,6 +591,8 @@ class _CachedTile extends ConsumerWidget {
             HapticHelper.medium(ref: ref);
             onLongPress();
           },
+          onSecondaryTapDown:
+              isDesktop ? (d) => onContextMenu(d.globalPosition) : null,
           borderRadius: borderRadius,
           child: Container(
             decoration: BoxDecoration(

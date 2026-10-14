@@ -21,15 +21,14 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/database/app_database.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/artwork_provider.dart';
+import 'package:player/sources/playback_source.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
-import 'package:player/sources/soulseek_stream_audio_source.dart';
 
 import '../setup/test_harness.dart';
 
@@ -103,10 +102,9 @@ class _TestChannel implements SoulseekChannel {
       _progressController.stream;
 
   void emitProgress(List<SoulseekSearchResult> results) {
-    _progressController.add(SoulseekSearchProgressEvent(
-      requestId: lastRequestId!,
-      results: results,
-    ));
+    _progressController.add(
+      SoulseekSearchProgressEvent(requestId: lastRequestId!, results: results),
+    );
   }
 
   final List<String> cancelledSearches = [];
@@ -182,18 +180,33 @@ class _TestChannel implements SoulseekChannel {
           downloadId: downloadId,
           result: downloadId,
           cacheHit: false,
+          partPath: partPathFor?.call(downloadId),
         );
   }
+
+  /// Путь `.part` для загрузки (когда [downloadResult] не задан).
+  String? Function(String downloadId)? partPathFor;
+
+  /// Состояние отдельных загрузок; без записи — общий [transferInfo].
+  final Map<String, SoulseekTransferInfo> transfersById = {};
 
   @override
   Future<SoulseekTransferInfo?> getTransfer(String downloadId) async {
     if (pollDelay > Duration.zero) await Future.delayed(pollDelay);
-    return transferInfo;
+    return transfersById[downloadId] ?? transferInfo;
   }
 
   @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       _transferController.stream;
+
+  final List<String> cancelledDownloads = [];
+
+  @override
+  Future<bool> cancelDownload(String downloadId) async {
+    cancelledDownloads.add(downloadId);
+    return true;
+  }
 
   void emitTransfer(SoulseekTransferInfo info) {
     _transferController.add(SoulseekTransferEvent(info));
@@ -415,8 +428,9 @@ void main() {
     });
 
     test('пустой title в записи → fallback на basename', () {
-      final track =
-          source.trackFromCacheEntry(entry(title: '', localPath: '/c/song.mp3'));
+      final track = source.trackFromCacheEntry(
+        entry(title: '', localPath: '/c/song.mp3'),
+      );
       expect(track.title, 'song');
     });
   });
@@ -441,10 +455,7 @@ void main() {
     });
 
     test('full path without track number → "Title"', () {
-      expect(
-        source.extractTitle(r'C:\Music\Artist\Album\Title.flac'),
-        'Title',
-      );
+      expect(source.extractTitle(r'C:\Music\Artist\Album\Title.flac'), 'Title');
     });
 
     test('no separator → returns basename without ext', () {
@@ -500,10 +511,7 @@ void main() {
     });
 
     test('short path Artist/01 - Title.flac → "Artist"', () {
-      expect(
-        source.extractArtist(r'Artist\01 - Title.flac'),
-        'Artist',
-      );
+      expect(source.extractArtist(r'Artist\01 - Title.flac'), 'Artist');
     });
 
     test('track number prefix → falls back to parent dir', () {
@@ -823,26 +831,57 @@ void main() {
       expect(channel.lastSearchQuery, 'query');
     });
 
-    test('ranks free slot, then short queue, then speed; stable on ties',
-        () async {
-      channel.searchResults = [
-        _searchResult(resultId: 'busy', username: 'p1', filename: 'a.flac',
-            freeUploadSlots: 0, queueLength: 0, uploadSpeed: 9000),
-        _searchResult(resultId: 'slow', username: 'p2', filename: 'b.flac',
-            queueLength: 0, uploadSpeed: 100),
-        _searchResult(resultId: 'queued', username: 'p3', filename: 'c.flac',
-            queueLength: 7, uploadSpeed: 9000),
-        _searchResult(resultId: 'fast', username: 'p4', filename: 'd.flac',
-            queueLength: 0, uploadSpeed: 800),
-        _searchResult(resultId: 'fast2', username: 'p5', filename: 'e.flac',
-            queueLength: 0, uploadSpeed: 800),
-      ];
+    test(
+      'ranks free slot, then short queue, then speed; stable on ties',
+      () async {
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'busy',
+            username: 'p1',
+            filename: 'a.flac',
+            freeUploadSlots: 0,
+            queueLength: 0,
+            uploadSpeed: 9000,
+          ),
+          _searchResult(
+            resultId: 'slow',
+            username: 'p2',
+            filename: 'b.flac',
+            queueLength: 0,
+            uploadSpeed: 100,
+          ),
+          _searchResult(
+            resultId: 'queued',
+            username: 'p3',
+            filename: 'c.flac',
+            queueLength: 7,
+            uploadSpeed: 9000,
+          ),
+          _searchResult(
+            resultId: 'fast',
+            username: 'p4',
+            filename: 'd.flac',
+            queueLength: 0,
+            uploadSpeed: 800,
+          ),
+          _searchResult(
+            resultId: 'fast2',
+            username: 'p5',
+            filename: 'e.flac',
+            queueLength: 0,
+            uploadSpeed: 800,
+          ),
+        ];
 
-      final tracks = await source.search('query', limit: 3);
+        final tracks = await source.search('query', limit: 3);
 
-      expect(tracks.map((t) => t.extra['remoteFilename']),
-          ['d.flac', 'e.flac', 'b.flac']);
-    });
+        expect(tracks.map((t) => t.extra['remoteFilename']), [
+          'd.flac',
+          'e.flac',
+          'b.flac',
+        ]);
+      },
+    );
 
     test('maps results to Track correctly', () async {
       channel.searchResults = [
@@ -867,8 +906,11 @@ void main() {
       // HISTORY-DUP-01: id = cacheKey (стабильный между поисками), не resultId.
       expect(
         track.id,
-        SoulseekSource.computeCacheKey('user1',
-            'Pink Floyd - Comfortably Numb.flac', 50000000),
+        SoulseekSource.computeCacheKey(
+          'user1',
+          'Pink Floyd - Comfortably Numb.flac',
+          50000000,
+        ),
       );
       expect(track.sourceId, 'soulseek');
       expect(track.title, 'Comfortably Numb');
@@ -877,7 +919,10 @@ void main() {
       expect(track.qualityScore, 1411);
       expect(track.qualityLabel, 'FLAC 16/44.1');
       expect(track.extra['peerUsername'], 'user1');
-      expect(track.extra['remoteFilename'], 'Pink Floyd - Comfortably Numb.flac');
+      expect(
+        track.extra['remoteFilename'],
+        'Pink Floyd - Comfortably Numb.flac',
+      );
       expect(track.extra['sizeBytes'], 50000000);
       expect(track.extra['extension'], 'flac');
       expect(track.extra['bitrate'], 1411);
@@ -887,10 +932,16 @@ void main() {
     test('applies search filters on Dart side', () async {
       source.searchFilters = const SoulseekSearchFilters(extensions: ['flac']);
       channel.searchResults = [
-        _searchResult(resultId: 'r1', filename: 'Artist - Track.flac',
-            extension: 'flac'),
-        _searchResult(resultId: 'r2', filename: 'Artist - Track.mp3',
-            extension: 'mp3'),
+        _searchResult(
+          resultId: 'r1',
+          filename: 'Artist - Track.flac',
+          extension: 'flac',
+        ),
+        _searchResult(
+          resultId: 'r2',
+          filename: 'Artist - Track.mp3',
+          extension: 'mp3',
+        ),
       ];
       final tracks = await source.search('query');
       expect(tracks.length, 1);
@@ -898,7 +949,10 @@ void main() {
       expect(
         tracks[0].id,
         SoulseekSource.computeCacheKey(
-            'user1', 'Artist - Track.flac', 50000000),
+          'user1',
+          'Artist - Track.flac',
+          50000000,
+        ),
       );
     });
 
@@ -930,62 +984,92 @@ void main() {
       final ids = tracks.map((t) => t.id).toSet();
       expect(
         ids.contains(
-            SoulseekSource.computeCacheKey('user1', 'Artist - Title.flac', 50000000)),
+          SoulseekSource.computeCacheKey(
+            'user1',
+            'Artist - Title.flac',
+            50000000,
+          ),
+        ),
         isTrue,
       );
       expect(
         ids.contains(
-            SoulseekSource.computeCacheKey('user1', 'Artist - Title.flac', 60000000)),
+          SoulseekSource.computeCacheKey(
+            'user1',
+            'Artist - Title.flac',
+            60000000,
+          ),
+        ),
         isTrue,
       );
     });
 
-    test('HISTORY-DUP-01: трек из поиска и из кэш-шторки — один globalId',
-        () async {
-      const username = 'user1';
-      const filename = 'Artist - Title.flac';
-      const size = 50000000;
-      final cacheKey = SoulseekSource.computeCacheKey(username, filename, size);
+    test(
+      'HISTORY-DUP-01: трек из поиска и из кэш-шторки — один globalId',
+      () async {
+        const username = 'user1';
+        const filename = 'Artist - Title.flac';
+        const size = 50000000;
+        final cacheKey = SoulseekSource.computeCacheKey(
+          username,
+          filename,
+          size,
+        );
 
-      // Из поиска (раньше id = resultId).
-      channel.searchResults = [
-        _searchResult(
-            resultId: 'r1', username: username, filename: filename, sizeBytes: size),
-      ];
-      final fromSearch = (await source.search('query')).single;
+        // Из поиска (раньше id = resultId).
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'r1',
+            username: username,
+            filename: filename,
+            sizeBytes: size,
+          ),
+        ];
+        final fromSearch = (await source.search('query')).single;
 
-      // Из кэш-шторки (id = cacheKey).
-      final fromCache = source.trackFromCacheEntry(SoulseekCacheEntry(
-        cacheKey: cacheKey,
-        localPath: '/data/cache/$cacheKey.flac',
-        sizeBytes: size,
-        complete: true,
-        pinned: false,
-      ));
+        // Из кэш-шторки (id = cacheKey).
+        final fromCache = source.trackFromCacheEntry(
+          SoulseekCacheEntry(
+            cacheKey: cacheKey,
+            localPath: '/data/cache/$cacheKey.flac',
+            sizeBytes: size,
+            complete: true,
+            pinned: false,
+          ),
+        );
 
-      // Один файл → один globalId → история не плодит дубликаты.
-      expect(fromSearch.id, cacheKey);
-      expect(fromSearch.id, fromCache.id);
-      expect(fromSearch.globalId, fromCache.globalId);
-    });
+        // Один файл → один globalId → история не плодит дубликаты.
+        expect(fromSearch.id, cacheKey);
+        expect(fromSearch.id, fromCache.id);
+        expect(fromSearch.globalId, fromCache.globalId);
+      },
+    );
 
-    test('HISTORY-DUP-01: повторный поиск того же файла даёт тот же id',
-        () async {
-      // resultId меняется от поиска к поиску (UUID поиска), файл тот же.
-      channel.searchResults = [
-        _searchResult(
-            resultId: 'aaa', filename: 'Artist - Title.flac', sizeBytes: 50000000),
-      ];
-      final first = (await source.search('query')).single;
+    test(
+      'HISTORY-DUP-01: повторный поиск того же файла даёт тот же id',
+      () async {
+        // resultId меняется от поиска к поиску (UUID поиска), файл тот же.
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'aaa',
+            filename: 'Artist - Title.flac',
+            sizeBytes: 50000000,
+          ),
+        ];
+        final first = (await source.search('query')).single;
 
-      channel.searchResults = [
-        _searchResult(
-            resultId: 'bbb', filename: 'Artist - Title.flac', sizeBytes: 50000000),
-      ];
-      final second = (await source.search('query again')).single;
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'bbb',
+            filename: 'Artist - Title.flac',
+            sizeBytes: 50000000,
+          ),
+        ];
+        final second = (await source.search('query again')).single;
 
-      expect(first.id, second.id);
-    });
+        expect(first.id, second.id);
+      },
+    );
 
     test('respects limit parameter', () async {
       final results = List.generate(
@@ -1042,40 +1126,43 @@ void main() {
       expect(path, '/cache/hit.flac');
     });
 
-    test('NEW-3: startDownload receives title/artist/durationSeconds', () async {
-      channel.cacheEntry = null;
-      channel.downloadResult = const SoulseekDownloadResult(
-        downloadId: 'dl_ck_test',
-        result: 'dl_ck_test',
-        cacheHit: false,
-      );
-      channel.transferInfo = const SoulseekTransferInfo(
-        downloadId: 'dl_ck_test',
-        state: SoulseekTransferState.completed,
-        localPath: '/cache/done.flac',
-      );
-      // Трек с duration — как из _resultToTrack поисковой выдачи.
-      final track = _makeTrack();
-      final withDuration = Track(
-        id: track.id,
-        sourceId: track.sourceId,
-        title: 'Title',
-        artist: 'Artist',
-        duration: const Duration(seconds: 240),
-        artworkUrl: null,
-        qualityScore: track.qualityScore,
-        qualityLabel: track.qualityLabel,
-        extra: track.extra,
-      );
+    test(
+      'NEW-3: startDownload receives title/artist/durationSeconds',
+      () async {
+        channel.cacheEntry = null;
+        channel.downloadResult = const SoulseekDownloadResult(
+          downloadId: 'dl_ck_test',
+          result: 'dl_ck_test',
+          cacheHit: false,
+        );
+        channel.transferInfo = const SoulseekTransferInfo(
+          downloadId: 'dl_ck_test',
+          state: SoulseekTransferState.completed,
+          localPath: '/cache/done.flac',
+        );
+        // Трек с duration — как из _resultToTrack поисковой выдачи.
+        final track = _makeTrack();
+        final withDuration = Track(
+          id: track.id,
+          sourceId: track.sourceId,
+          title: 'Title',
+          artist: 'Artist',
+          duration: const Duration(seconds: 240),
+          artworkUrl: null,
+          qualityScore: track.qualityScore,
+          qualityLabel: track.qualityLabel,
+          extra: track.extra,
+        );
 
-      await source.resolveStreamUrl(withDuration);
+        await source.resolveStreamUrl(withDuration);
 
-      expect(channel.startDownloadCalls, hasLength(1));
-      final call = channel.startDownloadCalls.single;
-      expect(call['title'], 'Title');
-      expect(call['artist'], 'Artist');
-      expect(call['durationSeconds'], 240);
-    });
+        expect(channel.startDownloadCalls, hasLength(1));
+        final call = channel.startDownloadCalls.single;
+        expect(call['title'], 'Title');
+        expect(call['artist'], 'Artist');
+        expect(call['durationSeconds'], 240);
+      },
+    );
 
     test('waits for download completion via getTransfer', () async {
       channel.cacheEntry = null;
@@ -1104,11 +1191,13 @@ void main() {
 
       // Эмитим событие после небольшой задержки.
       Future.delayed(const Duration(milliseconds: 50), () {
-        channel.emitTransfer(const SoulseekTransferInfo(
-          downloadId: 'dl_ck_test',
-          state: SoulseekTransferState.completed,
-          localPath: '/cache/event.flac',
-        ));
+        channel.emitTransfer(
+          const SoulseekTransferInfo(
+            downloadId: 'dl_ck_test',
+            state: SoulseekTransferState.completed,
+            localPath: '/cache/event.flac',
+          ),
+        );
       });
 
       final path = await source.resolveStreamUrl(_makeTrack());
@@ -1151,18 +1240,20 @@ void main() {
       );
     });
 
-    test('throws StateError when track is missing required extra fields',
-        () async {
-      channel.cacheEntry = null;
-      // Track with cacheKey but no peerUsername — passes _getOrCreateCacheKey
-      // but fails the download-field check.
-      final track = _makeTrack();
-      track.extra.remove('peerUsername');
-      await expectLater(
-        source.resolveStreamUrl(track),
-        throwsA(isA<StateError>()),
-      );
-    });
+    test(
+      'throws StateError when track is missing required extra fields',
+      () async {
+        channel.cacheEntry = null;
+        // Track with cacheKey but no peerUsername — passes _getOrCreateCacheKey
+        // but fails the download-field check.
+        final track = _makeTrack();
+        track.extra.remove('peerUsername');
+        await expectLater(
+          source.resolveStreamUrl(track),
+          throwsA(isA<StateError>()),
+        );
+      },
+    );
 
     test('polling fallback completes when events are lost (P1)', () async {
       // Сценарий P1: событие completed потеряно (EventChannel переподписался),
@@ -1194,43 +1285,45 @@ void main() {
       expect(source.knownCacheKeys, contains('ck_test'));
     });
 
-    test('throws DOWNLOAD_TIMEOUT when nothing completes within timeout (P1)',
-        () async {
-      channel.cacheEntry = null;
-      channel.downloadResult = const SoulseekDownloadResult(
-        downloadId: 'dl_ck_test',
-        result: 'dl_ck_test',
-        cacheHit: false,
-      );
-      channel.transferInfo = null;
-      channel.pollDelay = const Duration(milliseconds: 5);
-      source.pollInterval = const Duration(milliseconds: 10);
-      source.downloadTimeout = const Duration(milliseconds: 60);
+    test(
+      'throws DOWNLOAD_TIMEOUT when nothing completes within timeout (P1)',
+      () async {
+        channel.cacheEntry = null;
+        channel.downloadResult = const SoulseekDownloadResult(
+          downloadId: 'dl_ck_test',
+          result: 'dl_ck_test',
+          cacheHit: false,
+        );
+        channel.transferInfo = null;
+        channel.pollDelay = const Duration(milliseconds: 5);
+        source.pollInterval = const Duration(milliseconds: 10);
+        source.downloadTimeout = const Duration(milliseconds: 60);
 
-      await expectLater(
-        source.resolveStreamUrl(_makeTrack()),
-        throwsA(
-          isA<SoulseekException>().having(
-            (e) => e.code,
-            'code',
-            'DOWNLOAD_TIMEOUT',
+        await expectLater(
+          source.resolveStreamUrl(_makeTrack()),
+          throwsA(
+            isA<SoulseekException>().having(
+              (e) => e.code,
+              'code',
+              'DOWNLOAD_TIMEOUT',
+            ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  //  createAudioSource — стриминг из .part
+  //  createPlaybackSource — стриминг из .part
   // ═══════════════════════════════════════════════════════════════════
-  group('createAudioSource streaming', () {
+  group('createPlaybackSource streaming', () {
     late Directory dir;
     late File part;
 
     setUp(() async {
       dir = await Directory.systemTemp.createTemp('slsk_source_stream');
       part = File('${dir.path}/ck_test.part');
-      source.offlineAudioSourceLookup = (_) async => null;
+      source.offlinePlaybackSourceLookup = (_) async => null;
       source.pollInterval = const Duration(milliseconds: 10);
       source.streamPollInterval = const Duration(milliseconds: 5);
       source.streamStartBytes = 100;
@@ -1253,64 +1346,70 @@ void main() {
       await dir.delete(recursive: true);
     });
 
-    test('returns a stream source once the start threshold is written',
-        () async {
-      final future = source.createAudioSource(_makeTrack());
-      // Пир начинает отдавать после старта загрузки.
-      await Future<void>.delayed(const Duration(milliseconds: 30));
-      await part.writeAsBytes(List<int>.filled(150, 1));
+    test(
+      'returns a stream source once the start threshold is written',
+      () async {
+        final future = source.createPlaybackSource(_makeTrack());
+        // Пир начинает отдавать после старта загрузки.
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        await part.writeAsBytes(List<int>.filled(150, 1));
 
-      final audio = await future;
+        final audio = await future;
 
-      expect(audio, isA<SoulseekStreamAudioSource>());
-      final stream = audio as SoulseekStreamAudioSource;
-      expect(stream.partPath, part.path);
-      expect(stream.totalBytes, 50000000);
-      expect(stream.contentType, 'audio/flac');
-    });
+        expect(audio, isA<GrowingFile>());
+        final stream = audio as GrowingFile;
+        expect(stream.partPath, part.path);
+        expect(stream.totalBytes, 50000000);
+        expect(stream.contentType, 'audio/flac');
+      },
+    );
 
     test('waits until the start threshold is reached', () async {
       await part.writeAsBytes(List<int>.filled(10, 1));
       var done = false;
 
       final future = source
-          .createAudioSource(_makeTrack())
+          .createPlaybackSource(_makeTrack())
           .whenComplete(() => done = true);
       await Future<void>.delayed(const Duration(milliseconds: 40));
       expect(done, isFalse);
 
       await part.writeAsBytes(List<int>.filled(200, 1), mode: FileMode.append);
-      expect(await future, isA<SoulseekStreamAudioSource>());
+      expect(await future, isA<GrowingFile>());
     });
 
-    test('stale .part from an earlier attempt must grow before streaming',
-        () async {
-      // Остаток прошлой загрузки больше порога, но пир ещё ничего не отдал.
-      await part.writeAsBytes(List<int>.filled(500, 1));
-      var done = false;
+    test(
+      'stale .part from an earlier attempt must grow before streaming',
+      () async {
+        // Остаток прошлой загрузки больше порога, но пир ещё ничего не отдал.
+        await part.writeAsBytes(List<int>.filled(500, 1));
+        var done = false;
 
-      final future = source
-          .createAudioSource(_makeTrack())
-          .whenComplete(() => done = true);
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-      expect(done, isFalse);
+        final future = source
+            .createPlaybackSource(_makeTrack())
+            .whenComplete(() => done = true);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        expect(done, isFalse);
 
-      await part.writeAsBytes(List<int>.filled(150, 1), mode: FileMode.append);
-      expect(await future, isA<SoulseekStreamAudioSource>());
-    });
+        await part.writeAsBytes(
+          List<int>.filled(150, 1),
+          mode: FileMode.append,
+        );
+        expect(await future, isA<GrowingFile>());
+      },
+    );
 
-    test('download finished before threshold → plays the final file',
-        () async {
+    test('download finished before threshold → plays the final file', () async {
       channel.transferInfo = const SoulseekTransferInfo(
         downloadId: 'dl_ck_test',
         state: SoulseekTransferState.completed,
         localPath: '/cache/ck_test.flac',
       );
 
-      final audio = await source.createAudioSource(_makeTrack());
+      final audio = await source.createPlaybackSource(_makeTrack());
 
-      expect(audio, isA<UriAudioSource>());
-      expect((audio as UriAudioSource).uri, Uri.file('/cache/ck_test.flac'));
+      expect(audio, isA<LocalFile>());
+      expect((audio as LocalFile).path, '/cache/ck_test.flac');
     });
 
     test('download failure before threshold is rethrown', () async {
@@ -1322,9 +1421,14 @@ void main() {
       );
 
       await expectLater(
-        source.createAudioSource(_makeTrack()),
-        throwsA(isA<SoulseekException>()
-            .having((e) => e.code, 'code', 'PEER_OFFLINE')),
+        source.createPlaybackSource(_makeTrack()),
+        throwsA(
+          isA<SoulseekException>().having(
+            (e) => e.code,
+            'code',
+            'PEER_OFFLINE',
+          ),
+        ),
       );
     });
 
@@ -1332,24 +1436,31 @@ void main() {
       source.downloadTimeout = const Duration(milliseconds: 60);
 
       await expectLater(
-        source.createAudioSource(_makeTrack()),
-        throwsA(isA<SoulseekException>()
-            .having((e) => e.code, 'code', 'DOWNLOAD_TIMEOUT')),
+        source.createPlaybackSource(_makeTrack()),
+        throwsA(
+          isA<SoulseekException>().having(
+            (e) => e.code,
+            'code',
+            'DOWNLOAD_TIMEOUT',
+          ),
+        ),
       );
     });
 
     test('completion while streaming records the cache key', () async {
-      final future = source.createAudioSource(_makeTrack());
+      final future = source.createPlaybackSource(_makeTrack());
       // Пир начинает отдавать после старта загрузки.
       await Future<void>.delayed(const Duration(milliseconds: 30));
       await part.writeAsBytes(List<int>.filled(150, 1));
       await future;
 
-      channel.emitTransfer(const SoulseekTransferInfo(
-        downloadId: 'dl_ck_test',
-        state: SoulseekTransferState.completed,
-        localPath: '/cache/ck_test.flac',
-      ));
+      channel.emitTransfer(
+        const SoulseekTransferInfo(
+          downloadId: 'dl_ck_test',
+          state: SoulseekTransferState.completed,
+          localPath: '/cache/ck_test.flac',
+        ),
+      );
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect(source.knownCacheKeys, contains('ck_test'));
@@ -1367,9 +1478,9 @@ void main() {
         localPath: '/cache/full.flac',
       );
 
-      final audio = await source.createAudioSource(_makeTrack());
+      final audio = await source.createPlaybackSource(_makeTrack());
 
-      expect((audio as UriAudioSource).uri, Uri.file('/cache/full.flac'));
+      expect((audio as LocalFile).path, '/cache/full.flac');
     });
 
     test('streaming disabled → waits for the full file', () async {
@@ -1381,9 +1492,9 @@ void main() {
         localPath: '/cache/full.flac',
       );
 
-      final audio = await source.createAudioSource(_makeTrack());
+      final audio = await source.createPlaybackSource(_makeTrack());
 
-      expect((audio as UriAudioSource).uri, Uri.file('/cache/full.flac'));
+      expect((audio as LocalFile).path, '/cache/full.flac');
     });
 
     test('complete cache entry is played directly', () async {
@@ -1395,10 +1506,203 @@ void main() {
         pinned: false,
       );
 
-      final audio = await source.createAudioSource(_makeTrack());
+      final audio = await source.createPlaybackSource(_makeTrack());
 
-      expect((audio as UriAudioSource).uri, Uri.file('/cache/cached.flac'));
+      expect((audio as LocalFile).path, '/cache/cached.flac');
       expect(channel.startDownloadCalls, isEmpty);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Запасные пиры: отказ или очередь у основного → другой пир
+  // ═══════════════════════════════════════════════════════════════════
+  group('alternate peers', () {
+    late Directory dir;
+    final altKey = SoulseekSource.computeCacheKey(
+      'peer2',
+      r'B\Artist - Title.flac',
+      50000000,
+    );
+    final altId = 'dl_$altKey';
+
+    Track trackWithAlternate() {
+      final track = _makeTrack();
+      return Track(
+        id: track.id,
+        sourceId: track.sourceId,
+        title: track.title,
+        artist: track.artist,
+        duration: null,
+        artworkUrl: null,
+        qualityScore: track.qualityScore,
+        qualityLabel: track.qualityLabel,
+        extra: {
+          ...track.extra,
+          'alternates': [
+            {
+              'peerUsername': 'peer2',
+              'remoteFilename': r'B\Artist - Title.flac',
+              'sizeBytes': 50000000,
+              'hasFreeUploadSlot': true,
+              'queueLength': 0,
+            },
+          ],
+        },
+      );
+    }
+
+    File partOf(String downloadId) => File('${dir.path}/$downloadId.part');
+
+    /// Запасной пир начинает отдавать файл вскоре после запроса.
+    Future<T> whileAlternateSends<T>(Future<T> playback) async {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await partOf(altId).writeAsBytes(List<int>.filled(150, 1));
+      return playback;
+    }
+
+    setUp(() async {
+      dir = await Directory.systemTemp.createTemp('slsk_source_alt');
+      source.offlinePlaybackSourceLookup = (_) async => null;
+      source.pollInterval = const Duration(milliseconds: 10);
+      source.streamPollInterval = const Duration(milliseconds: 5);
+      source.streamStartBytes = 100;
+      source.alternateStartTimeout = const Duration(milliseconds: 80);
+      channel.cacheEntry = null;
+      channel.partPathFor = (id) => partOf(id).path;
+    });
+
+    tearDown(() async {
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: '',
+        state: SoulseekTransferState.cancelled,
+      );
+      for (final id in ['dl_ck_test', altId]) {
+        channel.transfersById[id] = SoulseekTransferInfo(
+          downloadId: id,
+          state: SoulseekTransferState.cancelled,
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await dir.delete(recursive: true);
+    });
+
+    test(
+      'rejection by the main peer → plays the file from the alternate',
+      () async {
+        channel.transfersById['dl_ck_test'] = const SoulseekTransferInfo(
+          downloadId: 'dl_ck_test',
+          state: SoulseekTransferState.failed,
+          errorCode: 'TransferRejectedException',
+          message: 'Transfer rejected: File not shared.',
+        );
+        final audio = await whileAlternateSends(
+          source.createPlaybackSource(trackWithAlternate()),
+        );
+
+        expect((audio as GrowingFile).partPath, partOf(altId).path);
+        expect(channel.startDownloadCalls.map((c) => c['peerUsername']), [
+          'peer1',
+          'peer2',
+        ]);
+      },
+    );
+
+    test('main peer silent past alternateStartTimeout → cancelled, '
+        'alternate plays', () async {
+      final future = source.createPlaybackSource(trackWithAlternate());
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await partOf(altId).writeAsBytes(List<int>.filled(150, 1));
+
+      final audio = await future;
+
+      expect((audio as GrowingFile).partPath, partOf(altId).path);
+      expect(channel.cancelledDownloads, ['dl_ck_test']);
+    });
+
+    test('the last source is not cut short by alternateStartTimeout', () async {
+      source.downloadTimeout = const Duration(seconds: 5);
+      final future = source.createPlaybackSource(_makeTrack());
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      await partOf('dl_ck_test').writeAsBytes(List<int>.filled(150, 1));
+
+      expect(await future, isA<GrowingFile>());
+      expect(channel.cancelledDownloads, isEmpty);
+    });
+
+    test(
+      'next play starts from the peer that worked, the failed one goes last',
+      () async {
+        final track = trackWithAlternate();
+        channel.transfersById['dl_ck_test'] = const SoulseekTransferInfo(
+          downloadId: 'dl_ck_test',
+          state: SoulseekTransferState.failed,
+          errorCode: 'TransferRejectedException',
+          message: 'Transfer rejected: File not shared.',
+        );
+        expect(source.sourcePeersFor(track), ['peer1', 'peer2']);
+
+        await whileAlternateSends(source.createPlaybackSource(track));
+
+        expect(source.sourcePeersFor(track), ['peer2', 'peer1']);
+      },
+    );
+
+    test('a failure unrelated to the peer is not retried elsewhere', () async {
+      channel.transfersById['dl_ck_test'] = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.cancelled,
+      );
+
+      await expectLater(
+        source.createPlaybackSource(trackWithAlternate()),
+        throwsA(
+          isA<SoulseekException>().having(
+            (e) => e.code,
+            'code',
+            'DOWNLOAD_CANCELLED',
+          ),
+        ),
+      );
+      expect(channel.startDownloadCalls, hasLength(1));
+    });
+
+    test('all sources fail → the last error is thrown', () async {
+      for (final id in ['dl_ck_test', altId]) {
+        channel.transfersById[id] = SoulseekTransferInfo(
+          downloadId: id,
+          state: SoulseekTransferState.failed,
+          errorCode: 'TransferRejectedException',
+          message: 'Transfer rejected: Banned',
+        );
+      }
+
+      await expectLater(
+        source.createPlaybackSource(trackWithAlternate()),
+        throwsA(
+          isA<SoulseekException>().having(
+            (e) => e.retryable,
+            'retryable',
+            isFalse,
+          ),
+        ),
+      );
+      expect(channel.startDownloadCalls, hasLength(2));
+    });
+
+    test('prefetch downloads from the first source in attempt order', () async {
+      final track = trackWithAlternate();
+      channel.transfersById['dl_ck_test'] = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_test',
+        state: SoulseekTransferState.failed,
+        errorCode: 'TransferRejectedException',
+        message: 'Transfer rejected: File not shared.',
+      );
+      await whileAlternateSends(source.createPlaybackSource(track));
+      channel.startDownloadCalls.clear();
+
+      await source.prefetch(track);
+
+      expect(channel.startDownloadCalls.single['peerUsername'], 'peer2');
     });
   });
 
@@ -1424,7 +1728,10 @@ void main() {
         ),
       ];
       await source.refreshCacheIndex();
-      expect(source.knownCacheKeys, containsAll(['ck_native_1', 'ck_native_2']));
+      expect(
+        source.knownCacheKeys,
+        containsAll(['ck_native_1', 'ck_native_2']),
+      );
     });
 
     test('keeps index intact when channel throws', () async {
@@ -1511,8 +1818,10 @@ void main() {
       channel = _TestChannel();
       channel.isAvailable = true;
       channel.cacheEntry = null;
-      channel.searchError =
-          const SoulseekException('DL_ERR', 'download failed');
+      channel.searchError = const SoulseekException(
+        'DL_ERR',
+        'download failed',
+      );
       // Actually, startDownload error is different from searchError.
       // Let's just test that prefetch doesn't throw when startDownload
       // succeeds (default behavior).
@@ -1634,8 +1943,11 @@ void main() {
       SoulseekSource.precacheThumbsEnabled = false;
       addTearDown(() => SoulseekSource.precacheThumbsEnabled = true);
       // Сид in-memory кэша — findArtwork вернёт URL без сети.
-      ArtworkProvider.instance
-          .cacheArtworkForTesting('Artist', 'Title', 'http://art.example/1.jpg');
+      ArtworkProvider.instance.cacheArtworkForTesting(
+        'Artist',
+        'Title',
+        'http://art.example/1.jpg',
+      );
 
       final t1 = _makeTrack();
       final t2 = Track(
@@ -1688,75 +2000,210 @@ void main() {
   });
 
   group('grouping of identical files', () {
-    test('identical artist/title/duration/quality from different peers → one track',
-        () async {
+    test(
+      'identical artist/title/duration/quality from different peers → one track',
+      () async {
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'r1',
+            username: 'peerA',
+            filename: r'peerA\Artist - Title.flac',
+          ),
+          _searchResult(
+            resultId: 'r2',
+            username: 'peerB',
+            filename: r'peerB\Artist - Title.flac',
+          ),
+          _searchResult(
+            resultId: 'r3',
+            username: 'peerC',
+            filename: r'peerC\Artist - Title.flac',
+          ),
+        ];
+        final tracks = await source.search('query');
+        expect(tracks, hasLength(1));
+        expect(tracks.single.extra['peerCount'], 3);
+        // Представитель — лучший по рангу (у всех равные — первый пришедший).
+        expect(tracks.single.extra['peerUsername'], 'peerA');
+      },
+    );
+
+    test(
+      'any difference in quality, duration, title or artist → separate tracks',
+      () async {
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'base',
+            username: 'p0',
+            filename: r'p0\Artist - Title.flac',
+          ),
+          _searchResult(
+            resultId: 'br',
+            username: 'p1',
+            filename: r'p1\Artist - Title.flac',
+            bitrate: 1000,
+          ),
+          _searchResult(
+            resultId: 'depth',
+            username: 'p2',
+            filename: r'p2\Artist - Title.flac',
+            bitDepth: 24,
+          ),
+          _searchResult(
+            resultId: 'rate',
+            username: 'p3',
+            filename: r'p3\Artist - Title.flac',
+            sampleRate: 48000,
+          ),
+          _searchResult(
+            resultId: 'ext',
+            username: 'p4',
+            extension: 'mp3',
+            filename: r'p4\Artist - Title.mp3',
+          ),
+          _searchResult(
+            resultId: 'dur',
+            username: 'p5',
+            filename: r'p5\Artist - Title.flac',
+            durationSeconds: 241,
+          ),
+          _searchResult(
+            resultId: 'title',
+            username: 'p6',
+            filename: r'p6\Artist - Other.flac',
+          ),
+          _searchResult(
+            resultId: 'artist',
+            username: 'p7',
+            filename: r'p7\Other - Title.flac',
+          ),
+          _searchResult(
+            resultId: 'case',
+            username: 'p8',
+            filename: r'p8rtist - Title.flac',
+          ),
+        ];
+        final tracks = await source.search('query');
+        expect(tracks, hasLength(9));
+        expect(tracks.every((t) => t.extra['peerCount'] == null), isTrue);
+      },
+    );
+
+    test(
+      'same file (path + size) from another peer counts into the group',
+      () async {
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'r1',
+            username: 'peerA',
+            durationSeconds: null,
+          ),
+          _searchResult(
+            resultId: 'r2',
+            username: 'peerB',
+            durationSeconds: null,
+          ),
+        ];
+        final tracks = await source.search('query');
+        expect(tracks, hasLength(1));
+        expect(tracks.single.extra['peerCount'], 2);
+      },
+    );
+
+    test('other peers of a grouped track are kept as alternates', () async {
       channel.searchResults = [
-        _searchResult(resultId: 'r1', username: 'peerA', filename: r'peerA\Artist - Title.flac'),
-        _searchResult(resultId: 'r2', username: 'peerB', filename: r'peerB\Artist - Title.flac'),
-        _searchResult(resultId: 'r3', username: 'peerC', filename: r'peerC\Artist - Title.flac'),
+        _searchResult(
+          resultId: 'r1',
+          username: 'peerA',
+          filename: r'peerA\Artist - Title.flac',
+        ),
+        _searchResult(
+          resultId: 'r2',
+          username: 'peerB',
+          filename: r'peerB\Artist - Title.flac',
+          sizeBytes: 50000001,
+          queueLength: 7,
+          freeUploadSlots: 0,
+        ),
       ];
       final tracks = await source.search('query');
-      expect(tracks, hasLength(1));
-      expect(tracks.single.extra['peerCount'], 3);
-      // Представитель — лучший по рангу (у всех равные — первый пришедший).
-      expect(tracks.single.extra['peerUsername'], 'peerA');
+      final alternates = tracks.single.extra['alternates'] as List;
+      expect(alternates, [
+        {
+          'peerUsername': 'peerB',
+          'remoteFilename': r'peerB\Artist - Title.flac',
+          'sizeBytes': 50000001,
+          'hasFreeUploadSlot': false,
+          'queueLength': 7,
+        },
+      ]);
     });
 
-    test('any difference in quality, duration, title or artist → separate tracks',
-        () async {
-      channel.searchResults = [
-        _searchResult(resultId: 'base', username: 'p0', filename: r'p0\Artist - Title.flac'),
-        _searchResult(resultId: 'br', username: 'p1', filename: r'p1\Artist - Title.flac', bitrate: 1000),
-        _searchResult(resultId: 'depth', username: 'p2', filename: r'p2\Artist - Title.flac', bitDepth: 24),
-        _searchResult(resultId: 'rate', username: 'p3', filename: r'p3\Artist - Title.flac', sampleRate: 48000),
-        _searchResult(
-            resultId: 'ext', username: 'p4', extension: 'mp3',
-            filename: r'p4\Artist - Title.mp3'),
-        _searchResult(resultId: 'dur', username: 'p5', filename: r'p5\Artist - Title.flac', durationSeconds: 241),
-        _searchResult(
-            resultId: 'title', username: 'p6', filename: r'p6\Artist - Other.flac'),
-        _searchResult(
-            resultId: 'artist', username: 'p7', filename: r'p7\Other - Title.flac'),
-        _searchResult(
-            resultId: 'case', username: 'p8', filename: r'p8rtist - Title.flac'),
-      ];
-      final tracks = await source.search('query');
-      expect(tracks, hasLength(9));
-      expect(tracks.every((t) => t.extra['peerCount'] == null), isTrue);
-    });
-
-    test('same file (path + size) from another peer counts into the group',
-        () async {
-      channel.searchResults = [
-        _searchResult(resultId: 'r1', username: 'peerA', durationSeconds: null),
-        _searchResult(resultId: 'r2', username: 'peerB', durationSeconds: null),
-      ];
-      final tracks = await source.search('query');
-      expect(tracks, hasLength(1));
-      expect(tracks.single.extra['peerCount'], 2);
-    });
+    test(
+      'alternates are capped and the representative peer is not repeated',
+      () async {
+        channel.searchResults = [
+          for (var i = 0; i < 9; i++)
+            _searchResult(
+              resultId: 'r$i',
+              username: i == 1 ? 'p0' : 'p$i',
+              filename: 'p$i\\Artist - Title.flac',
+            ),
+        ];
+        final tracks = await source.search('query');
+        final alternates = tracks.single.extra['alternates'] as List;
+        expect(alternates, hasLength(SoulseekSource.maxAlternates));
+        expect(
+          alternates.map((a) => (a as Map)['peerUsername']),
+          isNot(contains('p0')),
+        );
+      },
+    );
 
     test('unknown duration is never grouped', () async {
       channel.searchResults = [
-        _searchResult(resultId: 'r1', username: 'peerA', durationSeconds: null, filename: r'peerA\Artist - Title.flac'),
-        _searchResult(resultId: 'r2', username: 'peerB', durationSeconds: null, filename: r'peerB\Artist - Title.flac'),
+        _searchResult(
+          resultId: 'r1',
+          username: 'peerA',
+          durationSeconds: null,
+          filename: r'peerA\Artist - Title.flac',
+        ),
+        _searchResult(
+          resultId: 'r2',
+          username: 'peerB',
+          durationSeconds: null,
+          filename: r'peerB\Artist - Title.flac',
+        ),
       ];
       final tracks = await source.search('query');
       expect(tracks, hasLength(2));
     });
 
-    test('limit counts distinct tracks, duplicates still increase peerCount',
-        () async {
-      channel.searchResults = [
-        _searchResult(resultId: 'a', username: 'p1', filename: r'p1\Artist - Title.flac'),
-        _searchResult(
-            resultId: 'b', username: 'p2', filename: 'Artist - Other.flac'),
-        _searchResult(resultId: 'a2', username: 'p3', filename: r'p3\Artist - Title.flac'),
-      ];
-      final tracks = await source.search('query', limit: 1);
-      expect(tracks, hasLength(1));
-      expect(tracks.single.extra['peerCount'], 2);
-    });
+    test(
+      'limit counts distinct tracks, duplicates still increase peerCount',
+      () async {
+        channel.searchResults = [
+          _searchResult(
+            resultId: 'a',
+            username: 'p1',
+            filename: r'p1\Artist - Title.flac',
+          ),
+          _searchResult(
+            resultId: 'b',
+            username: 'p2',
+            filename: 'Artist - Other.flac',
+          ),
+          _searchResult(
+            resultId: 'a2',
+            username: 'p3',
+            filename: r'p3\Artist - Title.flac',
+          ),
+        ];
+        final tracks = await source.search('query', limit: 1);
+        expect(tracks, hasLength(1));
+        expect(tracks.single.extra['peerCount'], 2);
+      },
+    );
   });
 
   group('folder albums', () {
@@ -1778,24 +2225,48 @@ void main() {
       final tracks = await source.search('query');
       expect(tracks.map((t) => t.title), ['One', 'Two', 'Single']);
       final key = SoulseekSource.folderKeyOf(
-          'peerA', r'Music\Artist\Album\01 - One.flac');
+        'peerA',
+        r'Music\Artist\Album\01 - One.flac',
+      );
       expect(tracks[0].extra['folderKey'], key);
       expect(tracks[1].extra['folderKey'], key);
       expect(tracks[2].extra.containsKey('folderKey'), isFalse);
     });
 
-    test('same folder content at another peer → folderPeers, not a copy',
-        () async {
-      channel.searchResults = [
-        file('peerA', r'A\Album\01 - One.flac', size: 1),
-        file('peerA', r'A\Album\02 - Two.flac', size: 2),
-        file('peerB', r'B\x\Album\01 - One.flac', size: 1),
-        file('peerB', r'B\x\Album\02 - Two.flac', size: 2),
-      ];
-      final tracks = await source.search('query');
-      expect(tracks, hasLength(2));
-      expect(tracks.every((t) => t.extra['folderPeers'] == 2), isTrue);
-    });
+    test(
+      'same folder content at another peer → folderPeers, not a copy',
+      () async {
+        channel.searchResults = [
+          file('peerA', r'A\Album\01 - One.flac', size: 1),
+          file('peerA', r'A\Album\02 - Two.flac', size: 2),
+          file('peerB', r'B\x\Album\01 - One.flac', size: 1),
+          file('peerB', r'B\x\Album\02 - Two.flac', size: 2),
+        ];
+        final tracks = await source.search('query');
+        expect(tracks, hasLength(2));
+        expect(tracks.every((t) => t.extra['folderPeers'] == 2), isTrue);
+      },
+    );
+
+    test(
+      'each file of the same folder at another peer becomes an alternate',
+      () async {
+        channel.searchResults = [
+          file('peerA', r'A\Album\01 - One.flac', size: 1),
+          file('peerA', r'A\Album\02 - Two.flac', size: 2),
+          file('peerB', r'B\x\Album\01 - One.flac', size: 1),
+          file('peerB', r'B\x\Album\02 - Two.flac', size: 2),
+        ];
+        final tracks = await source.search('query');
+        expect(
+          [
+            for (final t in tracks)
+              ((t.extra['alternates'] as List).single as Map)['remoteFilename'],
+          ],
+          [r'B\x\Album\01 - One.flac', r'B\x\Album\02 - Two.flac'],
+        );
+      },
+    );
 
     test('limit counts folders as one entry', () async {
       channel.searchResults = [
@@ -1834,43 +2305,60 @@ void main() {
       expect(snapshots.last, ['One', 'Two', 'Three', 'Single']);
     });
 
-    test('loadFolder: full peer folder, known tracks keep their data',
-        () async {
-      channel.searchResults = [
-        file('peerA', r'M\Album\02 - Two.flac', size: 2),
-        file('peerA', r'M\Album\03 - Three.flac', size: 3),
-      ];
-      final known = await source.search('query');
-      channel.directoryResults = [
-        _searchResult(
-            resultId: 'd1', username: 'peerA',
-            filename: r'M\Album\01 - One.flac', sizeBytes: 1,
-            durationSeconds: null, queueLength: 0, uploadSpeed: 0),
-        _searchResult(
-            resultId: 'd2', username: 'peerA',
-            filename: r'M\Album\02 - Two.flac', sizeBytes: 2,
-            durationSeconds: null, queueLength: 0, uploadSpeed: 0),
-        _searchResult(
-            resultId: 'd3', username: 'peerA',
-            filename: r'M\Album\03 - Three.flac', sizeBytes: 3,
-            durationSeconds: null, queueLength: 0, uploadSpeed: 0),
-      ];
+    test(
+      'loadFolder: full peer folder, known tracks keep their data',
+      () async {
+        channel.searchResults = [
+          file('peerA', r'M\Album\02 - Two.flac', size: 2),
+          file('peerA', r'M\Album\03 - Three.flac', size: 3),
+        ];
+        final known = await source.search('query');
+        channel.directoryResults = [
+          _searchResult(
+            resultId: 'd1',
+            username: 'peerA',
+            filename: r'M\Album\01 - One.flac',
+            sizeBytes: 1,
+            durationSeconds: null,
+            queueLength: 0,
+            uploadSpeed: 0,
+          ),
+          _searchResult(
+            resultId: 'd2',
+            username: 'peerA',
+            filename: r'M\Album\02 - Two.flac',
+            sizeBytes: 2,
+            durationSeconds: null,
+            queueLength: 0,
+            uploadSpeed: 0,
+          ),
+          _searchResult(
+            resultId: 'd3',
+            username: 'peerA',
+            filename: r'M\Album\03 - Three.flac',
+            sizeBytes: 3,
+            durationSeconds: null,
+            queueLength: 0,
+            uploadSpeed: 0,
+          ),
+        ];
 
-      final full = await source.loadFolder(known);
+        final full = await source.loadFolder(known);
 
-      expect(channel.directoryCalls, [('peerA', r'M\Album')]);
-      expect(full.map((t) => t.title), ['One', 'Two', 'Three']);
-      // Известный трек — тот же объект с атрибутами из поиска.
-      expect(identical(full[1], known[0]), isTrue);
-      expect(full[1].duration, const Duration(seconds: 240));
-      // Новый трек — статистика пира из известных, общий folderKey.
-      expect(full[0].extra['queueLength'], 5);
-      expect(full[0].extra['folderKey'], known[0].extra['folderKey']);
+        expect(channel.directoryCalls, [('peerA', r'M\Album')]);
+        expect(full.map((t) => t.title), ['One', 'Two', 'Three']);
+        // Известный трек — тот же объект с атрибутами из поиска.
+        expect(identical(full[1], known[0]), isTrue);
+        expect(full[1].duration, const Duration(seconds: 240));
+        // Новый трек — статистика пира из известных, общий folderKey.
+        expect(full[0].extra['queueLength'], 5);
+        expect(full[0].extra['folderKey'], known[0].extra['folderKey']);
 
-      // Повторное открытие — из кэша, без запроса пиру.
-      await source.loadFolder(known);
-      expect(channel.directoryCalls, hasLength(1));
-    });
+        // Повторное открытие — из кэша, без запроса пиру.
+        await source.loadFolder(known);
+        expect(channel.directoryCalls, hasLength(1));
+      },
+    );
 
     test('loadFolder keeps matched files the peer did not list', () async {
       channel.searchResults = [file('peerA', r'M\Album\09 - Nine.flac')];
@@ -1901,67 +2389,91 @@ void main() {
     // Таймаут уже применён — поиск не ждёт чтения настройки из БД.
     setUp(() => source.applySearchTimeoutSec(10));
 
-    test('streams snapshots: shown tracks keep positions, new ones append',
-        () async {
-      channel.searchGate = Completer();
-      final snapshots = <List<String>>[];
-      final done = source
-          .searchProgressive('query')
-          .listen((s) => snapshots.add([for (final t in s) t.title]))
-          .asFuture<void>();
-      await Future<void>.delayed(Duration.zero);
+    test(
+      'streams snapshots: shown tracks keep positions, new ones append',
+      () async {
+        channel.searchGate = Completer();
+        final snapshots = <List<String>>[];
+        final done = source
+            .searchProgressive('query')
+            .listen((s) => snapshots.add([for (final t in s) t.title]))
+            .asFuture<void>();
+        await Future<void>.delayed(Duration.zero);
 
-      // Первая пачка: у peerB свободный слот — внутри пачки он выше.
-      channel.emitProgress([
-        _searchResult(
-            resultId: 'r1', username: 'peerA', filename: 'A - One.flac',
-            freeUploadSlots: 0),
-        _searchResult(
-            resultId: 'r2', username: 'peerB', filename: 'A - Two.flac'),
-      ]);
-      await Future<void>.delayed(Duration.zero);
-      // Вторая пачка с более «быстрым» пиром не обгоняет показанные треки.
-      channel.emitProgress([
-        _searchResult(
-            resultId: 'r3', username: 'peerC', filename: 'A - Three.flac',
-            uploadSpeed: 99999),
-      ]);
-      await Future<void>.delayed(Duration.zero);
+        // Первая пачка: у peerB свободный слот — внутри пачки он выше.
+        channel.emitProgress([
+          _searchResult(
+            resultId: 'r1',
+            username: 'peerA',
+            filename: 'A - One.flac',
+            freeUploadSlots: 0,
+          ),
+          _searchResult(
+            resultId: 'r2',
+            username: 'peerB',
+            filename: 'A - Two.flac',
+          ),
+        ]);
+        await Future<void>.delayed(Duration.zero);
+        // Вторая пачка с более «быстрым» пиром не обгоняет показанные треки.
+        channel.emitProgress([
+          _searchResult(
+            resultId: 'r3',
+            username: 'peerC',
+            filename: 'A - Three.flac',
+            uploadSpeed: 99999,
+          ),
+        ]);
+        await Future<void>.delayed(Duration.zero);
 
-      // Итог поиска — надмножество дельт: повторы не дублируются.
-      channel.searchGate!.complete([
-        _searchResult(
-            resultId: 'r1', username: 'peerA', filename: 'A - One.flac',
-            freeUploadSlots: 0),
-        _searchResult(
-            resultId: 'r2', username: 'peerB', filename: 'A - Two.flac'),
-        _searchResult(
-            resultId: 'r3', username: 'peerC', filename: 'A - Three.flac',
-            uploadSpeed: 99999),
-        _searchResult(
-            resultId: 'r4', username: 'peerD', filename: 'A - Four.flac'),
-      ]);
-      await done;
+        // Итог поиска — надмножество дельт: повторы не дублируются.
+        channel.searchGate!.complete([
+          _searchResult(
+            resultId: 'r1',
+            username: 'peerA',
+            filename: 'A - One.flac',
+            freeUploadSlots: 0,
+          ),
+          _searchResult(
+            resultId: 'r2',
+            username: 'peerB',
+            filename: 'A - Two.flac',
+          ),
+          _searchResult(
+            resultId: 'r3',
+            username: 'peerC',
+            filename: 'A - Three.flac',
+            uploadSpeed: 99999,
+          ),
+          _searchResult(
+            resultId: 'r4',
+            username: 'peerD',
+            filename: 'A - Four.flac',
+          ),
+        ]);
+        await done;
 
-      expect(snapshots.first, ['Two', 'One']);
-      expect(snapshots[1], ['Two', 'One', 'Three']);
-      expect(snapshots.last, ['Two', 'One', 'Three', 'Four']);
-    });
+        expect(snapshots.first, ['Two', 'One']);
+        expect(snapshots[1], ['Two', 'One', 'Three']);
+        expect(snapshots.last, ['Two', 'One', 'Three', 'Four']);
+      },
+    );
 
-    test('completed search is cached: same query does not hit the network',
-        () async {
-      channel.searchResults = [_searchResult()];
-      final first = await source.search('query');
-      final second = await source.search('query');
-      expect(channel.searchCalls, 1);
-      expect(second.map((t) => t.id), first.map((t) => t.id));
+    test(
+      'completed search is cached: same query does not hit the network',
+      () async {
+        channel.searchResults = [_searchResult()];
+        final first = await source.search('query');
+        final second = await source.search('query');
+        expect(channel.searchCalls, 1);
+        expect(second.map((t) => t.id), first.map((t) => t.id));
 
-      // Другие фильтры — другой ключ кэша.
-      source.searchFilters =
-          const SoulseekSearchFilters(losslessOnly: true);
-      await source.search('query');
-      expect(channel.searchCalls, 2);
-    });
+        // Другие фильтры — другой ключ кэша.
+        source.searchFilters = const SoulseekSearchFilters(losslessOnly: true);
+        await source.search('query');
+        expect(channel.searchCalls, 2);
+      },
+    );
 
     test('failed search is not cached', () async {
       channel.searchError = const SoulseekException('NOT_CONNECTED', 'x');

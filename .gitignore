@@ -84,6 +84,8 @@ window_shot*.png
 /soulseek-wrapper/Soulseek.NET/bin/
 /soulseek-wrapper/Soulseek.NET/obj/
 /soulseek-wrapper/*.aprof
+/soulseek-wrapper/desktop/bin/
+/soulseek-wrapper/desktop/obj/
 
 # Android libs — keep built AARs only, ignore verification/unpacked junk
 /android/app/libs/*

@@ -1,27 +1,129 @@
 // lib/sources/soulseek_platform_channel.dart
 //
-// Фаза 3 — Dart-обёртка над MethodChannel/EventChannel для Soulseek.
+// Платформенный слой Soulseek: общий API и реализации по платформам.
 //
-// Типизированные Dart-методы для всех команд контракта `soulseek/methods`
-// (Фаза 2: SoulseekPlugin.kt) и Stream событий из `soulseek/events`.
+// - Android: [AndroidSoulseekChannel] — MethodChannel/EventChannel к
+//   SoulseekPlugin.kt (foreground service + .NET AAR).
+// - Windows: DesktopSoulseekChannel — .NET-мост внутри процесса
+//   (soulseek_desktop/).
 //
-// Обработка ошибок: PlatformException → [SoulseekException].
-// Проверка платформы: только Android (на других — [UnsupportedError]).
+// Обработка ошибок: ошибки платформы → [SoulseekException].
 
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'soulseek_desktop/soulseek_desktop_channel.dart';
 import 'soulseek_models.dart';
 import 'soulseek_source.dart' show SoulseekChannel;
 
-/// Обёртка над platform channels для Soulseek.
+/// Полный API Soulseek для UI и сервисов (поверх контракта [SoulseekChannel],
+/// нужного [SoulseekSource]).
+abstract class SoulseekPlatformChannel implements SoulseekChannel {
+  const SoulseekPlatformChannel();
+
+  /// Реализация для текущей платформы. Выбирается по [defaultTargetPlatform],
+  /// чтобы тесты могли переопределить платформу.
+  static SoulseekPlatformChannel get instance =>
+      defaultTargetPlatform == TargetPlatform.windows
+          ? DesktopSoulseekChannel.instance
+          : AndroidSoulseekChannel.instance;
+
+  /// Все события Soulseek (transfer, connection, snapshot, search progress).
+  Stream<SoulseekEvent> get events;
+
+  /// Только connection-события.
+  Stream<SoulseekConnectionEvent> get connectionEvents;
+
+  /// Запускает фоновую часть Soulseek (Android — foreground service).
+  Future<bool> startService();
+
+  Future<bool> stopService();
+
+  /// Проталкивает настройки из Dart-БД в платформенный слой (порт, лимит
+  /// кэша в МБ, параллелизм, username). Best-effort: false при ошибке.
+  Future<bool> updateNativeSettings({
+    int? listenPort,
+    int? cacheLimitMb,
+    int? maxParallelDownloads,
+    String? username,
+  });
+
+  Future<bool> configureAccount({
+    required String username,
+    int listenPort = 24150,
+  });
+
+  /// Подключается к серверу Soulseek; завершается после логина.
+  Future<SoulseekConnectionInfo> connect({
+    required String username,
+    required String password,
+    int listenPort = 24150,
+    bool enableListener = true,
+    int messageTimeoutMs = 30000,
+  });
+
+  Future<bool> disconnect();
+
+  /// Актуальное состояние соединения; null — неизвестно.
+  Future<SoulseekConnectionState?> getConnectionState();
+
+  @override
+  Future<List<SoulseekSearchResult>> search({
+    required String requestId,
+    required String query,
+    int timeoutMs = 10000,
+    int idleTimeoutMs = 2500,
+    int responseLimit = 250,
+    int fileLimit = 2000,
+    SoulseekSearchFilters filters = SoulseekSearchFilters.empty,
+  });
+
+  @override
+  Future<SoulseekDownloadResult> startDownload({
+    required String downloadId,
+    required String peerUsername,
+    required String remoteFilename,
+    required int sizeBytes,
+    required String cacheKey,
+    String fileExtension = 'dat',
+    String? title,
+    String? artist,
+    int? durationSeconds,
+  });
+
+  Future<bool> pauseDownload(String downloadId);
+
+  Future<bool> resumeDownload(String downloadId);
+
+  @override
+  Future<bool> cancelDownload(String downloadId);
+
+  Future<List<SoulseekTransferInfo>> getActiveTransfers({
+    bool includeTerminal = false,
+  });
+
+  Future<bool> removeCache(String cacheKey);
+
+  Future<bool> pinCache(String cacheKey, {required bool pinned});
+
+  Future<int> cleanupCache();
+
+  Future<bool> setSharingDirectory({
+    bool? enableListener,
+    int? listenPort,
+    int? maximumUploadSpeed,
+    int? maximumDownloadSpeed,
+  });
+}
+
+/// Android: обёртка над platform channels SoulseekPlugin.kt.
 ///
 /// Singleton: один экземпляр на всё приложение. MethodChannel и EventChannel
 /// создаются один раз и переиспользуются.
-class SoulseekPlatformChannel implements SoulseekChannel {
-  SoulseekPlatformChannel._() {
+class AndroidSoulseekChannel extends SoulseekPlatformChannel {
+  AndroidSoulseekChannel._() {
     // EventChannel отдаёт JSON-строки (Kotlin sink.success(jsonString)).
     // Парсим каждую в типизированное событие.
     _eventsStream = _events.receiveBroadcastStream().map((raw) {
@@ -35,7 +137,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
     });
   }
 
-  static final SoulseekPlatformChannel instance = SoulseekPlatformChannel._();
+  static final AndroidSoulseekChannel instance = AndroidSoulseekChannel._();
 
   static const MethodChannel _method = MethodChannel('soulseek/methods');
   static const EventChannel _events = EventChannel('soulseek/events');
@@ -46,7 +148,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   //  Платформенная проверка
   // ═══════════════════════════════════════════════════════════════════
 
-  /// True, если Soulseek доступен на текущей платформе (только Android).
+  /// True, если Soulseek доступен на текущей платформе (Android).
   @override
   bool get isAvailable => defaultTargetPlatform == TargetPlatform.android;
 
@@ -63,6 +165,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// Поток типизированных событий Soulseek (transfer, connection, snapshot).
   ///
   /// При подписке Kotlin-сторона отправляет snapshot активных трансферов.
+  @override
   Stream<SoulseekEvent> get events {
     _requireAndroid();
     return _eventsStream;
@@ -87,6 +190,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Удобный под-стрим: только connection-события.
+  @override
   Stream<SoulseekConnectionEvent> get connectionEvents {
     _requireAndroid();
     return _eventsStream
@@ -100,6 +204,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
 
   /// Запускает foreground service и привязывается к нему.
   /// Должен вызываться до любых других команд.
+  @override
   Future<bool> startService() async {
     _requireAndroid();
     final result = await _invoke<bool>('startService', null);
@@ -107,6 +212,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Останавливает foreground service и отвязывается.
+  @override
   Future<bool> stopService() async {
     _requireAndroid();
     final result = await _invoke<bool>('stopService', null);
@@ -132,6 +238,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// Безопасен: на не-Android — no-op (false + лог); ошибки платформы НЕ
   /// бросаются наружу — возвращается false (синк best-effort, настройки
   /// уже сохранены в Dart-БД вызывающим кодом).
+  @override
   Future<bool> updateNativeSettings({
     int? listenPort,
     int? cacheLimitMb,
@@ -167,6 +274,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// [username] — имя пользователя Soulseek.
   /// [listenPort] — порт для входящих peer-соединений (по умолчанию 24150,
   /// как SoulseekSettingsRepository.defaultListenPort).
+  @override
   Future<bool> configureAccount({
     required String username,
     int listenPort = 24150,
@@ -185,6 +293,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   ///
   /// Блокирует до завершения логина (несколько секунд).
   /// Возвращает состояние соединения после логина.
+  @override
   Future<SoulseekConnectionInfo> connect({
     required String username,
     required String password,
@@ -209,6 +318,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Отключается от сервера (dispose bridge).
+  @override
   Future<bool> disconnect() async {
     _requireAndroid();
     final result = await _invoke<bool>('disconnect', null);
@@ -224,6 +334,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// Дефект №3: натив возвращает "UNKNOWN", когда binder ещё не привязан,
   /// а сервис может работать (пересоздание Flutter engine). Возвращает null
   /// — вызывающий код не должен перезаписывать локальный статус.
+  @override
   Future<SoulseekConnectionState?> getConnectionState() async {
     _requireAndroid();
     final result = await _invoke<String>('getConnectionState', null);
@@ -350,6 +461,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Ставит загрузку на паузу (.part файл сохраняется для resume).
+  @override
   Future<bool> pauseDownload(String downloadId) async {
     _requireAndroid();
     final result = await _invoke<bool>('pauseDownload', {
@@ -359,6 +471,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Возобновляет приостановленную загрузку (с checkpoint offset).
+  @override
   Future<bool> resumeDownload(String downloadId) async {
     _requireAndroid();
     final result = await _invoke<bool>('resumeDownload', {
@@ -368,6 +481,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Отменяет загрузку и удаляет .part файл.
+  @override
   Future<bool> cancelDownload(String downloadId) async {
     _requireAndroid();
     final result = await _invoke<bool>('cancelDownload', {
@@ -390,6 +504,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   /// Возвращает список активных трансферов.
   ///
   /// [includeTerminal] — включать терминальные (completed/failed/cancelled).
+  @override
   Future<List<SoulseekTransferInfo>> getActiveTransfers({
     bool includeTerminal = false,
   }) async {
@@ -433,6 +548,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
 
   /// Удаляет кэш-файл и запись в БД для [cacheKey].
   /// Возвращает true, если что-то было удалено.
+  @override
   Future<bool> removeCache(String cacheKey) async {
     _requireAndroid();
     final result = await _invoke<bool>('removeCache', {
@@ -442,6 +558,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   }
 
   /// Закрепляет / открепляет кэш-файл (защита от LRU eviction).
+  @override
   Future<bool> pinCache(String cacheKey, {required bool pinned}) async {
     _requireAndroid();
     final result = await _invoke<bool>('pinCache', {
@@ -453,6 +570,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
 
   /// LRU eviction: удаляет самые старые незакреплённые файлы, пока не уложимся
   /// в лимит. Возвращает количество удалённых файлов.
+  @override
   Future<int> cleanupCache() async {
     _requireAndroid();
     final result = await _invoke<int>('cleanupCache', null);
@@ -464,6 +582,7 @@ class SoulseekPlatformChannel implements SoulseekChannel {
   // ═══════════════════════════════════════════════════════════════════
 
   /// Настраивает параметры расшаривания (listener, порты, лимиты скорости).
+  @override
   Future<bool> setSharingDirectory({
     bool? enableListener,
     int? listenPort,

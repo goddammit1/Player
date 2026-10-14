@@ -32,6 +32,11 @@
 
     <!-- Подавляем предупреждения платформенной совместимости и недокументированных членов. -->
     <NoWarn>1701;1702;1591;CA1416</NoWarn>
+
+    <!-- Android собирается с форком Soulseek.NET из SeekerAndroid: ядро моста
+         (SoulseekBridgeCore.cs) включает fork-only API под этим символом.
+         Windows-сборка (desktop/) — на оригинальном NuGet Soulseek без символа. -->
+    <DefineConstants>$(DefineConstants);SEEKER_FORK</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -48,6 +53,9 @@
     <Compile Remove="Soulseek.NET\**" />
     <None Remove="Soulseek.NET\**" />
     <EmbeddedResource Remove="Soulseek.NET\**" />
+    <!-- Windows-проект моста (свой csproj, NuGet Soulseek) — не часть AAR. -->
+    <Compile Remove="desktop\**" />
+    <None Remove="desktop\**" />
   </ItemGroup>
 
   <!-- Hand-written Java sources for which C# bindings should be generated.

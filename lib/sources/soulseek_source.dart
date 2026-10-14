@@ -6,15 +6,15 @@
 // и кэшируются на устройстве (нативный кэш SoulseekCacheManager, Фаза 2).
 // Воспроизведение — из локального file:// пути.
 //
-// Поток resolveStreamUrl → ensureLocalFile → AudioSource:
+// Поток resolveStreamUrl → ensureLocalFile → PlaybackSource:
 //   1. Вычислить cacheKey (sha256, детерминированный, совпадает с Kotlin-стороной).
 //   2. getCacheEntry(cacheKey) → если complete, вернуть localPath.
 //   3. startDownload() → если cacheHit, вернуть path; иначе ждать
 //      transfer-событие (completed) из EventChannel.
-//   4. createAudioSource → AudioSource.uri(Uri.file(localPath)).
+//   4. createPlaybackSource → LocalFile(localPath) или GrowingFile (стриминг).
 //
 // Паттерны следуют MuzmoSource (эталонная реализация): DI Channel через
-// конструктор, проверка офлайн-кэша через createOfflineAudioSource,
+// конструктор, проверка офлайн-кэша через createOfflinePlaybackSource,
 // dispose без остановки foreground service.
 
 import 'dart:async';
@@ -26,17 +26,17 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/database/app_database.dart';
 import '../models/track.dart';
 import 'artwork_provider.dart';
+import 'soulseek_artwork_query.dart';
 import 'offline_audio_source.dart' as offline;
 import 'soulseek_models.dart';
 import 'soulseek_platform_channel.dart';
-import 'soulseek_stream_audio_source.dart';
+import 'playback_source.dart';
 import 'track_source.dart';
 
 /// Минимальный контракт платформенного канала, необходимый [SoulseekSource].
@@ -49,7 +49,8 @@ import 'track_source.dart';
 /// [SoulseekPlatformChannel]; вызывающий код [SoulseekSource] передаёт
 /// их явно, чтобы контракт не зависел от defaults.
 abstract class SoulseekChannel {
-  /// True, если Soulseek доступен на текущей платформе (только Android).
+  /// True, если Soulseek доступен на текущей платформе (Android; Windows —
+  /// если мост лежит рядом с приложением).
   bool get isAvailable;
 
   /// Выполняет поиск по запросу с фильтрами.
@@ -111,6 +112,9 @@ abstract class SoulseekChannel {
 
   /// Поток transfer-событий (прогресс / смена состояния / завершение).
   Stream<SoulseekTransferEvent> get transferEvents;
+
+  /// Отменяет загрузку [downloadId]; false — загрузка не найдена.
+  Future<bool> cancelDownload(String downloadId);
 }
 
 class SoulseekSource implements TrackSource, ProgressiveSearchSource {
@@ -137,7 +141,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// возвращает прежнее поведение (воспроизведение после полной загрузки).
   bool streamingEnabled = true;
 
-  /// Сколько байт `.part` дождаться перед отдачей AudioSource плееру:
+  /// Сколько байт `.part` дождаться перед отдачей источника плееру:
   /// подтверждение, что пир реально начал отдавать файл.
   @visibleForTesting
   int streamStartBytes = 256 * 1024;
@@ -153,8 +157,8 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
   /// Поиск трека в офлайн-кэше YoutubeCache (DI для тестов).
   @visibleForTesting
-  Future<AudioSource?> Function(Track track) offlineAudioSourceLookup =
-      offline.createOfflineAudioSource;
+  Future<PlaybackSource?> Function(Track track) offlinePlaybackSourceLookup =
+      offline.createOfflinePlaybackSource;
 
   /// NEW-2: таймаут поиска из настроек (soulseek_search_timeout_sec, БД).
   /// Это жёсткий общий бюджет: C# bridge останавливает поиск по его
@@ -543,6 +547,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     int peerCount, {
     String? folderKey,
     int folderPeers = 1,
+    List<SoulseekSearchResult> alternates = const [],
   }) {
     final cacheKey =
         computeCacheKey(result.username, result.filename, result.sizeBytes);
@@ -580,6 +585,19 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         if (peerCount > 1) 'peerCount': peerCount,
         'folderKey': ?folderKey,
         if (folderKey != null && folderPeers > 1) 'folderPeers': folderPeers,
+        // Тот же файл у других пиров: к ним переключится воспроизведение,
+        // если основной пир откажет (см. _resolveFromPeers).
+        if (alternates.isNotEmpty)
+          'alternates': [
+            for (final a in alternates)
+              {
+                'peerUsername': a.username,
+                'remoteFilename': a.filename,
+                'sizeBytes': a.sizeBytes,
+                'hasFreeUploadSlot': a.freeUploadSlots > 0,
+                'queueLength': a.queueLength,
+              },
+          ],
       },
     );
   }
@@ -736,21 +754,8 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
   @override
   Future<String> resolveStreamUrl(Track track) async {
-    final cacheKey = _getOrCreateCacheKey(track);
-
-    // 1. Проверка кэша: файл уже скачан и complete?
-    final cachedPath = await _completeCachePath(cacheKey);
-    if (cachedPath != null) return cachedPath;
-
-    // 2. Запуск загрузки (или присоединение к идущей).
-    final result = await _startDownload(track, cacheKey);
-
-    // Cache hit — файл уже complete (мог появиться между шагами 1 и 2).
-    if (result.cacheHit) return result.result;
-
-    // 3. Ждём завершения загрузки через event stream.
-    //    result.result — downloadId (может отличаться при dedupe).
-    return _waitForDownloadComplete(result.result);
+    final source = await _resolveFromPeers(track, streaming: false);
+    return (source as LocalFile).path;
   }
 
   /// Путь полностью скачанного файла из нативного кэша или null.
@@ -761,14 +766,15 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     return entry.localPath;
   }
 
-  /// Запускает загрузку трека (или присоединяется к идущей).
+  /// Запускает загрузку файла трека у пира [peer] (или присоединяется к
+  /// идущей).
   Future<SoulseekDownloadResult> _startDownload(
     Track track,
-    String cacheKey,
+    _PeerFile peer,
   ) async {
-    final peerUsername = track.extra['peerUsername'] as String?;
-    final remoteFilename = track.extra['remoteFilename'] as String?;
-    final sizeBytes = _asInt(track.extra['sizeBytes']);
+    final peerUsername = peer.peerUsername;
+    final remoteFilename = peer.remoteFilename;
+    final sizeBytes = peer.sizeBytes;
     final extension = (track.extra['extension'] as String?) ?? 'dat';
 
     if (peerUsername == null || remoteFilename == null || sizeBytes <= 0) {
@@ -780,7 +786,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
     // Детерминированный downloadId — совпадает при повторных запросах того же
     // файла, что позволяет Kotlin-стороне сделать dedupe и вернуть тот же ID.
-    final downloadId = 'dl_$cacheKey';
+    final downloadId = peer.downloadId;
 
     if (kDebugMode) {
       debugPrint('[Soulseek] startDownload: $downloadId '
@@ -792,7 +798,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       peerUsername: peerUsername,
       remoteFilename: remoteFilename,
       sizeBytes: sizeBytes,
-      cacheKey: cacheKey,
+      cacheKey: peer.cacheKey,
       fileExtension: extension,
       // NEW-3: человекочитаемые метаданные для кэш-листа.
       title: track.title,
@@ -804,6 +810,175 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       debugPrint('[Soulseek] startDownload cache hit: ${result.result}');
     }
     return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Источники файла: основной пир и запасные из выдачи
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Сколько запасных пиров запоминается для трека выдачи.
+  static const int maxAlternates = 5;
+
+  /// Сколько ждать, пока пир начнёт отдавать файл, прежде чем переключиться
+  /// на запасного (пир держит в очереди или недоступен). Последний источник
+  /// ждём, как раньше, [downloadTimeout].
+  @visibleForTesting
+  Duration alternateStartTimeout = const Duration(seconds: 12);
+
+  /// Сколько помнить отказ пира: такой источник пробуется последним.
+  static const Duration failedSourceTtl = Duration(minutes: 30);
+
+  /// cacheKey файла у пира → когда пир отказал.
+  final Map<String, DateTime> _failedSources = {};
+
+  /// cacheKey основного источника трека → cacheKey запасного, с которого
+  /// трек удалось сыграть: следующее воспроизведение начинается с него.
+  final Map<String, String> _workingSources = {};
+
+  /// Ошибки, которые не зависят от пира: другой пир не поможет (нет
+  /// соединения с сетью, загрузку отменили).
+  static const Set<String> _notPeerFailureCodes = {
+    'DOWNLOAD_CANCELLED',
+    'DOWNLOAD_ABANDONED',
+    'NOT_CONNECTED',
+    'SERVICE_SHUTDOWN',
+    'SERVICE_BIND_TIMEOUT',
+    'SERVICE_UNAVAILABLE',
+    'ClientNotReadyException',
+  };
+
+  /// Источники файла [track] в порядке попыток: сначала тот, с которого
+  /// трек уже играл, затем основной и запасные (со свободным слотом и
+  /// короткой очередью — раньше); недавно отказавшие пиры — в конце.
+  List<_PeerFile> _sourcesFor(Track track) {
+    final primary = _PeerFile(
+      peerUsername: track.extra['peerUsername'] as String?,
+      remoteFilename: track.extra['remoteFilename'] as String?,
+      sizeBytes: _asInt(track.extra['sizeBytes']),
+      cacheKey: _getOrCreateCacheKey(track),
+    );
+
+    final alternates = <(int, _PeerFile)>[];
+    final raw = track.extra['alternates'];
+    if (raw is List) {
+      for (final a in raw) {
+        if (a is! Map) continue;
+        final peer = a['peerUsername'] as String?;
+        final file = a['remoteFilename'] as String?;
+        final size = _asInt(a['sizeBytes']);
+        if (peer == null || file == null || size <= 0) continue;
+        alternates.add((
+          alternates.length,
+          _PeerFile(
+            peerUsername: peer,
+            remoteFilename: file,
+            sizeBytes: size,
+            cacheKey: computeCacheKey(peer, file, size),
+            hasFreeUploadSlot: a['hasFreeUploadSlot'] == true,
+            queueLength: _asInt(a['queueLength']),
+          ),
+        ));
+      }
+    }
+    alternates.sort((a, b) {
+      final slot = (b.$2.hasFreeUploadSlot ? 1 : 0)
+          .compareTo(a.$2.hasFreeUploadSlot ? 1 : 0);
+      if (slot != 0) return slot;
+      final queue = a.$2.queueLength.compareTo(b.$2.queueLength);
+      if (queue != 0) return queue;
+      return a.$1.compareTo(b.$1);
+    });
+
+    final all = [primary, for (final a in alternates) a.$2];
+    final working = _workingSources[primary.cacheKey];
+    if (working != null) {
+      final index = all.indexWhere((p) => p.cacheKey == working);
+      if (index > 0) all.insert(0, all.removeAt(index));
+    }
+
+    final now = DateTime.now();
+    _failedSources.removeWhere((_, at) => now.difference(at) > failedSourceTtl);
+    return [
+      ...all.where((p) => !_failedSources.containsKey(p.cacheKey)),
+      ...all.where((p) => _failedSources.containsKey(p.cacheKey)),
+    ];
+  }
+
+  /// Пиры, у которых будет запрошен файл [track], в порядке попыток.
+  @visibleForTesting
+  List<String?> sourcePeersFor(Track track) =>
+      [for (final p in _sourcesFor(track)) p.peerUsername];
+
+  /// Готовый файл трека у любого из источников или загрузка: если пир
+  /// отказал или не начал отдавать файл за [alternateStartTimeout] —
+  /// следующий источник. Ошибка последнего источника пробрасывается.
+  Future<PlaybackSource> _resolveFromPeers(
+    Track track, {
+    required bool streaming,
+  }) async {
+    final sources = _sourcesFor(track);
+    for (final peer in sources) {
+      final cachedPath = await _completeCachePath(peer.cacheKey);
+      if (cachedPath != null) return LocalFile(cachedPath);
+    }
+
+    final primaryKey = _getOrCreateCacheKey(track);
+    for (var i = 0;; i++) {
+      final peer = sources[i];
+      final isLast = i == sources.length - 1;
+      try {
+        final source = await _downloadFrom(
+          track,
+          peer,
+          streaming: streaming,
+          startTimeout: isLast ? null : alternateStartTimeout,
+        );
+        _failedSources.remove(peer.cacheKey);
+        if (peer.cacheKey == primaryKey) {
+          _workingSources.remove(primaryKey);
+        } else {
+          _workingSources[primaryKey] = peer.cacheKey;
+        }
+        return source;
+      } on SoulseekException catch (e) {
+        if (_notPeerFailureCodes.contains(e.code)) rethrow;
+        _failedSources[peer.cacheKey] = DateTime.now();
+        if (isLast) rethrow;
+        if (kDebugMode) {
+          debugPrint('[Soulseek] ${peer.peerUsername}: ${e.code}, '
+              'switching to ${sources[i + 1].peerUsername}');
+        }
+      }
+    }
+  }
+
+  /// Загрузка файла у пира [peer]: стриминг из `.part` или (без стриминга)
+  /// полный файл. [startTimeout] — сколько ждать начала отдачи; null —
+  /// [downloadTimeout].
+  Future<PlaybackSource> _downloadFrom(
+    Track track,
+    _PeerFile peer, {
+    required bool streaming,
+    Duration? startTimeout,
+  }) async {
+    final result = await _startDownload(track, peer);
+    if (result.cacheHit) return LocalFile(result.result);
+
+    final partPath = result.partPath;
+    if (partPath == null) {
+      // Нативная сторона не сообщила путь .part (старый контракт канала):
+      // начало отдачи не отследить — ждём полный файл.
+      return LocalFile(await _waitForDownloadComplete(result.result));
+    }
+    final source = await _createStreamSource(
+      track,
+      peer,
+      result.result,
+      partPath,
+      startTimeout: startTimeout,
+    );
+    if (streaming || source is! GrowingFile) return source;
+    return LocalFile(await source.completion);
   }
 
   /// Ждёт завершения загрузки [downloadId] — событие ИЛИ поллинг-fallback.
@@ -946,52 +1121,39 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  createAudioSource
+  //  createPlaybackSource
   // ═══════════════════════════════════════════════════════════════════
 
   @override
-  Future<AudioSource> createAudioSource(Track track) async {
+  Future<PlaybackSource> createPlaybackSource(Track track) async {
     // 1. Проверка офлайн-кэша (YoutubeCache) — следует паттерну MuzmoSource.
     //    Soulseek-файлы лежат в отдельном native-кэше (soulseek_cache/),
-    //    поэтому createOfflineAudioSource вернёт null для них. Но паттерн
+    //    поэтому createOfflinePlaybackSource вернёт null для них. Но паттерн
     //    сохранён для консистентности и на случай будущих изменений.
-    final offlineSource = await offlineAudioSourceLookup(track);
+    final offlineSource = await offlinePlaybackSourceLookup(track);
     if (offlineSource != null) return offlineSource;
 
-    // 2. Без стриминга — дождаться полного файла (кэш Soulseek → скачать).
-    if (!streamingEnabled) {
-      return AudioSource.uri(Uri.file(await resolveStreamUrl(track)));
-    }
-
-    // 3. Стриминг: готовый файл из кэша или чтение .part во время загрузки.
-    final cacheKey = _getOrCreateCacheKey(track);
-    final cachedPath = await _completeCachePath(cacheKey);
-    if (cachedPath != null) return AudioSource.uri(Uri.file(cachedPath));
-
-    final result = await _startDownload(track, cacheKey);
-    if (result.cacheHit) return AudioSource.uri(Uri.file(result.result));
-
-    final partPath = result.partPath;
-    if (partPath == null) {
-      // Нативная сторона не сообщила путь .part (старый контракт канала).
-      final path = await _waitForDownloadComplete(result.result);
-      return AudioSource.uri(Uri.file(path));
-    }
-    return _createStreamSource(track, result.result, partPath);
+    // 2. Готовый файл из кэша, стриминг из .part во время загрузки или
+    //    (стриминг выключен) полный файл — у основного пира или запасных.
+    return _resolveFromPeers(track, streaming: streamingEnabled);
   }
 
   /// Стриминг: ждёт [streamStartBytes] новых байт в `.part` и отдаёт
-  /// [SoulseekStreamAudioSource], который дочитывает файл по мере загрузки.
+  /// [GrowingFile], который плеер дочитывает по мере загрузки.
   ///
-  /// Ожидание старта ограничено [downloadTimeout] — очередь у пира или
-  /// оффлайн-пир дают ошибку до setAudioSource, как и без стриминга.
+  /// Ожидание старта ограничено [startTimeout] (по умолчанию
+  /// [downloadTimeout]) — очередь у пира или оффлайн-пир дают ошибку до
+  /// загрузки в плеер, как и без стриминга. С заданным [startTimeout]
+  /// загрузка по его истечении отменяется: файл возьмут у запасного пира.
   /// Если загрузка завершилась раньше порога, играем готовый файл.
-  Future<AudioSource> _createStreamSource(
+  Future<PlaybackSource> _createStreamSource(
     Track track,
+    _PeerFile peer,
     String downloadId,
-    String partPath,
-  ) async {
-    final sizeBytes = _asInt(track.extra['sizeBytes']);
+    String partPath, {
+    Duration? startTimeout,
+  }) async {
+    final sizeBytes = peer.sizeBytes;
     final extension = (track.extra['extension'] as String?) ?? 'dat';
 
     final abandon = Completer<void>();
@@ -1019,13 +1181,19 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       final error = failure;
       if (error != null) throw error;
       final path = completedPath;
-      if (path != null) return AudioSource.uri(Uri.file(path));
+      if (path != null) return LocalFile(path);
 
       final written = await _fileLength(partPath);
       if (written >= threshold) break;
 
-      if (sw.elapsed >= downloadTimeout) {
+      if (sw.elapsed >= (startTimeout ?? downloadTimeout)) {
         if (!abandon.isCompleted) abandon.complete();
+        if (startTimeout != null) {
+          // Файл возьмут у другого пира — эта загрузка больше не нужна.
+          unawaited(_channel
+              .cancelDownload(downloadId)
+              .then<void>((_) {}, onError: (Object _) {}));
+        }
         throw const SoulseekException(
           'DOWNLOAD_TIMEOUT',
           'Download did not start in time',
@@ -1039,10 +1207,10 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       debugPrint('[Soulseek] streaming $downloadId from .part '
           'after ${sw.elapsedMilliseconds} ms');
     }
-    return SoulseekStreamAudioSource(
+    return GrowingFile(
       partPath: partPath,
       totalBytes: sizeBytes,
-      contentType: SoulseekStreamAudioSource.contentTypeFor(extension),
+      contentType: audioContentTypeFor(extension),
       completion: completion,
     );
   }
@@ -1057,37 +1225,40 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
   /// Предзагрузка: запускает скачивание в фоне, не дожидаясь завершения.
   ///
-  /// В отличие от [createAudioSource], не возвращает AudioSource и не блокирует
+  /// В отличие от [createPlaybackSource], не возвращает источник и не блокирует
   /// до полного скачивания — просто инициирует загрузку, чтобы к моменту
   /// воспроизведения файл уже был в кэше.
   @override
   Future<void> prefetch(Track track) async {
     if (!_channel.isAvailable) return;
 
-    final cacheKey = _getOrCreateCacheKey(track);
+    final sources = _sourcesFor(track);
 
     // Если уже в кэше — ничего не делаем.
-    final entry = await _channel.getCacheEntry(cacheKey);
-    if (entry != null && entry.complete) return;
+    for (final peer in sources) {
+      final entry = await _channel.getCacheEntry(peer.cacheKey);
+      if (entry != null && entry.complete) return;
+    }
 
-    final peerUsername = track.extra['peerUsername'] as String?;
-    final remoteFilename = track.extra['remoteFilename'] as String?;
-    final sizeBytes = _asInt(track.extra['sizeBytes']);
+    // Качаем у первого по порядку попыток источника: при воспроизведении
+    // createPlaybackSource присоединится к этой загрузке.
+    final peer = sources.first;
+    final peerUsername = peer.peerUsername;
+    final remoteFilename = peer.remoteFilename;
+    final sizeBytes = peer.sizeBytes;
     final extension = (track.extra['extension'] as String?) ?? 'dat';
 
     if (peerUsername == null || remoteFilename == null || sizeBytes <= 0) {
       return;
     }
 
-    final downloadId = 'dl_$cacheKey';
-
     try {
       await _channel.startDownload(
-        downloadId: downloadId,
+        downloadId: peer.downloadId,
         peerUsername: peerUsername,
         remoteFilename: remoteFilename,
         sizeBytes: sizeBytes,
-        cacheKey: cacheKey,
+        cacheKey: peer.cacheKey,
         fileExtension: extension,
       );
       // Не ждём завершения — загрузка идёт в фоне через foreground service.
@@ -1115,11 +1286,26 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   @override
   Future<String?> resolveArtwork(Track track) async {
     try {
-      return await ArtworkProvider.instance
-          .findArtwork(track.artist, track.title);
+      final q = artworkQuery(track);
+      return await ArtworkProvider.instance.findArtwork(q.artist, q.title);
     } catch (_) {
       return null;
     }
+  }
+
+  /// Artist/title для поиска обложки — очищенные от альбома, номера трека
+  /// и папок-свалок из пути файла (см. [soulseekArtworkQuery]).
+  @visibleForTesting
+  static ({String artist, String title}) artworkQuery(Track track) {
+    final remote = track.extra['remoteFilename'] as String?;
+    if (remote == null || remote.isEmpty) {
+      return (artist: track.artist, title: track.title);
+    }
+    return soulseekArtworkQuery(
+      remote,
+      fallbackArtist: track.artist,
+      fallbackTitle: track.title,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1134,10 +1320,11 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// ограничение параллелизма, батч-обновление UI через [onUpdate].
   void enrichArtworksInBackground(
     List<Track> tracks,
-    void Function(List<Track> updated) onUpdate,
-  ) {
+    void Function(List<Track> updated) onUpdate, {
+    bool Function()? isCancelled,
+  }) {
     final mutable = List<Track>.of(tracks);
-    unawaited(_enrichArtworks(mutable, onUpdate));
+    unawaited(_enrichArtworks(mutable, onUpdate, isCancelled));
   }
 
   /// Приоритетный индекс: треки переставляются так, чтобы первые N
@@ -1160,6 +1347,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   Future<void> _enrichArtworks(
     List<Track> tracks, [
     void Function(List<Track> updated)? onUpdate,
+    bool Function()? isCancelled,
   ]) async {
     const concurrency = 6;
     // Треки папки-альбома делят одну обложку: ищем по первому треку папки
@@ -1200,6 +1388,9 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
     Future<void> worker() async {
       while (true) {
+        // Поиск сменился — не занимаем общую очередь ArtworkProvider
+        // обложками выдачи, которую уже никто не увидит.
+        if (isCancelled?.call() ?? false) return;
         final i = pos++;
         if (i >= order.length) return;
         final idx = order[i];
@@ -1214,9 +1405,10 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
           continue;
         }
         try {
+          final q = artworkQuery(t);
           final url = await ArtworkProvider.instance
-              .findArtwork(t.artist, t.title)
-              .timeout(const Duration(seconds: 4));
+              .findArtwork(q.artist, q.title)
+              .timeout(ArtworkProvider.enrichLookupTimeout);
           if (url != null && url.isNotEmpty) {
             apply(idx, url);
             scheduleNotify();
@@ -1576,13 +1768,47 @@ class _SearchRun {
   }
 }
 
+/// Файл трека у конкретного пира: основной источник или запасной из выдачи.
+class _PeerFile {
+  const _PeerFile({
+    required this.peerUsername,
+    required this.remoteFilename,
+    required this.sizeBytes,
+    required this.cacheKey,
+    this.hasFreeUploadSlot = false,
+    this.queueLength = 0,
+  });
+
+  /// null у треков из кэша без данных пира: их можно только сыграть из кэша.
+  final String? peerUsername;
+  final String? remoteFilename;
+  final int sizeBytes;
+  final String cacheKey;
+  final bool hasFreeUploadSlot;
+  final int queueLength;
+
+  String get downloadId => 'dl_$cacheKey';
+}
+
 /// Сворачиваемая группа одинаковых файлов: первый пришедший (лучший в своей
-/// пачке) остаётся представителем, остальные лишь увеличивают [count].
+/// пачке) остаётся представителем, остальные увеличивают [count] и
+/// запоминаются в [alternates] — к ним плеер переключится, если пир
+/// представителя откажет или долго держит в очереди.
 class _ResultGroup {
   _ResultGroup(this.representative);
 
   final SoulseekSearchResult representative;
   int count = 1;
+  final alternates = <SoulseekSearchResult>[];
+
+  /// Запоминает копию файла у другого пира (не больше
+  /// [SoulseekSource.maxAlternates], по одной на пира).
+  void addAlternate(SoulseekSearchResult r) {
+    if (alternates.length >= SoulseekSource.maxAlternates) return;
+    if (r.username == representative.username) return;
+    if (alternates.any((a) => a.username == r.username)) return;
+    alternates.add(r);
+  }
 }
 
 /// Элемент выдачи: одиночный трек или папка пира (альбом), как в Seeker.
@@ -1629,6 +1855,7 @@ class _SearchAccumulator {
     int peerCount, {
     String? folderKey,
     int folderPeers,
+    List<SoulseekSearchResult> alternates,
   }) toTrack;
 
   final _seenPeerFiles = <String>{};
@@ -1696,6 +1923,19 @@ class _SearchAccumulator {
     final same = _folderBySignature[signature];
     if (same != null) {
       same.folderPeers++;
+      // Та же папка у другого пира: каждый её файл — запасной источник
+      // для трека с тем же именем и размером.
+      for (final r in sorted) {
+        final leaf = SoulseekSource.leafOf(r.filename).toLowerCase();
+        for (final g in same.tracks) {
+          final rep = g.representative;
+          if (rep.sizeBytes == r.sizeBytes &&
+              SoulseekSource.leafOf(rep.filename).toLowerCase() == leaf) {
+            g.addAlternate(r);
+            break;
+          }
+        }
+      }
       return true;
     }
     if (_entries.length >= limit) return false;
@@ -1715,6 +1955,7 @@ class _SearchAccumulator {
         _groupByFile[fileKey] ?? (key == null ? null : _groupByKey[key]);
     if (existing != null) {
       existing.count++;
+      existing.addAlternate(r);
       _groupByFile[fileKey] = existing;
       return true;
     }
@@ -1748,6 +1989,7 @@ class _SearchAccumulator {
               g.count,
               folderKey: e.folderKey,
               folderPeers: e.folderPeers,
+              alternates: g.alternates,
             ),
       ];
 }

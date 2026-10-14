@@ -85,7 +85,10 @@ enum SoulseekTransferState {
         upper.contains('REJECTED')) {
       return SoulseekTransferState.failed;
     }
-    if (upper.contains('TRANSFERRING')) return SoulseekTransferState.downloading;
+    // Soulseek.NET: InProgress (TransferStates); Transferring — старые имена.
+    if (upper.contains('INPROGRESS') || upper.contains('TRANSFERRING')) {
+      return SoulseekTransferState.downloading;
+    }
     if (upper.contains('NEGOTIATING') ||
         upper.contains('INITIALIZING') ||
         upper.contains('INITIALIZED')) {

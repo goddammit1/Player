@@ -3,6 +3,7 @@
 //
 //     Copyright (c) 2021-2026 Jack Bonadies
 //     Modified: added private room operator added/removed event and raised it from the operator message handlers
+//     Modified: unsolicited 'P' ConnectToPeer requests are accepted only during a search or pending transfer, and capped
 //
 //     This program is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU General Public License as published by
@@ -409,6 +410,17 @@ namespace Soulseek.Messaging.Handlers
                             else if (connectToPeerResponse.Type == Constants.ConnectionType.Peer)
                             {
                                 Diagnostic.Debug($"Received message ConnectToPeer request from {connectToPeerResponse.Username} ({connectToPeerResponse.IPEndPoint})");
+
+                                // when we're unreachable (NAT, VPN) every peer that answers a search comes in this way. on popular
+                                // queries thousands keep arriving after the search has already completed, and connecting to each
+                                // one exhausted sockets and crashed the VPN tunnel. connect only while the peer can still deliver
+                                // something we want; PeerConnectionManager caps how many of these connections are open at once.
+                                if (!IsExpectingPeerMessages(connectToPeerResponse.Username))
+                                {
+                                    Diagnostic.Debug($"Ignoring message ConnectToPeer request from {connectToPeerResponse.Username} ({connectToPeerResponse.IPEndPoint}): no active search or transfer");
+                                    break;
+                                }
+
                                 await SoulseekClient.PeerConnectionManager.GetOrAddMessageConnectionAsync(connectToPeerResponse).ConfigureAwait(false);
                             }
                             else if (connectToPeerResponse.Type == Constants.ConnectionType.Distributed)
@@ -588,6 +600,23 @@ namespace Soulseek.Messaging.Handlers
         {
             var code = new MessageReader<MessageCode.Server>(args.Message).ReadCode();
             Diagnostic.Debug($"Server message sent: {code}");
+        }
+
+        /// <summary>
+        ///     Determines whether a peer message connection from the specified <paramref name="username"/> can carry anything
+        ///     we're waiting for: search results while a search is underway, or transfer negotiation for a pending transfer.
+        /// </summary>
+        /// <param name="username">The username of the peer requesting the connection.</param>
+        /// <returns>A value indicating whether the connection should be established.</returns>
+        private bool IsExpectingPeerMessages(string username)
+        {
+            if (SoulseekClient.Searches.Values.Any(s => !s.State.HasFlag(SearchStates.Completed)))
+            {
+                return true;
+            }
+
+            return SoulseekClient.DownloadDictionary.Values.Any(d => d.Username == username)
+                || SoulseekClient.UploadDictionary.Values.Any(u => u.Username == username);
         }
     }
 }

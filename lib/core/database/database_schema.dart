@@ -20,12 +20,13 @@ import 'package:sqflite/sqflite.dart';
 /// | `playlist_covers`   | Пути к кастомным обложкам         |
 /// | `playback_state`    | Сохранённая очередь плеера        |
 /// | `audio_cache_index` | Метаданные треков в аудио-кэше    |
+/// | `soulseek_transfers`, `soulseek_cache_entries` | Загрузки и кэш Soulseek на Windows |
 ///
 /// ВАЖНО: схема и порядок миграций — вне правок. Данный класс только
 /// переносит существующий код из `AppDatabase` без изменения поведения.
 abstract class AppDatabaseSchema {
   static const String dbName = 'player_data.db';
-  static const int dbVersion = 6;
+  static const int dbVersion = 7;
 
   /// Создает все таблицы (вызывается sqflite при создании нового файла).
   static Future<void> create(Database db, int version) async {
@@ -127,6 +128,7 @@ abstract class AppDatabaseSchema {
     );
 
     await createAudioCacheIndex(db);
+    await createSoulseekTables(db);
   }
 
   /// Индекс метаданных аудио-кэша (`yt_audio_cache`): по имени файла
@@ -147,6 +149,53 @@ abstract class AppDatabaseSchema {
         quality_label TEXT,
         cached_at_ms INTEGER NOT NULL
       )
+    ''');
+  }
+
+  /// Загрузки и кэш Soulseek на Windows (на Android они в нативной
+  /// soulseek.db — SoulseekDatabase.kt; схема повторяет её).
+  static Future<void> createSoulseekTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS soulseek_transfers (
+        download_id TEXT PRIMARY KEY,
+        cache_key TEXT NOT NULL,
+        peer_username TEXT NOT NULL,
+        remote_filename TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        bytes_received INTEGER NOT NULL DEFAULT 0,
+        local_path TEXT,
+        file_extension TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        title TEXT,
+        artist TEXT,
+        duration_seconds INTEGER,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_soulseek_transfers_cache_key
+      ON soulseek_transfers(cache_key)
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS soulseek_cache_entries (
+        cache_key TEXT PRIMARY KEY,
+        local_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        extension TEXT,
+        complete INTEGER NOT NULL DEFAULT 0,
+        last_access_at_ms INTEGER NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        title TEXT,
+        artist TEXT,
+        duration_seconds INTEGER,
+        cached_at_ms INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_soulseek_cache_last_access
+      ON soulseek_cache_entries(last_access_at_ms)
     ''');
   }
 
@@ -199,6 +248,10 @@ abstract class AppDatabaseSchema {
       // кэшированных треков. Уже лежащие в кэше файлы индекса не имеют —
       // их метаданные ищутся по плейлистам/истории при открытии списка.
       await createAudioCacheIndex(db);
+    }
+    if (oldVersion < 7) {
+      // v6 → v7: загрузки и кэш Soulseek на Windows (мост внутри процесса).
+      await createSoulseekTables(db);
     }
   }
 }

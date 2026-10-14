@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Мост Soulseek для Windows: CoreCLR внутри player.exe (Dart поднимает
+       runtime через hostfxr и вызывает экспорты NativeExports). Self-contained:
+       runtime едет рядом с приложением, установленный .NET не нужен.
+       Публикация: CMake-шаг soulseek_bridge (windows/CMakeLists.txt). -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <!-- Exe + self-contained: hostfxr_initialize_for_dotnet_command_line поднимает
+         runtime из папки приложения; Main не вызывается. -->
+    <OutputType>Exe</OutputType>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <UseAppHost>true</UseAppHost>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>soulseek-desktop</AssemblyName>
+    <RootNamespace>Soulseek.Wrapper</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>1701;1702;1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ядро моста общее с Android-сборкой (там — форк Seeker и SEEKER_FORK). -->
+    <Compile Include="..\SoulseekBridgeCore.cs" Link="SoulseekBridgeCore.cs" />
+    <Compile Include="..\SoulseekDtos.cs" Link="SoulseekDtos.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Оригинальная библиотека без изменений (как в slskd). -->
+    <PackageReference Include="Soulseek" Version="10.0.2" />
+  </ItemGroup>
+
+</Project>

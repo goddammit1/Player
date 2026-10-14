@@ -1,6 +1,8 @@
 ﻿// <copyright file="PeerMessageHandler.cs" company="JP Dillingham">
 //     Copyright (c) JP Dillingham.
 //
+//     Modified: unsolicited connections are closed once they have delivered a search response
+//
 //     This program is free software: you can redistribute it and/or modify
 //     it under the terms of the GNU General Public License as published by
 //     the Free Software Foundation, version 3.
@@ -31,6 +33,7 @@ namespace Soulseek.Messaging.Handlers
     using Soulseek.Diagnostics;
     using Soulseek.Messaging.Messages;
     using Soulseek.Network;
+    using Soulseek.Network.Tcp;
 
     /// <summary>
     ///     Handles incoming messages from peer connections.
@@ -101,6 +104,17 @@ namespace Soulseek.Messaging.Handlers
                         if (SoulseekClient.Searches.TryGetValue(searchResponse.Token, out var search))
                         {
                             search.TryAddResponse(searchResponse);
+                        }
+
+                        // a connection the peer requested via the server ('P' ConnectToPeer) exists only to deliver this
+                        // response. left open it would idle until the inactivity timeout and hold one of the capped slots
+                        // in PeerConnectionManager, so close it unless we're transferring with the peer.
+                        if (connection.Type.HasFlag(ConnectionTypes.Inbound)
+                            && connection.Type.HasFlag(ConnectionTypes.Indirect)
+                            && !SoulseekClient.DownloadDictionary.Values.Any(d => d.Username == connection.Username)
+                            && !SoulseekClient.UploadDictionary.Values.Any(u => u.Username == connection.Username))
+                        {
+                            connection.Disconnect("Search response received");
                         }
 
                         break;

@@ -80,6 +80,9 @@ class _FakeChannel implements SoulseekChannel {
   @override
   Stream<SoulseekTransferEvent> get transferEvents =>
       const Stream<SoulseekTransferEvent>.empty();
+
+  @override
+  Future<bool> cancelDownload(String downloadId) async => true;
 }
 
 void main() {

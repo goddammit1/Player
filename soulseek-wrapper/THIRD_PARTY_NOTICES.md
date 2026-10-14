@@ -24,6 +24,27 @@ SPDX-License-Identifier: GPL-3.0-only
 
 ---
 
+## Windows build (soulseek/ folder next to player.exe)
+
+The Windows build uses the **unmodified** Soulseek.NET 10.0.2 from NuGet
+(package `Soulseek`, https://www.nuget.org/packages/Soulseek/10.0.2), hosted
+in-process together with a self-contained .NET 9 runtime. The SeekerAndroid
+modifications described below apply to the Android build only.
+
+- `LICENSE.Soulseek.NET.txt` — GPLv3 with Additional Terms pursuant to
+  Section 7 of the GPLv3, as shipped in the NuGet package.
+- `NOTICE.Soulseek.NET.txt` — the NOTICE shipped in the NuGet package.
+- Client minor version reported to the Soulseek network: `9100330`
+  (unique to this application; 760–7699999 is reserved for slskd).
+
+## .NET runtime (Windows build)
+
+- **Project:** .NET 9 (Microsoft.NETCore.App, self-contained)
+- **License:** MIT
+- **Source:** https://github.com/dotnet/runtime
+
+---
+
 ## SeekerAndroid (modifications to Soulseek.NET)
 
 - **Project:** SeekerAndroid
@@ -82,5 +103,7 @@ SPDX-License-Identifier: GPL-3.0-only
 
 ## License Summary
 
-The `soulseek-wrapper` project and the bundled (modified) Soulseek.NET are
-licensed under **GPL-3.0-only**. See `LICENSE` for the full text.
+The `soulseek-wrapper` project and the bundled (modified, Android) Soulseek.NET
+are licensed under **GPL-3.0-only**. See `LICENSE` for the full text. The
+Windows build ships the unmodified Soulseek.NET under GPLv3 with Additional
+Terms (`LICENSE.Soulseek.NET.txt`).

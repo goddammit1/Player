@@ -106,7 +106,7 @@ object BridgeStateMapper {
         if (raw.contains("TimedOut") || raw.contains("Errored") || raw.contains("Rejected")) {
             return TransferState.FAILED
         }
-        if (raw.contains("Transferring")) return TransferState.DOWNLOADING
+        if (raw.contains("InProgress") || raw.contains("Transferring")) return TransferState.DOWNLOADING
         if (raw.contains("Negotiating") || raw.contains("Initializing") || raw.contains("Initialized")) {
             return TransferState.CONNECTING
         }

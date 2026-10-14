@@ -1,6 +1,6 @@
 // <copyright file="SoulseekDtos.cs">
-//   Фаза 1 — .NET wrapper для Soulseek (Android AAR).
-//   DTO классы для JSON-маршалинга между C# bridge и Kotlin/Flutter.
+//   .NET wrapper для Soulseek (Android AAR и Windows DLL).
+//   DTO классы для JSON-маршалинга между C# bridge и Kotlin/Dart.
 //   Аудиобайты никогда не проходят через эти DTO — только метаданные и команды.
 // </copyright>
 
@@ -197,6 +197,13 @@ namespace Soulseek.Wrapper
         /// <summary>Финальное расширение файла (например "flac"), добавляется при atomic rename.</summary>
         [JsonPropertyName("fileExtension")]
         public string FileExtension { get; set; }
+
+        /// <summary>
+        ///   Необязательный абсолютный путь .part (десктоп: каталог недокачанных).
+        ///   Не задан — &lt;localDirectory&gt;/&lt;cacheKey&gt;.part (Android).
+        /// </summary>
+        [JsonPropertyName("partPath")]
+        public string PartPath { get; set; }
     }
 
     /// <summary>

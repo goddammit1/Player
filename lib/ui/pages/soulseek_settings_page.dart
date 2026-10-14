@@ -8,7 +8,8 @@
 //  - Карточки через Container с colors.elevated + outline
 //  - Анимация появления через _AppearingPageAnimator
 //
-// Только для Android: на других платформах показывается заглушка.
+// Android и Windows (мост внутри процесса); на других платформах и в
+// Windows-сборке без моста показывается заглушка.
 // Пароль хранится в secure storage (SoulseekCredentials) и НЕ показывается
 // в plain text по умолчанию.
 //
@@ -593,7 +594,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Soulseek is only available on Android',
+              defaultTargetPlatform == TargetPlatform.windows
+                  ? 'Soulseek components are missing'
+                  : 'Soulseek is only available on Android',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colors.textSecondary,
@@ -603,8 +606,11 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             ),
             const SizedBox(height: 8),
             Text(
-              'This feature requires the native Soulseek plugin '
-              'which runs only on Android devices.',
+              defaultTargetPlatform == TargetPlatform.windows
+                  ? 'The soulseek folder was not found next to the app. '
+                      'Build the app with tools/build_windows.ps1.'
+                  : 'This feature requires the native Soulseek plugin '
+                      'which runs only on Android and Windows.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: colors.textTertiary,
@@ -1530,12 +1536,20 @@ class _ActionButton extends StatelessWidget {
             children: [
               Icon(icon, color: fgColor, size: 20),
               const SizedBox(width: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: fgColor,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
+              // В узкой кнопке (две в ряд на телефоне) подпись не влезала
+              // на пару пикселей — RenderFlex overflow. Слегка ужимаем.
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    style: TextStyle(
+                      color: fgColor,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
             ],

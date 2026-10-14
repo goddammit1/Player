@@ -1,23 +1,26 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'core/database/app_database.dart';
 import 'core/artwork_helper.dart';
+import 'core/platform/app_paths.dart';
 import 'core/platform/haptic_helper.dart';
 import 'core/repositories/history_repository.dart';
 import 'core/platform/player_service_factory.dart';
+import 'core/platform/windows_data_migration.dart';
 import 'core/backup/playlist_backup.dart';
 import 'core/repositories/playlist_repository.dart';
 import 'core/providers.dart';
 import 'core/soulseek_settings_repository.dart';
 import 'core/youtube_cache.dart';
+import 'sources/soulseek_desktop/soulseek_desktop_channel.dart';
 import 'sources/soulseek_source.dart';
 import 'sources/source_registry.dart';
 import 'core/notifications/playlist_cache_notifier.dart';
@@ -46,6 +49,12 @@ Future<void> main() async {
         databaseFactory = databaseFactoryFfi;
       }
       // ==========================================================
+
+      // === WINDOWS: ПЕРЕНОС ДАННЫХ СО СТАРЫХ ПУТЕЙ (этап 4.1) ===
+      // БД и кастомные обложки — из «Документов» в %APPDATA%, аудиокэш —
+      // из %TEMP% в %LOCALAPPDATA%. До первого обращения к БД и кэшу.
+      await WindowsDataMigration.runOnStartup();
+      // =========================================================
 
       await ArtworkHelper.init();
 
@@ -81,7 +90,7 @@ Future<void> main() async {
 
       // === АВТО-ВОССТАНОВЛЕНИЕ ИЗ ПОЛНОГО БЭКАПА ===
       // Если БД пуста (первый запуск после переустановки), ищем
-      // player_full_backup_*.json в документах приложения и предлагаем
+      // player_full_backup_*.json в каталоге данных приложения и предлагаем
       // восстановить все данные одним нажатием.
       await _autoRestoreBackupIfNeeded();
       // =============================================
@@ -121,9 +130,10 @@ Future<void> main() async {
       // Проталкиваем listen port / лимит кэша / параллелизм / username
       // из Dart-БД в нативную soulseek.db (без старта сервиса), чтобы
       // foreground service при следующем запуске работал со значениями
-      // из UI. Не блокируем старт: fire-and-forget, ошибки глотаются
+      // из UI. На Windows — в DesktopSoulseekChannel (в памяти, мост не
+      // поднимается). Не блокируем старт: fire-and-forget, ошибки глотаются
       // внутри syncToNative.
-      if (Platform.isAndroid) {
+      if (Platform.isAndroid || Platform.isWindows) {
         unawaited(SoulseekSettingsRepository.instance.syncToNative());
       }
       // ==================================================
@@ -133,8 +143,9 @@ Future<void> main() async {
       }
 
       // === ИНИЦИАЛИЗАЦИЯ ПЛЕЕРА (платформозависимость вынесена) ===
-      // Выбор PlayerService (mobile: audio_service) vs DesktopPlayerService
-      // (desktop: just_audio) инкапсулирован в PlayerServiceFactory.
+      // Выбор PlayerService (mobile: audio_service + just_audio) vs
+      // DesktopPlayerService (desktop: media_kit) инкапсулирован в
+      // PlayerServiceFactory.
       final playerService = await PlayerServiceFactory.create();
       // =============================================================
 
@@ -148,13 +159,6 @@ Future<void> main() async {
       );
     },
     (Object error, StackTrace stack) {
-      // Windows: LockCachingAudioSource (just_audio) не может переименовать
-      // .part → final, пока just_audio_windows держит файл открытым
-      // (errno=32). Это безвредный шум — воспроизведение продолжается.
-      if (error is PathAccessException) {
-        debugPrint('[Cache] rename skipped, file in use: $error');
-        return;
-      }
       debugPrint('[UncaughtZoneError] $error\n$stack');
     },
   );
@@ -223,7 +227,8 @@ Future<void> _applySoulseekSettingsOnStartup() async {
 }
 
 /// При первом запуске после переустановки (или чистой установки)
-/// проверяет, есть ли в каталоге документов приложения файлы
+/// проверяет, есть ли в каталоге данных приложения ([AppPaths.dataDir];
+/// на Windows — ещё и в прежних «Документах») файлы
 /// `player_full_backup_*.json`. Если БД пуста и файл найден — предлагает
 /// восстановить все данные из бэкапа одним нажатием.
 ///
@@ -240,16 +245,19 @@ Future<void> _autoRestoreBackupIfNeeded() async {
   if (!isEmpty) return;
 
   try {
-    final dir = await getApplicationDocumentsDirectory();
-    final files = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) {
-          final name = f.uri.pathSegments.lastOrNull ?? '';
-          return name.startsWith('player_full_backup_') &&
-              name.endsWith('.json');
-        })
-        .toList();
+    final dirs = [
+      await AppPaths.dataDir(),
+      if (Platform.isWindows) await AppPaths.legacyWindowsDataDir(),
+    ];
+    final files = <File>[
+      for (final dir in dirs)
+        if (dir.existsSync())
+          ...dir.listSync().whereType<File>().where((f) {
+            final name = f.uri.pathSegments.lastOrNull ?? '';
+            return name.startsWith('player_full_backup_') &&
+                name.endsWith('.json');
+          }),
+    ];
 
     if (files.isEmpty) return;
 
@@ -306,6 +314,29 @@ class _SessionAutoSaveState extends State<_SessionAutoSave>
         // Провайдер может быть не готов — игнорируем.
       }
     }
+  }
+
+  /// Десктоп: закрытие окна. Lifecycle-события до выхода процесса не
+  /// доходят, поэтому дожидаемся записи сессии и только потом разрешаем
+  /// выход.
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    try {
+      await ProviderScope.containerOf(context, listen: false)
+          .read(playerServiceProvider)
+          .saveSession()
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Не держим окно открытым из-за ошибки сохранения.
+    }
+    // Soulseek: загрузки встают на паузу (resume после перезапуска),
+    // клиент закрывает соединения.
+    try {
+      await DesktopSoulseekChannel.instance
+          .shutdown()
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    return AppExitResponse.exit;
   }
 
   @override
