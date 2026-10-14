@@ -1,9 +1,9 @@
 // lib/ui/pages/about_page.dart
 //
 // Страница-раздел «About»: версия приложения (PackageInfo) и проверка
-// обновлений на GitHub (только на мобильных — на десктопе пункт не
-// показывается, т.к. GitHub-релизы содержат APK). Логика перенесена без
-// изменений из модальной шторки settings_page.dart.
+// обновлений на GitHub (Android — APK, Windows — zip; на прочих десктопах
+// пункт не показывается). Логика перенесена без изменений из модальной
+// шторки settings_page.dart.
 // Открывается через Navigator.push из страницы настроек.
 
 import 'dart:io';
@@ -102,12 +102,12 @@ class AboutPage extends ConsumerWidget {
                                   ),
                                 ),
                               ),
-                              // Проверка обновлений работает только на
-                              // мобильных: GitHub-релизы содержат APK, а
-                              // in-app установка доступна лишь на Android.
-                              // На десктопе пункт бесполезен (и бросил бы
-                              // UnsupportedError).
-                              if (Platform.isAndroid || Platform.isIOS)
+                              // Проверка обновлений: GitHub-релизы содержат
+                              // APK (Android) и zip (Windows). На других
+                              // десктопах пакета нет — пункт скрыт.
+                              if (Platform.isAndroid ||
+                                  Platform.isIOS ||
+                                  Platform.isWindows)
                                 ListTile(
                                   leading: Icon(
                                     Icons.system_update_alt_rounded,

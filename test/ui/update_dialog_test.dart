@@ -24,7 +24,7 @@ AppRelease _release(String version) => AppRelease(
       version: version,
       name: 'Player $version',
       notes: '- Soulseek integration\n- Cache improvements',
-      apkUrl: 'https://example.com/app-release.apk',
+      assetUrl: 'https://example.com/app-release.apk',
       pageUrl: 'https://example.com/release',
     );
 

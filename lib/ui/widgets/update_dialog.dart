@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../core/update_service.dart';
+import '../../core/windows_update_installer.dart';
 
 /// Запускает полный флоу проверки обновлений. [checkOverride] подменяет
 /// обращение к GitHub API — используется в тестах для доставки
@@ -106,11 +109,26 @@ class _UpdateDialog extends StatefulWidget {
   final UpdateCheckResult result;
   final dynamic colors;
 
+  /// Windows: zip поверх папки приложения и перезапуск вместо системного
+  /// установщика APK.
+  static bool get windowsFlow => Platform.isWindows;
+
   @override
   State<_UpdateDialog> createState() => _UpdateDialogState();
 }
 
-enum _Phase { idle, downloading, readyToInstall, installing }
+enum _Phase {
+  idle,
+  downloading,
+  readyToInstall,
+  installing,
+
+  /// Windows: скрипт замены запущен, приложение закрывается.
+  restarting,
+
+  /// Windows: папка приложения недоступна на запись.
+  manualRequired,
+}
 
 class _UpdateDialogState extends State<_UpdateDialog> {
   _Phase _phase = _Phase.idle;
@@ -118,7 +136,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   String? _apkPath;
 
   bool get _busy =>
-      _phase == _Phase.downloading || _phase == _Phase.installing;
+      _phase == _Phase.downloading ||
+      _phase == _Phase.installing ||
+      _phase == _Phase.restarting;
 
   void _showError(Object error) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -169,6 +189,14 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     try {
       final outcome = await UpdateService.install(path);
       if (!mounted) return;
+      if (outcome == InstallOutcome.restarting) {
+        setState(() => _phase = _Phase.restarting);
+        return;
+      }
+      if (outcome == InstallOutcome.manualRequired) {
+        setState(() => _phase = _Phase.manualRequired);
+        return;
+      }
       // В обоих случаях возвращаемся в readyToInstall: либо система
       // открыла установщик, либо увела в настройки за разрешением.
       // APK уже скачан, повторное скачивание не нужно.
@@ -194,13 +222,28 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         : release.notes;
 
     final isBeta = release.isBeta;
+    final windows = _UpdateDialog.windowsFlow;
     final readyToInstall = _phase == _Phase.readyToInstall;
-    final actionLabel = readyToInstall
-        ? (isBeta ? 'Установить (бета)' : 'Установить')
-        : (isBeta ? 'Скачать и установить (бета)' : 'Скачать и установить');
-    final actionIcon = readyToInstall
-        ? Icons.install_mobile_rounded
-        : Icons.download_rounded;
+    final manual = _phase == _Phase.manualRequired;
+    final actionLabel = manual
+        ? 'Открыть страницу релиза'
+        : readyToInstall
+            ? (isBeta ? 'Установить (бета)' : 'Установить')
+            : (isBeta
+                ? 'Скачать и установить (бета)'
+                : 'Скачать и установить');
+    final actionIcon = manual
+        ? Icons.open_in_new_rounded
+        : readyToInstall
+            ? (windows
+                ? Icons.restart_alt_rounded
+                : Icons.install_mobile_rounded)
+            : Icons.download_rounded;
+    final VoidCallback? action = _busy
+        ? null
+        : manual
+            ? () => WindowsUpdateInstaller.openInBrowser(release.pageUrl)
+            : (readyToInstall ? _install : _download);
 
     return AlertDialog(
       backgroundColor: colors.elevated,
@@ -258,14 +301,31 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             ] else if (readyToInstall) ...[
               const SizedBox(height: 16),
               Text(
-                'Загружено. Если установщик не открылся — разрешите установку '
-                'из этого источника и нажмите «Установить».',
+                windows
+                    ? 'Загружено. Нажмите «Установить» — приложение '
+                        'закроется и перезапустится обновлённым.'
+                    : 'Загружено. Если установщик не открылся — разрешите '
+                        'установку из этого источника и нажмите «Установить».',
                 style: TextStyle(color: colors.textTertiary, fontSize: 12),
               ),
             ] else if (_phase == _Phase.installing) ...[
               const SizedBox(height: 16),
               Text(
-                'Открываю установщик…',
+                windows ? 'Распаковываю обновление…' : 'Открываю установщик…',
+                style: TextStyle(color: colors.textTertiary, fontSize: 12),
+              ),
+            ] else if (_phase == _Phase.restarting) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Перезапуск…',
+                style: TextStyle(color: colors.textTertiary, fontSize: 12),
+              ),
+            ] else if (manual) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Нет прав на запись в папку приложения. Скачайте '
+                '${UpdateService.windowsAssetName} со страницы релиза и '
+                'распакуйте поверх установленной версии.',
                 style: TextStyle(color: colors.textTertiary, fontSize: 12),
               ),
             ],
@@ -278,7 +338,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           child: const Text('Later'),
         ),
         FilledButton.icon(
-          onPressed: _busy ? null : (readyToInstall ? _install : _download),
+          onPressed: action,
           icon: Icon(actionIcon),
           label: Text(actionLabel),
         ),
