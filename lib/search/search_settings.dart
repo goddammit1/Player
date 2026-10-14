@@ -68,6 +68,13 @@ class SearchHistoryNotifier extends StateNotifier<List<String>> {
     _ready = _load();
   }
 
+  /// Тестовый конструктор: состояние [initial] без чтения БД (sqflite в
+  /// widget-тестах виснет в FakeAsync-зоне).
+  @visibleForTesting
+  SearchHistoryNotifier.seeded(super.initial) {
+    _ready = Future<void>.value();
+  }
+
   @visibleForTesting
   Future<void> get ready => _ready;
   late final Future<void> _ready;
@@ -92,6 +99,10 @@ class SearchHistoryNotifier extends StateNotifier<List<String>> {
   Future<void> remove(String query) async {
     state = state.where((e) => e != query).toList();
     await AppDatabase.instance.removeSearchQuery(query);
+    // addSearchQuery пишет ключ в нижнем регистре, а в state до рестарта
+    // лежит исходный ввод — без этого запись возвращалась после рестарта.
+    final lower = query.toLowerCase();
+    if (lower != query) await AppDatabase.instance.removeSearchQuery(lower);
   }
 
   Future<void> clear() async {

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/artwork_helper.dart';
+import '../../core/artwork_image_provider.dart';
 import '../../core/providers.dart';
 import '../../sources/artwork_provider.dart';
 
@@ -239,10 +240,8 @@ class _CroppedImage extends StatelessWidget {
     final cacheWidth = (cacheSize * aspectRatio).round();
     final cacheHeight = cacheSize;
 
-    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
-    final filePath = url.startsWith('file://')
-        ? Uri.parse(url).toFilePath()
-        : url;
+    final isLocalFile = isLocalArtworkUrl(url);
+    final filePath = localArtworkPath(url);
 
     // Генерируем ключ на основе даты модификации файла для сброса кеша визуала
     Key? imageKey;
@@ -443,11 +442,8 @@ class _Tile extends StatelessWidget {
       return Container(color: colors.elevatedVariant);
     }
 
-    final isLocalFile =
-        effectiveUrl.startsWith('/') || effectiveUrl.startsWith('file://');
-    final filePath = effectiveUrl.startsWith('file://')
-        ? Uri.parse(effectiveUrl).toFilePath()
-        : effectiveUrl;
+    final isLocalFile = isLocalArtworkUrl(effectiveUrl);
+    final filePath = localArtworkPath(effectiveUrl);
 
     final aspectRatio = urlAspectRatio(effectiveUrl);
     final imageWidth = size * aspectRatio;

@@ -43,6 +43,80 @@ class ArtworkProvider {
   final Map<String, DateTime> _memStamp = {};
   final Map<String, Future<String?>> _inFlight = {};
 
+  /// Общий лимит одновременных HTTP-запросов к Genius/iTunes.
+  ///
+  /// Источники обогащают выдачу каждый своим пулом воркеров, а потоковый
+  /// Soulseek запускает новый пул на каждый снимок выдачи — без общего
+  /// лимита на телефоне (LTE + VPN) набиралось до 61 параллельного запроса,
+  /// и они пачками падали по connect timeout.
+  static const int maxConcurrentRequests = 6;
+  final _RequestSlots _requestSlots = _RequestSlots(maxConcurrentRequests);
+
+  /// Ключи (artist|title), которые сейчас ждёт приоритетный вызов
+  /// ([runPrioritized]), со счётчиком вызовов. Запросы по этим ключам
+  /// проходят очередь [_requestSlots] первыми — в т.ч. уже стоящие в ней
+  /// фоновые запросы, к которым приоритетный вызов присоединился через
+  /// [_inFlight].
+  final Map<String, int> _priorityKeys = {};
+
+  static final Object _priorityZoneKey = Object();
+
+  /// Выполняет [body] так, что все вызовы [findArtwork] внутри него
+  /// (включая сделанные через `TrackSource.resolveArtwork`) обходят очередь
+  /// фонового обогащения. Для обложки текущего трека плеера.
+  static Future<T> runPrioritized<T>(Future<T> Function() body) =>
+      runZoned(body, zoneValues: {_priorityZoneKey: true});
+
+  /// Паузы перед повторами после сетевой ошибки (таймаут/обрыв). Без
+  /// повтора трек в выдаче оставался без обложки до нового поиска: ошибка
+  /// не кэшируется, но поиск второй раз обложку этого трека не запрашивает.
+  /// Страховочный таймаут одного [findArtwork] при фоновом обогащении
+  /// выдачи. Не 4 с, как раньше: вызов может постоять в очереди
+  /// [_requestSlots] и переждать повторы [networkRetryDelays], а каждый
+  /// HTTP-запрос и так ограничен таймаутами Dio.
+  static const Duration enrichLookupTimeout = Duration(seconds: 45);
+
+  /// Сколько отказов iTunes (403/429) подряд отключают его на
+  /// [itunesCooldown]. iTunes режет общие выходные IP (VPN): на телефоне
+  /// ~90% ответов были 403/429, и эти запросы впустую занимали ~20% слотов
+  /// очереди [_requestSlots].
+  static const int itunesRejectThreshold = 3;
+  static const Duration itunesCooldown = Duration(minutes: 10);
+  int _itunesRejects = 0;
+  DateTime? _itunesBlockedUntil;
+
+  /// iTunes не отключён после серии отказов (см. [itunesRejectThreshold]).
+  bool get isItunesAvailable {
+    final until = _itunesBlockedUntil;
+    return until == null || DateTime.now().isAfter(until);
+  }
+
+  void _recordItunesStatus(int status) {
+    if (status != 403 && status != 429) {
+      _itunesRejects = 0;
+      return;
+    }
+    if (++_itunesRejects < itunesRejectThreshold) return;
+    _itunesRejects = 0;
+    _itunesBlockedUntil = DateTime.now().add(itunesCooldown);
+    debugPrint(
+      '[ArtworkProvider] iTunes HTTP $status ×$itunesRejectThreshold подряд — '
+      'отключён на ${itunesCooldown.inMinutes} мин.',
+    );
+  }
+
+  @visibleForTesting
+  void resetItunesAvailability() {
+    _itunesRejects = 0;
+    _itunesBlockedUntil = null;
+  }
+
+  @visibleForTesting
+  static List<Duration> networkRetryDelays = const [
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+  ];
+
   // -------------------------------------------------------------------
   //  Тестовые хуки: подменяют сетевые источники (Genius/iTunes) без HTTP.
   // -------------------------------------------------------------------
@@ -62,6 +136,12 @@ class ArtworkProvider {
   @visibleForTesting
   Future<String?> Function(String artist, String title, int preferredSize)?
       itunesFetcherOverride;
+
+  /// Низкоуровневый хук HTTP-вызова iTunes Search (получает готовый `term`,
+  /// возвращает (status, data)) — как [geniusSearchOverride].
+  @visibleForTesting
+  Future<(int status, Map<String, dynamic>? data)> Function(String term)?
+      itunesSearchOverride;
 
   /// Сбрасывает in-memory кэш URL обложек, заставляя [findArtwork]
   /// перечитать SQLite и/или перезапросить сеть при следующем вызове.
@@ -472,23 +552,50 @@ class ArtworkProvider {
     } catch (_) {}
 
     // ---- 3. Сеть (только если свежего значения нет) ----
-    final existing = _inFlight[key];
-    if (existing != null) return existing;
-
-    _logTokenStatusOnce();
-
-    final future = _findArtworkNetwork(
-      artist,
-      title,
-      key,
-      preferredSize,
-      staleFallback: staleFallback,
-    );
-    _inFlight[key] = future;
+    final priority = Zone.current[_priorityZoneKey] == true;
+    if (priority) _priorityKeys[key] = (_priorityKeys[key] ?? 0) + 1;
     try {
-      return await future;
+      final existing = _inFlight[key];
+      if (existing != null) return await existing;
+
+      _logTokenStatusOnce();
+
+      final future = _findArtworkNetwork(
+        artist,
+        title,
+        key,
+        preferredSize,
+        staleFallback: staleFallback,
+      );
+      _inFlight[key] = future;
+      try {
+        return await future;
+      } finally {
+        if (identical(_inFlight[key], future)) _inFlight.remove(key);
+      }
     } finally {
-      _inFlight.remove(key);
+      if (priority) {
+        final left = (_priorityKeys[key] ?? 1) - 1;
+        if (left > 0) {
+          _priorityKeys[key] = left;
+        } else {
+          _priorityKeys.remove(key);
+        }
+      }
+    }
+  }
+
+  /// Выполняет HTTP-запрос [request] в одном из [maxConcurrentRequests]
+  /// слотов; запросы по ключам из [_priorityKeys] идут вне очереди.
+  Future<T> _withRequestSlot<T>(
+    String key,
+    Future<T> Function() request,
+  ) async {
+    await _requestSlots.acquire(() => _priorityKeys.containsKey(key));
+    try {
+      return await request();
+    } finally {
+      _requestSlots.release();
     }
   }
 
@@ -511,52 +618,68 @@ class ArtworkProvider {
     final bool geniusEnabled = _geniusToken.isNotEmpty ||
         geniusFetcherOverride != null ||
         geniusSearchOverride != null;
-    final geniusFuture = geniusEnabled
-        ? _safeFetch(() => _fetchGenius(artist, title, preferredSize))
-        : Future<String?>.value(null);
-    final itunesFuture = _safeFetch(() => _fetchItunes(artist, title, preferredSize));
 
-    // Ждём Genius первым.
-    final geniusResult = await geniusFuture;
+    // Сетевая ошибка (таймаут/обрыв) — повторяем через паузу из
+    // [networkRetryDelays], но только упавший источник: «пусто» от
+    // ответившего источника повтор не изменит.
+    var tryGenius = geniusEnabled;
+    var tryItunes = isItunesAvailable || itunesFetcherOverride != null;
+    var networkError = false;
+    for (var attempt = 0;; attempt++) {
+      final geniusFuture = tryGenius
+          ? _safeFetch(() => _fetchGenius(artist, title, preferredSize, key))
+          : Future<String?>.value(null);
+      final itunesFuture = tryItunes
+          ? _safeFetch(() => _fetchItunes(artist, title, preferredSize, key))
+          : Future<String?>.value(null);
 
-    // Genius дал URL — возвращаем сразу, iTunes не ждём.
-    if (geniusResult != null &&
-        geniusResult.isNotEmpty &&
-        geniusResult != _networkErrorMarker) {
-      _cacheFound(key, geniusResult);
+      // Ждём Genius первым.
+      final geniusResult = await geniusFuture;
+
+      // Genius дал URL — возвращаем сразу, iTunes не ждём.
+      if (geniusResult != null &&
+          geniusResult.isNotEmpty &&
+          geniusResult != _networkErrorMarker) {
+        _cacheFound(key, geniusResult);
+        if (kDebugMode) {
+          debugPrint(
+            '[ArtworkProvider] "$artist - $title" -> GENIUS (early) ($geniusResult)',
+          );
+        }
+        return geniusResult;
+      }
+
+      // Genius не дал URL — ждём iTunes.
+      final itunesResult = await itunesFuture;
+      final geniusError = geniusResult == _networkErrorMarker;
+      final itunesError = itunesResult == _networkErrorMarker;
+
+      final url = (itunesResult != null &&
+              itunesResult.isNotEmpty &&
+              itunesResult != _networkErrorMarker)
+          ? itunesResult
+          : null;
+
+      final found = url != null && url.isNotEmpty;
+      networkError = geniusError || itunesError;
+
       if (kDebugMode) {
         debugPrint(
-          '[ArtworkProvider] "$artist - $title" -> GENIUS (early) ($geniusResult)',
+          '[ArtworkProvider] "$artist - $title" -> '
+          '${found ? 'ITUNES' : (networkError ? 'ERROR' : 'NONE')}'
+          '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
         );
       }
-      return geniusResult;
-    }
 
-    // Genius не дал URL — ждём iTunes.
-    final itunesResult = await itunesFuture;
-    final geniusError = geniusResult == _networkErrorMarker;
-    final itunesError = itunesResult == _networkErrorMarker;
+      if (found) {
+        _cacheFound(key, url);
+        return url;
+      }
 
-    final url = (itunesResult != null &&
-            itunesResult.isNotEmpty &&
-            itunesResult != _networkErrorMarker)
-        ? itunesResult
-        : null;
-
-    final found = url != null && url.isNotEmpty;
-    final networkError = geniusError || itunesError;
-
-    if (kDebugMode) {
-      debugPrint(
-        '[ArtworkProvider] "$artist - $title" -> '
-        '${found ? 'ITUNES' : (networkError ? 'ERROR' : 'NONE')}'
-        '${url != null && url.isNotEmpty ? ' ($url)' : ''}',
-      );
-    }
-
-    if (found) {
-      _cacheFound(key, url);
-      return url;
+      if (!networkError || attempt >= networkRetryDelays.length) break;
+      tryGenius = geniusError;
+      tryItunes = itunesError;
+      await Future<void>.delayed(networkRetryDelays[attempt]);
     }
 
     // Нового URL нет (не найден или сеть недоступна), но в SQLite лежит
@@ -604,7 +727,12 @@ class ArtworkProvider {
   //  Genius
   // ---------------------------------------------------------------------
 
-  Future<String?> _fetchGenius(String artist, String title, int preferredSize) async {
+  Future<String?> _fetchGenius(
+    String artist,
+    String title,
+    int preferredSize,
+    String key,
+  ) async {
     final override = geniusFetcherOverride;
     if (override != null) return override(artist, title, preferredSize);
 
@@ -654,20 +782,21 @@ class ArtworkProvider {
     // обложку версии, у которой нет своей страницы на Genius.
     final hasVersionHints = versionHints.isNotEmpty;
 
-    Future<(int status, Map<String, dynamic>? data)> searchGenius(String q) async {
-      final so = geniusSearchOverride;
-      if (so != null) return so(q);
-      final resp = await _dio.get<dynamic>(
-        'https://api.genius.com/search',
-        // 10 вместо 5: нужная страница (особенно версия трека) чаще попадает
-        // в выдачу, а цена — пара лишних строк в кандидатах.
-        queryParameters: {'q': q, 'per_page': 10},
-        options: Options(
-          headers: {'Authorization': 'Bearer $_geniusToken'},
-        ),
-      );
-      return (resp.statusCode ?? 0, _asMap(resp.data));
-    }
+    Future<(int status, Map<String, dynamic>? data)> searchGenius(String q) =>
+        _withRequestSlot(key, () async {
+          final so = geniusSearchOverride;
+          if (so != null) return so(q);
+          final resp = await _dio.get<dynamic>(
+            'https://api.genius.com/search',
+            // 10 вместо 5: нужная страница (особенно версия трека) чаще
+            // попадает в выдачу, а цена — пара лишних строк в кандидатах.
+            queryParameters: {'q': q, 'per_page': 10},
+            options: Options(
+              headers: {'Authorization': 'Bearer $_geniusToken'},
+            ),
+          );
+          return (resp.statusCode ?? 0, _asMap(resp.data));
+        });
 
     // Нормализация ключа дедупликации: lowercase + схлопывание пробелов.
     String seenKey(String q) =>
@@ -929,7 +1058,12 @@ class ArtworkProvider {
   //  iTunes
   // ---------------------------------------------------------------------
 
-  Future<String?> _fetchItunes(String artist, String title, int preferredSize) async {
+  Future<String?> _fetchItunes(
+    String artist,
+    String title,
+    int preferredSize,
+    String key,
+  ) async {
     final override = itunesFetcherOverride;
     if (override != null) return override(artist, title, preferredSize);
 
@@ -942,14 +1076,25 @@ class ArtworkProvider {
     final cleanArtist = _cleanSearchTerm(artists.firstOrNull ?? artist);
     final term = '$cleanArtist $cleanTitle ${versionHints.join(' ')}'.trim();
 
-    final resp = await _dio.get<dynamic>(
-      'https://itunes.apple.com/search',
-      queryParameters: {'term': term, 'entity': 'song', 'limit': 5},
+    final (int, Map<String, dynamic>?)? response = await _withRequestSlot(
+      key,
+      () async {
+        // Отключение могло сработать, пока запрос ждал в очереди.
+        if (!isItunesAvailable) return null;
+        final so = itunesSearchOverride;
+        if (so != null) return so(term);
+        final resp = await _dio.get<dynamic>(
+          'https://itunes.apple.com/search',
+          queryParameters: {'term': term, 'entity': 'song', 'limit': 5},
+        );
+        return (resp.statusCode ?? 0, _asMap(resp.data));
+      },
     );
+    if (response == null) return null;
+    final (status, data) = response;
+    _recordItunesStatus(status);
 
-    if (resp.statusCode != 200) return null;
-
-    final data = _asMap(resp.data);
+    if (status != 200) return null;
     if (data == null) return null;
 
     final results = (data['results'] as List?) ?? const [];
@@ -990,5 +1135,36 @@ class ArtworkProvider {
     if (raw == null || raw.isEmpty) return '';
 
     return raw.replaceAll('100x100bb', '${preferredSize}x${preferredSize}bb');
+  }
+}
+
+/// Ограничитель одновременных HTTP-запросов с приоритетной очередью: при
+/// освобождении слота первым проходит ждущий, чей `isPriority()` сейчас
+/// true (проверяется в момент освобождения — так фоновый запрос,
+/// к которому позже присоединился плеер, поднимается в очереди).
+class _RequestSlots {
+  _RequestSlots(this._slots);
+
+  final int _slots;
+  int _used = 0;
+  final List<(Completer<void>, bool Function())> _waiters = [];
+
+  Future<void> acquire(bool Function() isPriority) {
+    if (_used < _slots) {
+      _used++;
+      return Future<void>.value();
+    }
+    final completer = Completer<void>();
+    _waiters.add((completer, isPriority));
+    return completer.future;
+  }
+
+  void release() {
+    if (_waiters.isEmpty) {
+      _used--;
+      return;
+    }
+    final i = _waiters.indexWhere((w) => w.$2());
+    _waiters.removeAt(i < 0 ? 0 : i).$1.complete();
   }
 }

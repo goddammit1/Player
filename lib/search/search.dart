@@ -462,15 +462,21 @@ class SearchController extends StateNotifier<SearchState> {
         .toList();
     if (sourceTracksInState.isEmpty) return;
 
+    // Новый поиск останавливает обогащение прежнего: у ArtworkProvider
+    // общая очередь запросов, и хвост старой выдачи задерживал бы новую.
+    bool isCancelled() => _searchGeneration != generation;
+
     if (source is MuzmoSource) {
       source.enrichArtworksInBackground(
         sourceTracksInState,
         _patchResults(query, generation),
+        isCancelled: isCancelled,
       );
     } else if (source is SoundCloudSource) {
       source.enrichArtworksInBackground(
         sourceTracksInState,
         _patchResults(query, generation),
+        isCancelled: isCancelled,
       );
     } else if (source is SoulseekSource) {
       // P5: Soulseek не отдаёт обложки в выдаче — дозаполняем из
@@ -478,6 +484,7 @@ class SearchController extends StateNotifier<SearchState> {
       source.enrichArtworksInBackground(
         sourceTracksInState,
         _patchResults(query, generation),
+        isCancelled: isCancelled,
       );
     }
   }

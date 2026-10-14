@@ -5,8 +5,8 @@ import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import 'database/app_database.dart';
+import 'platform/app_paths.dart';
 
 import '../models/track.dart';
 
@@ -17,19 +17,19 @@ class ArtworkHelper {
   //  TEST HOOKS
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Тестовый хук: подменяет каталог документов приложения, чтобы не
+  /// Тестовый хук: подменяет каталог данных приложения, чтобы не
   /// дёргать path_provider в тестах. После теста вернуть `null`.
   @visibleForTesting
   static void setDocsDirForTesting(Directory? dir) => _docsDirOverride = dir;
 
   static Directory? _docsDirOverride;
 
-  /// Каталог документов приложения (или тестовая подмена из
+  /// Каталог данных приложения [AppPaths.dataDir] (или тестовая подмена из
   /// [setDocsDirForTesting]).
   static Future<Directory> _docsDir() async {
     final override = _docsDirOverride;
     if (override != null) return override;
-    return getApplicationDocumentsDirectory();
+    return AppPaths.dataDir();
   }
 
   /// Выбор изображения для плейлиста (без привязки к trackId)
