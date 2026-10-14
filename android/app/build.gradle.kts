@@ -59,6 +59,11 @@ android {
     }
 
     buildTypes {
+        // Debug ставится рядом с релизом (com.player.player.debug), не
+        // затирая его данные и не конфликтуя по подписи.
+        debug {
+            applicationIdSuffix = ".debug"
+        }
         release {
             // Всегда подписываем постоянным release-ключом.
             // Если key.properties нет — намеренно роняем сборку, чтобы
