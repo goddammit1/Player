@@ -80,7 +80,7 @@ class SoulseekDesktopCache {
     }
     if (!row.complete) return null;
     await store.touchCacheEntry(key, size);
-    return _toEntry(row, size);
+    return _toEntry(row, size, await _remoteFilenameOf(row));
   }
 
   /// Все завершённые записи с файлом на диске, LRU-порядок.
@@ -90,9 +90,39 @@ class SoulseekDesktopCache {
       if (!row.complete) continue;
       final size = await _length(row.localPath);
       if (size == 0) continue;
-      out.add(_toEntry(row, size));
+      out.add(_toEntry(row, size, await _remoteFilenameOf(row)));
     }
     return out;
+  }
+
+  /// Дописывает метаданные записи, у которой их нет (файл докачан без
+  /// title — prefetch и т.п.). Существующий title не перезаписывается.
+  Future<void> fillMissingMetadata(
+    String cacheKey, {
+    String? title,
+    String? artist,
+    int? durationSeconds,
+  }) async {
+    if (title == null || title.trim().isEmpty) return;
+    final key = sanitizeCacheKey(cacheKey);
+    if (key == null) return;
+    final row = await store.cacheEntry(key);
+    if (row == null || (row.title?.trim().isNotEmpty ?? false)) return;
+    await store.upsertCacheEntry(row.copyWith(
+      title: title,
+      artist: artist,
+      durationSeconds: durationSeconds,
+    ));
+  }
+
+  /// Исходный путь файла у пира: название записи без title (сам файл
+  /// назван хэшем cacheKey) и запрос обложки.
+  Future<String?> _remoteFilenameOf(SoulseekCacheRow row) async {
+    try {
+      return await store.remoteFilenameFor(row.cacheKey);
+    } on Object {
+      return null;
+    }
   }
 
   /// Публикует проверенный мостом `.part` как файл кэша и регистрирует его.
@@ -257,7 +287,11 @@ class SoulseekDesktopCache {
     return key;
   }
 
-  static SoulseekCacheEntry _toEntry(SoulseekCacheRow row, int size) =>
+  static SoulseekCacheEntry _toEntry(
+    SoulseekCacheRow row,
+    int size, [
+    String? remoteFilename,
+  ]) =>
       SoulseekCacheEntry(
         cacheKey: row.cacheKey,
         localPath: row.localPath,
@@ -269,6 +303,7 @@ class SoulseekDesktopCache {
         durationSeconds: row.durationSeconds,
         extension: row.extension,
         cachedAt: row.cachedAt,
+        remoteFilename: remoteFilename,
       );
 
   static Future<int> _length(String path) async {

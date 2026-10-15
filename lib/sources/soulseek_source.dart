@@ -719,16 +719,25 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         (entry.extension ?? _extensionFromPath(entry.localPath)) ?? '';
     final label = extension.isNotEmpty ? qualityLabel(extension, null, null, null) : null;
 
+    // Записи без метаданных: название из исходного имени файла у пира —
+    // localPath назван хэшем cacheKey и как название не годится.
+    final remote = entry.remoteFilename;
+    final hasRemote = remote != null && remote.isNotEmpty;
+
     return Track(
       // cacheKey — детерминированный идентификатор файла в нативном кэше.
       id: entry.cacheKey,
       sourceId: sourceId,
       title: (entry.title != null && entry.title!.isNotEmpty)
           ? entry.title!
-          : basenameWithoutExt(entry.localPath),
+          : hasRemote
+              ? extractTitle(remote)
+              : basenameWithoutExt(entry.localPath),
       artist: (entry.artist != null && entry.artist!.isNotEmpty)
           ? entry.artist!
-          : 'Unknown',
+          : hasRemote
+              ? extractArtist(remote)
+              : 'Unknown',
       duration: entry.durationSeconds != null
           ? Duration(seconds: entry.durationSeconds!)
           : null,
@@ -736,6 +745,9 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       extra: <String, dynamic>{
         'cacheKey': entry.cacheKey,
         if (extension.isNotEmpty) 'extension': extension,
+        // Для [artworkQuery]: title/artist выдачи бывают сырыми
+        // («09 Without Me», папка «1-10» вместо исполнителя).
+        if (hasRemote) 'remoteFilename': remote,
       },
     );
   }
@@ -828,6 +840,30 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// Сколько помнить отказ пира: такой источник пробуется последним.
   static const Duration failedSourceTtl = Duration(minutes: 30);
 
+  /// Пауза перед отменой брошенной загрузки: за неё её может подхватить
+  /// новый запрос того же файла (повторный тап по треку).
+  @visibleForTesting
+  Duration abandonedCancelDelay = const Duration(seconds: 2);
+
+  /// Сколько предзагрузка следующего трека может не получить ни байта
+  /// (пир держит файл в очереди), прежде чем её отменят.
+  @visibleForTesting
+  Duration prefetchStartTimeout = const Duration(minutes: 3);
+
+  /// Ожидающий запрос воспроизведения ([createPlaybackSource]).
+  _PlaybackRequest? _playback;
+
+  /// downloadId → сколько ожиданий (воспроизведение, кэширование плейлиста,
+  /// играющий растущий файл) им пользуются. Занятую загрузку не отменяем.
+  final Map<String, int> _claims = {};
+
+  /// Загрузки, запрошенные пользователем («Download»): их не отменяем.
+  final Set<String> _manualDownloads = {};
+
+  /// Текущая предзагрузка следующего трека очереди.
+  String? _queuePrefetchId;
+  Timer? _queuePrefetchTimer;
+
   /// cacheKey файла у пира → когда пир отказал.
   final Map<String, DateTime> _failedSources = {};
 
@@ -845,6 +881,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     'SERVICE_BIND_TIMEOUT',
     'SERVICE_UNAVAILABLE',
     'ClientNotReadyException',
+    'PLAYBACK_SUPERSEDED',
   };
 
   /// Источники файла [track] в порядке попыток: сначала тот, с которого
@@ -856,6 +893,9 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       remoteFilename: track.extra['remoteFilename'] as String?,
       sizeBytes: _asInt(track.extra['sizeBytes']),
       cacheKey: _getOrCreateCacheKey(track),
+      // Треки из старых плейлистов не знают слота — не считаем пира занятым.
+      hasFreeUploadSlot: track.extra['hasFreeUploadSlot'] != false,
+      queueLength: _asInt(track.extra['queueLength']),
     );
 
     final alternates = <(int, _PeerFile)>[];
@@ -915,8 +955,10 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   Future<PlaybackSource> _resolveFromPeers(
     Track track, {
     required bool streaming,
+    _PlaybackRequest? request,
   }) async {
     final sources = _sourcesFor(track);
+    request?.downloadIds.addAll(sources.map((p) => p.downloadId));
     for (final peer in sources) {
       final cachedPath = await _completeCachePath(peer.cacheKey);
       if (cachedPath != null) return LocalFile(cachedPath);
@@ -927,11 +969,13 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       final peer = sources[i];
       final isLast = i == sources.length - 1;
       try {
+        _throwIfSuperseded(request);
         final source = await _downloadFrom(
           track,
           peer,
           streaming: streaming,
           startTimeout: isLast ? null : alternateStartTimeout,
+          request: request,
         );
         _failedSources.remove(peer.cacheKey);
         if (peer.cacheKey == primaryKey) {
@@ -960,6 +1004,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     _PeerFile peer, {
     required bool streaming,
     Duration? startTimeout,
+    _PlaybackRequest? request,
   }) async {
     final result = await _startDownload(track, peer);
     if (result.cacheHit) return LocalFile(result.result);
@@ -976,9 +1021,69 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       result.result,
       partPath,
       startTimeout: startTimeout,
+      request: request,
     );
     if (streaming || source is! GrowingFile) return source;
-    return LocalFile(await source.completion);
+    // Загрузка уже идёт: при смене трека не отменяем (докачается в кэш),
+    // только перестаём ждать.
+    if (request == null) return LocalFile(await source.completion);
+    return LocalFile(await Future.any([
+      source.completion,
+      request.superseded.then<String>((_) => throw _supersededError),
+    ]));
+  }
+
+  static const _supersededError = SoulseekException(
+    'PLAYBACK_SUPERSEDED',
+    'Player switched to another track',
+  );
+
+  void _throwIfSuperseded(_PlaybackRequest? request) {
+    if (request != null && request.isSuperseded) throw _supersededError;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Брошенные загрузки
+  // ═══════════════════════════════════════════════════════════════════
+
+  @override
+  void cancelPendingPlayback() {
+    _playback?.supersede();
+    _playback = null;
+  }
+
+  void _claim(String downloadId) =>
+      _claims[downloadId] = (_claims[downloadId] ?? 0) + 1;
+
+  void _unclaim(String downloadId) {
+    final left = (_claims[downloadId] ?? 0) - 1;
+    if (left > 0) {
+      _claims[downloadId] = left;
+    } else {
+      _claims.remove(downloadId);
+    }
+  }
+
+  /// Отменяет брошенную загрузку, если она никому не нужна: её не ждёт
+  /// другой запрос, не играет плеер, не просил пользователь. Иначе она
+  /// висела бы в очереди у пира, пока тот не начнёт отдавать файл.
+  /// [abandonedBy] — запрос, бросивший загрузку: его собственные источники
+  /// её не защищают.
+  void _cancelIfUnused(String downloadId, {_PlaybackRequest? abandonedBy}) {
+    Timer(abandonedCancelDelay, () {
+      if ((_claims[downloadId] ?? 0) > 0) return;
+      if (_manualDownloads.contains(downloadId)) return;
+      final playback = _playback;
+      if (playback != null &&
+          !identical(playback, abandonedBy) &&
+          playback.downloadIds.contains(downloadId)) {
+        return;
+      }
+      if (kDebugMode) debugPrint('[Soulseek] cancelling unused $downloadId');
+      unawaited(_channel
+          .cancelDownload(downloadId)
+          .then<void>((_) {}, onError: (Object _) {}));
+    });
   }
 
   /// Ждёт завершения загрузки [downloadId] — событие ИЛИ поллинг-fallback.
@@ -1135,7 +1240,19 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
     // 2. Готовый файл из кэша, стриминг из .part во время загрузки или
     //    (стриминг выключен) полный файл — у основного пира или запасных.
-    return _resolveFromPeers(track, streaming: streamingEnabled);
+    //    Плеер играет один трек: новый запрос заменяет прежний.
+    final request = _PlaybackRequest();
+    _playback?.supersede();
+    _playback = request;
+    try {
+      return await _resolveFromPeers(
+        track,
+        streaming: streamingEnabled,
+        request: request,
+      );
+    } finally {
+      if (identical(_playback, request)) _playback = null;
+    }
   }
 
   /// Стриминг: ждёт [streamStartBytes] новых байт в `.part` и отдаёт
@@ -1152,6 +1269,40 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     String downloadId,
     String partPath, {
     Duration? startTimeout,
+    _PlaybackRequest? request,
+  }) async {
+    _claim(downloadId);
+    var streamingStarted = false;
+    try {
+      final source = await _awaitStreamStart(
+        track,
+        peer,
+        downloadId,
+        partPath,
+        startTimeout: startTimeout,
+        request: request,
+      );
+      if (source is GrowingFile) {
+        // Играющий растущий файл держит загрузку до её завершения.
+        streamingStarted = true;
+        unawaited(source.completion.then<void>(
+          (_) => _unclaim(downloadId),
+          onError: (Object _) => _unclaim(downloadId),
+        ));
+      }
+      return source;
+    } finally {
+      if (!streamingStarted) _unclaim(downloadId);
+    }
+  }
+
+  Future<PlaybackSource> _awaitStreamStart(
+    Track track,
+    _PeerFile peer,
+    String downloadId,
+    String partPath, {
+    Duration? startTimeout,
+    _PlaybackRequest? request,
   }) async {
     final sizeBytes = peer.sizeBytes;
     final extension = (track.extra['extension'] as String?) ?? 'dat';
@@ -1186,14 +1337,18 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       final written = await _fileLength(partPath);
       if (written >= threshold) break;
 
+      if (request != null && request.isSuperseded) {
+        // Плеер переключил трек, пока пир держал файл в очереди.
+        if (!abandon.isCompleted) abandon.complete();
+        _cancelIfUnused(downloadId, abandonedBy: request);
+        throw _supersededError;
+      }
+
       if (sw.elapsed >= (startTimeout ?? downloadTimeout)) {
         if (!abandon.isCompleted) abandon.complete();
-        if (startTimeout != null) {
-          // Файл возьмут у другого пира — эта загрузка больше не нужна.
-          unawaited(_channel
-              .cancelDownload(downloadId)
-              .then<void>((_) {}, onError: (Object _) {}));
-        }
+        // Файл возьмут у другого пира (или ждать перестали) — эта загрузка
+        // больше не нужна.
+        _cancelIfUnused(downloadId, abandonedBy: request);
         throw const SoulseekException(
           'DOWNLOAD_TIMEOUT',
           'Download did not start in time',
@@ -1229,7 +1384,15 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// до полного скачивания — просто инициирует загрузку, чтобы к моменту
   /// воспроизведения файл уже был в кэше.
   @override
-  Future<void> prefetch(Track track) async {
+  Future<void> prefetch(Track track) => _prefetch(track, manual: false);
+
+  /// Ручная загрузка («Download»): как [prefetch], но у первого источника
+  /// в порядке попыток (даже если пир держит очередь), и такую загрузку
+  /// не отменяют при смене трека.
+  Future<void> startManualDownload(Track track) =>
+      _prefetch(track, manual: true);
+
+  Future<void> _prefetch(Track track, {required bool manual}) async {
     if (!_channel.isAvailable) return;
 
     final sources = _sourcesFor(track);
@@ -1241,8 +1404,19 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     }
 
     // Качаем у первого по порядку попыток источника: при воспроизведении
-    // createPlaybackSource присоединится к этой загрузке.
-    final peer = sources.first;
+    // createPlaybackSource присоединится к этой загрузке. Прогрев — только
+    // у пира со свободным слотом: из очереди пира файл может не выйти
+    // долго, а прогрев не стоит ожидания.
+    final peer = manual
+        ? sources.first
+        : sources.where((p) => p.hasFreeUploadSlot).firstOrNull;
+    if (peer == null) {
+      if (kDebugMode) {
+        debugPrint('[Soulseek] prefetch skipped: no free upload slot '
+            'for "${track.title}"');
+      }
+      return;
+    }
     final peerUsername = peer.peerUsername;
     final remoteFilename = peer.remoteFilename;
     final sizeBytes = peer.sizeBytes;
@@ -1252,6 +1426,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       return;
     }
 
+    if (manual) _manualDownloads.add(peer.downloadId);
     try {
       await _channel.startDownload(
         downloadId: peer.downloadId,
@@ -1260,13 +1435,49 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         sizeBytes: sizeBytes,
         cacheKey: peer.cacheKey,
         fileExtension: extension,
+        // Без метаданных докачанный prefetch'ем файл попал бы в кэш-лист
+        // под хэш-именем.
+        title: track.title,
+        artist: track.artist,
+        durationSeconds: track.duration?.inSeconds,
       );
       // Не ждём завершения — загрузка идёт в фоне через foreground service.
+      if (!manual) _trackQueuePrefetch(peer.downloadId);
     } on SoulseekException catch (e) {
       if (kDebugMode) debugPrint('[Soulseek] prefetch failed: $e');
     } on UnsupportedError {
       // Не Android — игнорируем.
     }
+  }
+
+  /// Предзагрузка следующего трека не должна висеть вечно: прежнюю, не
+  /// получившую ни байта, отменяем при следующей предзагрузке (очередь
+  /// ушла дальше), а текущую — если за [prefetchStartTimeout] не началась.
+  void _trackQueuePrefetch(String downloadId) {
+    final previous = _queuePrefetchId;
+    _queuePrefetchTimer?.cancel();
+    if (previous != null && previous != downloadId) {
+      unawaited(_cancelStalePrefetch(previous));
+    }
+    _queuePrefetchId = downloadId;
+    _queuePrefetchTimer = Timer(prefetchStartTimeout, () {
+      if (_queuePrefetchId != downloadId) return;
+      _queuePrefetchId = null;
+      unawaited(_cancelStalePrefetch(downloadId));
+    });
+  }
+
+  Future<void> _cancelStalePrefetch(String downloadId) async {
+    try {
+      final info = await _channel.getTransfer(downloadId);
+      // Уже качается — докачаем в кэш.
+      if (info == null || info.state.isTerminal || info.bytesReceived > 0) {
+        return;
+      }
+    } catch (_) {
+      return;
+    }
+    _cancelIfUnused(downloadId);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1295,7 +1506,6 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
   /// Artist/title для поиска обложки — очищенные от альбома, номера трека
   /// и папок-свалок из пути файла (см. [soulseekArtworkQuery]).
-  @visibleForTesting
   static ({String artist, String title}) artworkQuery(Track track) {
     final remote = track.extra['remoteFilename'] as String?;
     if (remote == null || remote.isEmpty) {
@@ -1477,6 +1687,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     // Отписываемся от всех активных event-подписок.
     // НЕ останавливаем foreground service — он может использоваться
     // другими компонентами (активные загрузки из UI).
+    _queuePrefetchTimer?.cancel();
     final subs = _activeSubscriptions.toList();
     _activeSubscriptions.clear();
     for (final sub in subs) {
@@ -1769,6 +1980,22 @@ class _SearchRun {
 }
 
 /// Файл трека у конкретного пира: основной источник или запасной из выдачи.
+/// Запрос воспроизведения [SoulseekSource.createPlaybackSource]. Плеер
+/// переключил трек — запрос «заменён»: ожидание прекращается, а загрузка,
+/// не начавшая отдавать файл, отменяется, если больше никому не нужна.
+class _PlaybackRequest {
+  /// Загрузки всех источников трека: пока запрос ждёт, их не отменяют.
+  final Set<String> downloadIds = {};
+  final Completer<void> _superseded = Completer<void>();
+
+  bool get isSuperseded => _superseded.isCompleted;
+  Future<void> get superseded => _superseded.future;
+
+  void supersede() {
+    if (!_superseded.isCompleted) _superseded.complete();
+  }
+}
+
 class _PeerFile {
   const _PeerFile({
     required this.peerUsername,
@@ -1784,6 +2011,8 @@ class _PeerFile {
   final String? remoteFilename;
   final int sizeBytes;
   final String cacheKey;
+
+  /// У основного источника без данных о слоте — true (неизвестно).
   final bool hasFreeUploadSlot;
   final int queueLength;
 

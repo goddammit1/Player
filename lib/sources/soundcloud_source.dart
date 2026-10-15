@@ -728,6 +728,9 @@ class SoundCloudSource implements TrackSource {
   }
 
   @override
+  void cancelPendingPlayback() {}
+
+  @override
   Future<void> prefetch(Track track) async {
     await _ensureClientId();
     try {

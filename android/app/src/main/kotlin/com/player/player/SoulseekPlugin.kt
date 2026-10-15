@@ -284,14 +284,20 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
         }
         // Дефект №3: отсутствие binder у нового экземпляра плагина не
         // доказывает отсутствия соединения — foreground service может
-        // продолжать работать (пересоздание Flutter engine). Если bind уже
-        // инициирован, команда ниже встанет в pending-очередь и получит
-        // реальное состояние после onServiceConnected. Если привязки нет
-        // вовсе — отдаём UNKNOWN: Dart трактует его как unknown и не
-        // перезаписывает локальный статус ложным DISCONNECTED.
+        // продолжать работать (пересоздание Flutter engine). Сервис не
+        // запущен — соединения точно нет. Запущен — привязываемся к нему БЕЗ
+        // запуска: команда ниже встанет в pending-очередь и получит реальное
+        // состояние после onServiceConnected. Не удалось привязаться — UNKNOWN:
+        // Dart не перезаписывает локальный статус ложным DISCONNECTED.
         if (call.method == "getConnectionState" && serviceBinder == null && !bindPending) {
-            result.success(CONNECTION_STATE_UNKNOWN)
-            return
+            if (!SoulseekForegroundService.isRunning) {
+                result.success(ConnectionState.DISCONNECTED.name)
+                return
+            }
+            if (!bindToRunningService()) {
+                result.success(CONNECTION_STATE_UNKNOWN)
+                return
+            }
         }
         // P3: bind инициирован, но binder ещё не доставлен (окно между
         // bindService(true) и onServiceConnected). Раньше такие команды
@@ -414,6 +420,12 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
 
                 "stopService" -> {
                     stopServiceCompletely()
+                    // Сервис и клиент уходят без события — Flutter иначе
+                    // остался бы с последним состоянием (CONNECTED).
+                    sendEvent(
+                        SoulseekConnectionEvent(state = ConnectionState.DISCONNECTED)
+                            .toJson().toString()
+                    )
                     result.success(true)
                 }
 
@@ -458,8 +470,12 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                         ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
                     // Bridge не имеет отдельного disconnect; dispose() отменяет
                     // загрузки и освобождает клиент. Новый connect создаст новый клиент.
+                    val mgr = serviceBinder?.transferManager
                     ioScope.launch {
                         runCatching { bridge.dispose() }
+                        // dispose не присылает clientStateChanged — сообщаем
+                        // об отключении сами (manager + событие во Flutter).
+                        mgr?.setConnectionState(ConnectionState.DISCONNECTED)
                         result.success(true)
                     }
                 }
@@ -782,6 +798,7 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             "artist" to it.artist,
             "durationSeconds" to it.durationSeconds,
             "extension" to it.extension,
+            "remoteFilename" to it.remoteFilename,
             // Дата кэширования для единого списка кэш-треков: mtime файла
             // (пишется по завершении загрузки, LRU-touch его не меняет).
             "cachedAt" to java.io.File(it.localPath).lastModified()
@@ -816,6 +833,22 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
             bindPending = ok
             Log.i(TAG, "bindService result: $ok (pending=$bindPending)")
         }
+    }
+
+    /**
+     * Привязка к уже работающему сервису без его запуска (flags = 0): после
+     * пересоздания Flutter engine узнаём состояние живого соединения.
+     * onServiceConnected пришлёт snapshot соединения в EventChannel.
+     */
+    private fun bindToRunningService(): Boolean {
+        val ctx = applicationContext ?: return false
+        val ok = ctx.bindService(
+            Intent(ctx, SoulseekForegroundService::class.java), serviceConnection, 0
+        )
+        isBound = ok
+        bindPending = ok
+        Log.i(TAG, "bindToRunningService result: $ok")
+        return ok
     }
 
     private fun stopServiceCompletely() {

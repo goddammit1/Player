@@ -78,6 +78,9 @@ class SoulseekCacheRow {
     int? sizeBytes,
     DateTime? lastAccessAt,
     bool? pinned,
+    String? title,
+    String? artist,
+    int? durationSeconds,
   }) =>
       SoulseekCacheRow(
         cacheKey: cacheKey,
@@ -88,9 +91,9 @@ class SoulseekCacheRow {
         cachedAt: cachedAt,
         pinned: pinned ?? this.pinned,
         extension: extension,
-        title: title,
-        artist: artist,
-        durationSeconds: durationSeconds,
+        title: title ?? this.title,
+        artist: artist ?? this.artist,
+        durationSeconds: durationSeconds ?? this.durationSeconds,
       );
 }
 
@@ -101,6 +104,10 @@ abstract class SoulseekDesktopStore {
   Future<List<SoulseekTransferRow>> unfinishedTransfers();
 
   Future<void> deleteTransfersByCacheKey(String cacheKey);
+
+  /// Исходный путь файла у пира для [cacheKey] (последний трансфер) —
+  /// название кэш-записи без title и запрос обложки.
+  Future<String?> remoteFilenameFor(String cacheKey);
 
   Future<void> upsertCacheEntry(SoulseekCacheRow row);
 
@@ -136,6 +143,14 @@ class MemorySoulseekDesktopStore implements SoulseekDesktopStore {
   @override
   Future<void> deleteTransfersByCacheKey(String cacheKey) async =>
       transfers.removeWhere((_, t) => t.cacheKey == cacheKey);
+
+  @override
+  Future<String?> remoteFilenameFor(String cacheKey) async {
+    for (final t in transfers.values) {
+      if (t.cacheKey == cacheKey) return t.remoteFilename;
+    }
+    return null;
+  }
 
   @override
   Future<void> upsertCacheEntry(SoulseekCacheRow row) async =>
@@ -227,6 +242,19 @@ class SqliteSoulseekDesktopStore implements SoulseekDesktopStore {
   Future<void> deleteTransfersByCacheKey(String cacheKey) async {
     await (await _db)
         .delete(_transfers, where: 'cache_key = ?', whereArgs: [cacheKey]);
+  }
+
+  @override
+  Future<String?> remoteFilenameFor(String cacheKey) async {
+    final rows = await (await _db).query(
+      _transfers,
+      columns: ['remote_filename'],
+      where: 'cache_key = ?',
+      whereArgs: [cacheKey],
+      orderBy: 'updated_at_ms DESC',
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['remote_filename'] as String?;
   }
 
   @override

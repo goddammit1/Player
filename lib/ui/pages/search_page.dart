@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
 import '../../models/track.dart';
+import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/now_playing_overlay.dart';
@@ -12,6 +13,7 @@ import 'search/search_folder_tiles.dart';
 import 'search/search_track_tiles.dart';
 import 'search_history_page.dart';
 import 'settings_page.dart';
+import 'soulseek_settings_page.dart';
 
 class SearchPage extends ConsumerStatefulWidget {
   const SearchPage({
@@ -85,6 +87,16 @@ class _SearchPageState extends ConsumerState<SearchPage>
     }
   }
 
+  void _openSoulseekConnection() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const SoulseekSettingsPage(
+          initialSection: SoulseekSettingsSection.connection,
+        ),
+      ),
+    );
+  }
+
   void _goToSearchHistory() {
     final state = ref.read(searchProvider); // берём текущий state
     Navigator.of(context).push(
@@ -108,6 +120,11 @@ class _SearchPageState extends ConsumerState<SearchPage>
     final currentSourceId = state.sourceId;
     final colors = ref.watch(animatedPaletteProvider);
     final viewMode = ref.watch(searchViewModeProvider);
+    // Soulseek без соединения: фильтр с пунктиром ведёт к Connect.
+    final unavailableSources =
+        soulseekNotConnected(ref.watch(soulseekConnectionProvider))
+            ? const {SoulseekSource.sourceId}
+            : const <String>{};
 
     return Scaffold(
       backgroundColor: colors.background,
@@ -173,6 +190,8 @@ class _SearchPageState extends ConsumerState<SearchPage>
                                 searchCtl.setSourceId(id);
                               }
                             },
+                            unavailableIds: unavailableSources,
+                            onUnavailableTap: (_) => _openSoulseekConnection(),
                             colors: colors,
                           ),
                         ),

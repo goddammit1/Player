@@ -371,6 +371,9 @@ class YoutubeSource implements TrackSource {
   /// Pre-warm the manifest for an upcoming track so that the next
   /// `play()` does not have to wait for `getManifest`.
   @override
+  void cancelPendingPlayback() {}
+
+  @override
   Future<void> prefetch(Track track) async {
     try {
       await _getStreamInfo(track.id);

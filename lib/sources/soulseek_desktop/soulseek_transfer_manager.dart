@@ -99,12 +99,18 @@ class SoulseekTransferManager {
     // 1. Cache hit: файл уже полностью скачан.
     final entry = await cache.getCacheEntry(cacheKey);
     if (entry != null) {
+      // Файл, докачанный без метаданных (prefetch), получает их сейчас.
+      await cache.fillMissingMetadata(cacheKey,
+          title: title, artist: artist, durationSeconds: durationSeconds);
       _emitInfo(SoulseekTransferInfo(
         downloadId: downloadId,
         state: SoulseekTransferState.completed,
         bytesReceived: entry.sizeBytes,
         totalBytes: sizeBytes,
         localPath: entry.localPath,
+        title: title ?? entry.title,
+        artist: artist ?? entry.artist,
+        remoteFilename: remoteFilename,
       ));
       return SoulseekDownloadResult(
         downloadId: downloadId,
@@ -119,6 +125,17 @@ class SoulseekTransferManager {
     final existingId = _cacheKeyToDownloadId[cacheKey];
     final existing = existingId == null ? null : _transfers[existingId];
     if (existing != null && !existing.state.isTerminal) {
+      // Загрузка без метаданных (prefetch, restore) — дополняем ими.
+      if ((existing.title?.isEmpty ?? true) &&
+          title != null &&
+          title.isNotEmpty) {
+        existing
+          ..title = title
+          ..artist = artist
+          ..durationSeconds = durationSeconds;
+        await _persist(existing);
+        _emit(existing);
+      }
       // Прерванная (выход, ручное отключение) загрузка — продолжаем, иначе
       // стриминг ждал бы прироста `.part`, которого не будет.
       if (existing.state == SoulseekTransferState.paused) {
@@ -289,6 +306,8 @@ class SoulseekTransferManager {
       t.state = SoulseekTransferState.queued;
       _emit(t);
       await _slots.acquire();
+      final lease = _SlotLease(_slots);
+      t.lease = lease;
       try {
         if (t.cancelRequested || t.pauseRequested || stale()) break;
         // Прошлая попытка в мосте могла ещё не закрыть `.part`.
@@ -325,7 +344,8 @@ class SoulseekTransferManager {
               t, SoulseekException('INTERNAL_ERROR', '$e'), attempt);
         }
       } finally {
-        _slots.release();
+        if (identical(t.lease, lease)) t.lease = null;
+        lease.release();
       }
 
       if (t.state.isTerminal ||
@@ -426,6 +446,13 @@ class SoulseekTransferManager {
         }
         final mapped = SoulseekTransferState.fromString(e['state'] as String?);
         if (!mapped.isTerminal) {
+          // Очередь у пира слот не держит; пир начал отдавать — слот
+          // снова наш, если свободен.
+          if (mapped == SoulseekTransferState.queuedRemotely) {
+            t.lease?.release();
+          } else if (mapped == SoulseekTransferState.downloading) {
+            t.lease?.tryReacquire();
+          }
           t.state = mapped;
           t.bytesReceived = _int(e['bytesReceived'], t.bytesReceived);
           _emit(t);
@@ -621,9 +648,11 @@ class _Transfer {
   final String remoteFilename;
   int sizeBytes;
   final String fileExtension;
-  final String? title;
-  final String? artist;
-  final int? durationSeconds;
+
+  /// Не final: загрузку без метаданных дополняет следующий startDownload.
+  String? title;
+  String? artist;
+  int? durationSeconds;
 
   SoulseekTransferState state;
   int bytesReceived = 0;
@@ -640,6 +669,9 @@ class _Transfer {
 
   /// Мост закончил, идёт публикация `.part` в кэш.
   bool publishing = false;
+
+  /// Слот параллельных загрузок текущей попытки (null — вне попытки).
+  _SlotLease? lease;
 
   Completer<void>? _waiter;
 
@@ -700,6 +732,9 @@ class _Transfer {
         errorCode: errorCode,
         retryable: retryable,
         message: message,
+        title: title,
+        artist: artist,
+        remoteFilename: remoteFilename,
       );
 }
 
@@ -714,6 +749,15 @@ class _Slots {
   set max(int value) {
     _max = value;
     _drain();
+  }
+
+  /// Слот без ожидания: false — свободных нет (или есть ждущие).
+  bool tryAcquire() {
+    if (_active < _max && _waiters.isEmpty) {
+      _active++;
+      return true;
+    }
+    return false;
   }
 
   Future<void> acquire() {
@@ -736,5 +780,27 @@ class _Slots {
       _active++;
       _waiters.removeFirst().complete();
     }
+  }
+}
+
+/// Слот [_Slots], взятый попыткой загрузки. Пока пир держит файл в своей
+/// очереди, слот отпускается ([release]) — иначе такие загрузки (очередь у
+/// пира бывает многоминутной) занимают все слоты и новые стоят в локальной
+/// очереди. Когда пир начинает отдавать файл, слот берётся снова, если
+/// свободен ([tryReacquire]); если нет — загрузка идёт сверх лимита.
+class _SlotLease {
+  _SlotLease(this._slots);
+
+  final _Slots _slots;
+  bool _held = true;
+
+  void release() {
+    if (!_held) return;
+    _held = false;
+    _slots.release();
+  }
+
+  void tryReacquire() {
+    if (!_held && _slots.tryAcquire()) _held = true;
   }
 }

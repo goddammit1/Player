@@ -3,7 +3,7 @@
 // Фаза 4 — нижний лист управления кэшем Soulseek.
 //
 // Показывает список кэшированных файлов с:
-//  - именем файла (из localPath)
+//  - названием/исполнителем (метаданные БД или исходное имя файла у пира)
 //  - размером файла
 //  - статусом complete / incomplete
 //  - индикатором pinned (закреплён)
@@ -24,6 +24,7 @@ import '../../sources/soulseek_platform_channel.dart';
 import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
+import 'byte_format.dart';
 import 'snack.dart';
 import 'track_settings_sheet.dart';
 
@@ -312,7 +313,7 @@ class _CacheSheetState extends ConsumerState<_CacheSheet> {
                 ),
                 if (_items.isNotEmpty)
                   Text(
-                    '${_items.length} files · ${_humanBytes(_totalBytes)}',
+                    '${_items.length} files · ${humanBytes(_totalBytes)}',
                     style: TextStyle(
                       color: colors.textSecondary,
                       fontSize: 12,
@@ -431,19 +432,6 @@ class _CacheSheetState extends ConsumerState<_CacheSheet> {
       ),
     );
   }
-
-  String _humanBytes(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var size = bytes.toDouble();
-    var unit = 0;
-    while (size >= 1024 && unit < units.length - 1) {
-      size /= 1024;
-      unit++;
-    }
-    if (unit == 0) return '$bytes B';
-    return '${size.toStringAsFixed(size >= 100 ? 0 : 1)} ${units[unit]}';
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -489,13 +477,10 @@ class _CacheTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final entry = item.entry;
-    // NEW-3: человекочитаемые метаданные из БД v2; для старых записей
-    // (завершённых до миграции) — фолбэк на basename файла.
-    final title =
-        (entry.title != null && entry.title!.isNotEmpty)
-            ? entry.title!
-            : _basename(entry.localPath);
-    final artist = entry.artist;
+    // NEW-3: имя из Track (trackFromCacheEntry): метаданные БД, иначе
+    // исходное имя файла у пира. Basename localPath — хэш cacheKey.
+    final title = item.track.title;
+    final artist = item.track.artist;
     final durationText = _durationText(entry.durationSeconds);
 
     // CACHE-UI-01: complete-плитки кликабельны (тап → play, long-press →
@@ -546,9 +531,7 @@ class _CacheTile extends StatelessWidget {
                       children: [
                         Flexible(
                           child: Text(
-                            artist != null && artist.isNotEmpty
-                                ? artist
-                                : _basename(entry.localPath),
+                            artist,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -570,7 +553,7 @@ class _CacheTile extends StatelessWidget {
                         ],
                         const SizedBox(width: 8),
                         Text(
-                          _humanBytes(entry.sizeBytes),
+                          humanBytes(entry.sizeBytes),
                           style: TextStyle(
                             color: colors.textSecondary,
                             fontSize: 12,
@@ -626,33 +609,12 @@ class _CacheTile extends StatelessWidget {
     );
   }
 
-  String _basename(String path) {
-    final i = path.lastIndexOf('/');
-    final j = path.lastIndexOf('\\');
-    final idx = i > j ? i : j;
-    if (idx >= 0 && idx < path.length - 1) return path.substring(idx + 1);
-    return path;
-  }
-
   /// «3:45» из durationSeconds; null, если длительность неизвестна.
   String? _durationText(int? seconds) {
     if (seconds == null || seconds <= 0) return null;
     final m = seconds ~/ 60;
     final s = seconds % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
-  }
-
-  String _humanBytes(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var size = bytes.toDouble();
-    var unit = 0;
-    while (size >= 1024 && unit < units.length - 1) {
-      size /= 1024;
-      unit++;
-    }
-    if (unit == 0) return '$bytes B';
-    return '${size.toStringAsFixed(size >= 100 ? 0 : 1)} ${units[unit]}';
   }
 }
 

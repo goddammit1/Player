@@ -58,7 +58,11 @@ enum SoulseekTransferState {
   completed,
   paused,
   failed,
-  cancelled;
+  cancelled,
+
+  /// В очереди у пира («Queued, Remotely»): ждём, пока пир начнёт отдавать
+  /// файл. В отличие от [queued], слот параллельных загрузок не занимает.
+  queuedRemotely;
 
   /// Терминальные состояния: трансфер завершён и не потребляет слот очереди.
   bool get isTerminal =>
@@ -66,14 +70,19 @@ enum SoulseekTransferState {
 
   /// Состояния, при которых трансфер числится «активным».
   bool get isActive =>
-      this == queued || this == downloading || this == connecting;
+      this == queued ||
+      this == downloading ||
+      this == connecting ||
+      this == queuedRemotely;
 
   /// Парсит строку состояния (case-insensitive) из EventChannel.
   static SoulseekTransferState fromString(String? name) {
     if (name == null || name.isEmpty) return SoulseekTransferState.idle;
     final upper = name.toUpperCase();
+    // Kotlin шлёт QUEUED_REMOTELY, Windows-стор хранит QUEUEDREMOTELY.
+    final compact = upper.replaceAll('_', '');
     for (final s in SoulseekTransferState.values) {
-      if (s.name.toUpperCase() == upper) return s;
+      if (s.name.toUpperCase() == compact) return s;
     }
     // Fallback: substring matching для C# state flags
     if (upper.contains('SUCCEEDED')) return SoulseekTransferState.completed;
@@ -93,6 +102,9 @@ enum SoulseekTransferState {
         upper.contains('INITIALIZING') ||
         upper.contains('INITIALIZED')) {
       return SoulseekTransferState.connecting;
+    }
+    if (upper.contains('QUEUED') && upper.contains('REMOTELY')) {
+      return SoulseekTransferState.queuedRemotely;
     }
     if (upper.contains('REQUESTED') || upper.contains('QUEUED')) {
       return SoulseekTransferState.queued;
@@ -339,6 +351,13 @@ class SoulseekTransferInfo {
   final bool retryable;
   final String? message;
 
+  /// Человекочитаемые метаданные загрузки: файл в кэше назван хэшем,
+  /// поэтому лист загрузок берёт имя отсюда. [remoteFilename] — исходный
+  /// путь у пира (фолбэк, когда title неизвестен).
+  final String? title;
+  final String? artist;
+  final String? remoteFilename;
+
   const SoulseekTransferInfo({
     required this.downloadId,
     required this.state,
@@ -349,6 +368,9 @@ class SoulseekTransferInfo {
     this.errorCode,
     this.retryable = false,
     this.message,
+    this.title,
+    this.artist,
+    this.remoteFilename,
   });
 
   /// Парсит Map (transfer-событие или getTransfer-результат).
@@ -363,6 +385,9 @@ class SoulseekTransferInfo {
       errorCode: m['errorCode'] as String?,
       retryable: m['retryable'] == true,
       message: m['message'] as String?,
+      title: m['title'] as String?,
+      artist: m['artist'] as String?,
+      remoteFilename: m['remoteFilename'] as String?,
     );
   }
 
@@ -385,6 +410,9 @@ class SoulseekTransferInfo {
         'errorCode': errorCode,
         'retryable': retryable,
         'message': message,
+        'title': title,
+        'artist': artist,
+        'remoteFilename': remoteFilename,
       };
 }
 
@@ -415,6 +443,10 @@ class SoulseekCacheEntry {
   /// не прислал дату (0 или старая сборка).
   final DateTime? cachedAt;
 
+  /// Исходный путь файла у пира: из него строятся название записей без
+  /// [title] (вместо хэш-имени файла) и очищенный запрос обложки.
+  final String? remoteFilename;
+
   const SoulseekCacheEntry({
     required this.cacheKey,
     required this.localPath,
@@ -426,6 +458,7 @@ class SoulseekCacheEntry {
     this.durationSeconds,
     this.extension,
     this.cachedAt,
+    this.remoteFilename,
   });
 
   factory SoulseekCacheEntry.fromMap(Map<String, dynamic> m) {
@@ -443,6 +476,7 @@ class SoulseekCacheEntry {
           .toLowerCase()
           .replaceFirst('.', ''),
       cachedAt: _dateOrNull(m['cachedAt']),
+      remoteFilename: m['remoteFilename'] as String?,
     );
   }
 

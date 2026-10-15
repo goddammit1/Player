@@ -46,6 +46,24 @@ void main() {
     });
 
     group('fromString — C# fallbacks', () {
+      test('очередь у пира: Kotlin, Windows-стор и строка моста', () {
+        for (final raw in [
+          'QUEUED_REMOTELY',
+          'QUEUEDREMOTELY',
+          'Queued, Remotely',
+        ]) {
+          expect(
+            SoulseekTransferState.fromString(raw),
+            SoulseekTransferState.queuedRemotely,
+            reason: raw,
+          );
+        }
+        expect(
+          SoulseekTransferState.fromString('Queued, Locally'),
+          SoulseekTransferState.queued,
+        );
+      });
+
       test('SUCCEEDED → completed', () {
         expect(
           SoulseekTransferState.fromString('SUCCEEDED'),

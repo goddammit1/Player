@@ -13,11 +13,14 @@ import '../../models/track.dart';
 import 'add_to_playlist_sheet.dart';
 import '../../sources/artwork_provider.dart';
 import '../../sources/soulseek_models.dart';
+import '../../sources/soulseek_source.dart';
 import 'artwork.dart';
+import 'byte_format.dart';
 import '../desktop/desktop_layout.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import 'soulseek_folder_sheet.dart';
+import 'soulseek_transfer_sheet.dart';
 
 // =============================================================================
 // PUBLIC API
@@ -79,16 +82,20 @@ class _TrackSettingsSheetState extends ConsumerState<_TrackSettingsSheet> {
   void _resolveArtworkIfNeeded() {
     final t = widget.track;
     if (t.artworkUrl != null && t.artworkUrl!.isNotEmpty) return;
-    if (t.artist.trim().isEmpty || t.title.trim().isEmpty) return;
+    // Soulseek: запрос, очищенный из пути файла (как в поиске).
+    final q = t.sourceId == SoulseekSource.sourceId
+        ? SoulseekSource.artworkQuery(t)
+        : (artist: t.artist, title: t.title);
+    if (q.artist.trim().isEmpty || q.title.trim().isEmpty) return;
     final url =
-        ArtworkProvider.instance.getMemCachedArtworkUrl(t.artist, t.title);
+        ArtworkProvider.instance.getMemCachedArtworkUrl(q.artist, q.title);
     if (url != null && url.isNotEmpty) {
       _enrichedTrack = t.copyWith(artworkUrl: url);
       return;
     }
     unawaited(
       LazyArtworkLoader.instance
-          .resolve(t.artist, t.title, isWanted: () => mounted)
+          .resolve(q.artist, q.title, isWanted: () => mounted)
           .then((found) {
         if (!mounted || found == null || found.isEmpty) return;
         setState(() => _enrichedTrack = t.copyWith(artworkUrl: found));
@@ -692,6 +699,9 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
   bool _checking = true;
   bool _downloading = false;
   double? _progress;
+  // Soulseek: скорость и состояние трансфера для подписи под прогрессом.
+  int _bytesPerSecond = 0;
+  SoulseekTransferState? _transferState;
   StreamSubscription<SoulseekTransferEvent>? _transferSub;
   StreamSubscription<String>? _cacheChangesSub;
 
@@ -725,6 +735,8 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
         // Снимок активной загрузки — sheet открыли во время трансфера.
         _downloading = true;
         _progress = status.progress;
+        _bytesPerSecond = status.transfer?.bytesPerSecond ?? 0;
+        _transferState = status.transfer?.state;
       }
     });
     if (joinStreaming) {
@@ -747,21 +759,26 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
               _isCached = true;
               _downloading = false;
               _progress = null;
+              _resetTransferInfo();
             });
           case SoulseekTransferState.failed:
           case SoulseekTransferState.cancelled:
             setState(() {
               _downloading = false;
               _progress = null;
+              _resetTransferInfo();
             });
             _showSnack(
               'Download failed: ${event.message ?? event.errorCode ?? 'unknown error'}',
             );
           default:
-            // Промежуточные состояния — прогресс (null → indeterminate).
+            // Нетерминальные состояния (включая паузу) — загрузка жива:
+            // прогресс (null → indeterminate), тап ведёт в список загрузок.
             setState(() {
               _downloading = true;
               _progress = event.transfer.progress;
+              _bytesPerSecond = event.bytesPerSecond;
+              _transferState = event.state;
             });
         }
       },
@@ -770,6 +787,35 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
         // _waitForDownloadComplete останется страховкой источника.
       },
     );
+  }
+
+  void _resetTransferInfo() {
+    _bytesPerSecond = 0;
+    _transferState = null;
+  }
+
+  /// Подпись под прогрессом Soulseek-загрузки: скорость, пока данные идут,
+  /// иначе — чего ждём от пира.
+  String? get _transferSubtitle {
+    if (_bytesPerSecond > 0) return formatSpeed(_bytesPerSecond);
+    return switch (_transferState) {
+      SoulseekTransferState.queued => 'Queued',
+      SoulseekTransferState.queuedRemotely => 'Queued at peer',
+      SoulseekTransferState.connecting => 'Connecting to peer…',
+      SoulseekTransferState.paused => 'Paused',
+      _ => null,
+    };
+  }
+
+  /// Список загрузок Soulseek. Из шторки — вместо неё, как «Open folder».
+  void _openTransfers(BuildContext context) {
+    if (!widget.insideSheet) {
+      showSoulseekTransferSheet(context);
+      return;
+    }
+    final nav = Navigator.of(context);
+    nav.pop();
+    showSoulseekTransferSheet(nav.context);
   }
 
   void _showSnack(String message, {Duration? duration}) {
@@ -814,6 +860,7 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
         setState(() {
           _downloading = false;
           _progress = null;
+          _resetTransferInfo();
         });
         if (isSoulseek) _transferSub?.cancel();
         _showSnack('Download failed: $e');
@@ -861,6 +908,8 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
               }
             }
 
+            final isSoulseek =
+                TrackActions.soulseekDownloadId(widget.track) != null;
             final tiles = <_SettingsTileData>[
               _SettingsTileData(
                 icon: _isCached
@@ -879,6 +928,12 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
                 onTap: _isCached ? _deleteCache : _download,
                 loading: _checking || _downloading,
                 progress: _downloading ? _progress : null,
+                // Soulseek: идущая загрузка ведёт в общий список загрузок.
+                onLoadingTap: _downloading && isSoulseek
+                    ? () => _openTransfers(context)
+                    : null,
+                loadingSubtitle:
+                    _downloading && isSoulseek ? _transferSubtitle : null,
               ),
               _SettingsTileData(
                 icon: Icons.bedtime_outlined,
@@ -960,6 +1015,8 @@ class _SettingsTileData {
     this.onTap,
     this.loading = false,
     this.progress,
+    this.onLoadingTap,
+    this.loadingSubtitle,
   });
 
   final IconData icon;
@@ -970,6 +1027,12 @@ class _SettingsTileData {
   final VoidCallback? onTap;
   final bool loading;
   final double? progress;
+
+  /// Тап по плитке во время [loading] (null — плитка не реагирует).
+  final VoidCallback? onLoadingTap;
+
+  /// Подпись под «Downloading…» (скорость / ожидание пира).
+  final String? loadingSubtitle;
 }
 
 class _SettingsTile extends StatelessWidget {
@@ -999,33 +1062,65 @@ class _SettingsTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (data.loading && data.progress != null) {
-      return SizedBox(
-        height: 50,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  value: data.progress,
-                  strokeWidth: 2,
-                  color: colors.elevatedHi,
-                  backgroundColor: colors.elevatedVariant,
+    if (data.loading && (data.progress != null || data.onLoadingTap != null)) {
+      final progress = data.progress;
+      final subtitle = data.loadingSubtitle;
+      return InkWell(
+        key: const Key('track_download_progress'),
+        onTap: data.onLoadingTap,
+        borderRadius: _borderRadius,
+        child: SizedBox(
+          height: 50,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    value: progress,
+                    strokeWidth: 2,
+                    color: colors.elevatedHi,
+                    backgroundColor: colors.elevatedVariant,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 14),
-              Text(
-                'Downloading… ${((data.progress ?? 0) * 100).round()}%',
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        progress != null
+                            ? 'Downloading… ${(progress * 100).round()}%'
+                            : 'Downloading…',
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (subtitle != null)
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            color: colors.textSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+                if (data.onLoadingTap != null)
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: colors.textSecondary,
+                    size: 22,
+                  ),
+              ],
+            ),
           ),
         ),
       );

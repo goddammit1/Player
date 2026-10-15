@@ -464,6 +464,9 @@ class QueueEngine implements PlayerServiceInterface {
     if (index < 0 || index >= _queue.length) return;
 
     final myGen = ++_loadGeneration;
+    // Прежний трек мог ещё грузиться (пир держит файл в очереди): его
+    // загрузка больше не нужна.
+    _env.cancelPendingResolves();
     _isLoading = true;
     _pendingHistoryTrack = null;
     _setCurrentIndex(index);

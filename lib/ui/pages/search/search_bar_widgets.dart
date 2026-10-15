@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 /// Вложенный виджет «поиск через реф-колбэки». UI отделён от состояния:
@@ -266,12 +268,19 @@ class SearchFilterChips extends StatelessWidget {
     required this.currentSourceId,
     required this.onSelected,
     required this.colors,
+    this.unavailableIds = const {},
+    this.onUnavailableTap,
   });
 
   final List<dynamic> sources;
   final String currentSourceId;
   final ValueChanged<String> onSelected;
   final dynamic colors;
+
+  /// Источники, которые сейчас не могут искать (Soulseek без соединения):
+  /// пунктирная обводка, тап — [onUnavailableTap] вместо выбора.
+  final Set<String> unavailableIds;
+  final ValueChanged<String>? onUnavailableTap;
 
   @override
   Widget build(BuildContext context) {
@@ -282,15 +291,26 @@ class SearchFilterChips extends StatelessWidget {
       children: [
         for (var i = 0; i < entries.length; i++) ...[
           if (i > 0) const SizedBox(width: 12),
-          _SearchFilterIconButton(
-            key: ValueKey<String>('search-filter-${entries[i].id}'),
-            icon: _iconFor(entries[i].id as String),
-            selected: entries[i].id == currentSourceId,
-            onTap: () => onSelected(entries[i].id as String),
-            colors: colors,
-          ),
+          _buildChip(entries[i].id as String),
         ],
       ],
+    );
+  }
+
+  Widget _buildChip(String id) {
+    final selected = id == currentSourceId;
+    final unavailable = unavailableIds.contains(id);
+    return _SearchFilterIconButton(
+      key: ValueKey<String>('search-filter-$id'),
+      icon: _iconFor(id),
+      selected: selected,
+      dashed: unavailable,
+      // Выбранный чип снимается тапом и без соединения — иначе к «все
+      // источники» не вернуться.
+      onTap: unavailable && !selected && onUnavailableTap != null
+          ? () => onUnavailableTap!(id)
+          : () => onSelected(id),
+      colors: colors,
     );
   }
 
@@ -313,6 +333,7 @@ class _SearchFilterIconButton extends StatelessWidget {
     required this.selected,
     required this.onTap,
     required this.colors,
+    this.dashed = false,
   });
 
   final IconData icon;
@@ -320,11 +341,16 @@ class _SearchFilterIconButton extends StatelessWidget {
   final VoidCallback onTap;
   final dynamic colors;
 
+  /// Пунктирная обводка: источник сейчас недоступен.
+  final bool dashed;
+
   @override
   Widget build(BuildContext context) {
     final bgColor = selected ? colors.textPrimary : Colors.transparent;
-    final iconColor = selected ? colors.background : colors.textPrimary;
-    final borderColor = colors.textPrimary;
+    final iconColor = selected
+        ? colors.background
+        : (dashed ? colors.textSecondary : colors.textPrimary);
+    final Color borderColor = colors.textPrimary;
 
     return Material(
       color: bgColor,
@@ -332,17 +358,59 @@ class _SearchFilterIconButton extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         customBorder: const CircleBorder(),
-        child: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: borderColor, width: 1),
+        child: CustomPaint(
+          painter: dashed ? DashedCirclePainter(color: borderColor) : null,
+          child: Container(
+            width: 48,
+            height: 48,
+            decoration: dashed
+                ? null
+                : BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: borderColor, width: 1),
+                  ),
+            alignment: Alignment.center,
+            child: Icon(icon, size: 20, color: iconColor),
           ),
-          alignment: Alignment.center,
-          child: Icon(icon, size: 20, color: iconColor),
         ),
       ),
     );
   }
+}
+
+/// Пунктирная окружность по границе виджета (обводка недоступного фильтра).
+@visibleForTesting
+class DashedCirclePainter extends CustomPainter {
+  const DashedCirclePainter({required this.color});
+
+  final Color color;
+
+  static const _strokeWidth = 1.0;
+  static const _dashCount = 16;
+
+  /// Доля окружности под штрихом (остальное — зазор).
+  static const _dashFraction = 0.55;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final radius = (math.min(size.width, size.height) - _strokeWidth) / 2;
+    final rect = Rect.fromCircle(
+      center: size.center(Offset.zero),
+      radius: radius,
+    );
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _strokeWidth
+      ..strokeCap = StrokeCap.round;
+    const step = 2 * math.pi / _dashCount;
+    for (var i = 0; i < _dashCount; i++) {
+      canvas.drawArc(rect, -math.pi / 2 + i * step, step * _dashFraction,
+          false, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(DashedCirclePainter oldDelegate) =>
+      oldDelegate.color != color;
 }

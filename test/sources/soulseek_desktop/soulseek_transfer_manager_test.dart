@@ -194,6 +194,54 @@ void main() {
     expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(1));
   });
 
+  Future<SoulseekDownloadResult> startUntitled(String key) =>
+      manager.startDownload(
+        downloadId: 'dl_$key',
+        peerUsername: 'peer',
+        remoteFilename: r'Music\Artist\Album\01 - Song.mp3',
+        sizeBytes: 8,
+        cacheKey: key,
+        fileExtension: 'mp3',
+      );
+
+  test('загрузка без метаданных (prefetch) получает их от присоединившегося '
+      'запроса и публикуется с title', () async {
+    await startUntitled('k1');
+    await start('k1');
+    await settle();
+    expect(manager.getTransfer('dl_k1')!.title, 'Song');
+
+    final completed = nextState('k1', SoulseekTransferState.completed);
+    await completeInBridge('k1');
+    final info = await completed;
+    expect(info.title, 'Song');
+    expect(info.artist, 'Artist');
+    final entry = (await cache.getAllCacheEntries()).single;
+    expect(entry.title, 'Song');
+    expect(entry.remoteFilename, r'Music\Artist\Album\01 - Song.mp3');
+  });
+
+  test('кэш-запись без title: remoteFilename для названия, cache hit '
+      'дописывает метаданные', () async {
+    await startUntitled('k1');
+    await settle();
+    final completed = nextState('k1', SoulseekTransferState.completed);
+    await completeInBridge('k1');
+    final info = await completed;
+    expect(info.remoteFilename, r'Music\Artist\Album\01 - Song.mp3');
+
+    var entry = (await cache.getAllCacheEntries()).single;
+    expect(entry.title, isNull);
+    expect(entry.remoteFilename, r'Music\Artist\Album\01 - Song.mp3');
+
+    final again = await start('k1');
+    expect(again.cacheHit, isTrue);
+    entry = (await cache.getAllCacheEntries()).single;
+    expect(entry.title, 'Song');
+    expect(entry.artist, 'Artist');
+    expect(entry.durationSeconds, 180);
+  });
+
   test('retryable-неудача повторяется, затем успех', () async {
     await start('k1');
     await settle();
@@ -319,6 +367,52 @@ void main() {
     await settle();
     expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(2));
     expect(bridge.lastPayload('startDownload')['cacheKey'], 'k2');
+  });
+
+  test('очередь у пира не держит слот: следующая загрузка стартует, а '
+      'вышедшая из очереди идёт сверх лимита', () async {
+    manager = createManager(maxConcurrent: 1);
+    await start('k1');
+    await settle();
+    bridge.emit({
+      'eventType': 'transferStateChanged',
+      'downloadId': bridge.lastBridgeId('k1'),
+      'state': 'Queued, Remotely',
+      'bytesReceived': 0,
+    });
+    await settle();
+    expect(manager.getTransfer('dl_k1')!.state,
+        SoulseekTransferState.queuedRemotely);
+
+    await start('k2');
+    await settle();
+    expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(2));
+
+    // Пир k1 начал отдавать: слот занят k2, но k1 не прерывается.
+    bridge.emit({
+      'eventType': 'transferStateChanged',
+      'downloadId': bridge.lastBridgeId('k1'),
+      'state': 'InProgress',
+      'bytesReceived': 0,
+    });
+    await settle();
+    expect(manager.getTransfer('dl_k1')!.state,
+        SoulseekTransferState.downloading);
+
+    // Обе завершаются, слот не «утекает»: третья загрузка стартует.
+    final done1 = nextState('k1', SoulseekTransferState.completed);
+    await completeInBridge('k1');
+    await done1;
+    final done2 = nextState('k2', SoulseekTransferState.completed);
+    await completeInBridge('k2');
+    await done2;
+    await start('k3');
+    await settle();
+    expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(3));
+    await start('k4');
+    await settle();
+    expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(3),
+        reason: 'лимит 1 соблюдается после возврата слотов');
   });
 
   test('restore: незавершённые — PAUSED при наличии .part, иначе FAILED',

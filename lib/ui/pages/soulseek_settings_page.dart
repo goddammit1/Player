@@ -42,8 +42,15 @@ import 'cached_tracks_page.dart';
 /// (раньше здесь был класс SoulseekPrefs с SharedPreferences-ключами).
 final SoulseekSettingsRepository _repo = SoulseekSettingsRepository.instance;
 
+/// Раздел страницы, к которому прокрутить при открытии.
+enum SoulseekSettingsSection { connection }
+
 class SoulseekSettingsPage extends ConsumerStatefulWidget {
-  const SoulseekSettingsPage({super.key});
+  const SoulseekSettingsPage({super.key, this.initialSection});
+
+  /// Раздел, к которому страница прокручивается после первого кадра
+  /// (тап по недоступному фильтру Soulseek в поиске → Connection).
+  final SoulseekSettingsSection? initialSection;
 
   @override
   ConsumerState<SoulseekSettingsPage> createState() =>
@@ -74,7 +81,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   SoulseekConnectionState _connectionState =
       SoulseekConnectionState.disconnected;
   String? _connectionMessage;
-  StreamSubscription<SoulseekConnectionEvent>? _connectionSub;
+  ProviderSubscription<AsyncValue<SoulseekConnectionEvent?>>? _connectionSub;
   bool _connecting = false;
 
   // Дефект №5: поколение статуса соединения. Инкрементируется перед каждой
@@ -96,19 +103,50 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   bool get _isAvailable => SoulseekPlatformChannel.instance.isAvailable;
 
+  final _connectionSectionKey = GlobalKey();
+  final _scrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
     _enabled = SourceRegistry.isSoulseekEnabled;
     _loadSettings();
     _subscribeConnection();
+    if (widget.initialSection == SoulseekSettingsSection.connection) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToConnection());
+    }
+  }
+
+  /// ListView строит секции лениво: если Connection ещё за пределами
+  /// cacheExtent (маленький экран, крупный шрифт), листаем на экран вниз
+  /// и пробуем снова в следующем кадре.
+  void _scrollToConnection([int attempt = 0]) {
+    if (!mounted) return;
+    final ctx = _connectionSectionKey.currentContext;
+    if (ctx == null) {
+      if (attempt >= 5 || !_scrollController.hasClients) return;
+      final pos = _scrollController.position;
+      if (pos.pixels >= pos.maxScrollExtent) return;
+      _scrollController.jumpTo(
+        (pos.pixels + pos.viewportDimension).clamp(0.0, pos.maxScrollExtent),
+      );
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _scrollToConnection(attempt + 1));
+      return;
+    }
+    Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   @override
   void dispose() {
     _usernameController.dispose();
     _passwordController.dispose();
-    _connectionSub?.cancel();
+    _connectionSub?.close();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -160,75 +198,63 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     await _repo.applyToSource(source, settings: s);
   }
 
+  /// Статус соединения — из общего [soulseekConnectionProvider] (тот же,
+  /// что у фильтра поиска). fireImmediately отдаёт последнее известное
+  /// значение: провайдер живёт всё время работы приложения и не пропускает
+  /// изменений, поэтому повторный вход на страницу видит актуальный статус
+  /// (P2). Неизвестное состояние (UNKNOWN) провайдер не выдаёт — локальный
+  /// статус не перезаписывается ложным Disconnected (дефект №3).
   void _subscribeConnection() {
     if (!_isAvailable) return;
-    _connectionSub?.cancel();
-    _connectionSub =
-        SoulseekPlatformChannel.instance.connectionEvents.listen(
-      (event) {
-        if (!mounted) return;
-        // Snapshot при bind'е / промежуточный дисконнект между попытками
-        // не должен сбрасывать «Connecting…» и разблокировать кнопку —
-        // иначе первое нажатие выглядит так, будто ничего не произошло.
-        if (_connectInFlight &&
-            event.state == SoulseekConnectionState.disconnected) {
-          return;
-        }
-        // Push-событие — самый свежий источник: делает устаревшими все
-        // ответы команд, отправленные до него (дефект №5).
-        _connectionGeneration++;
-        setState(() {
-          _connectionState = event.state;
-          _connectionMessage = event.message;
-          // Дефект №6: CONNECTED теперь означает завершённый логин
-          // (Connected+LoggedIn), CONNECTING — промежуточное состояние.
-          // _connecting сбрасываем только на терминальных для команды
-          // состояниях: CONNECTED / DISCONNECTED / FAILED (и RECONNECTING —
-          // исходная команда connect уже не «в процессе»).
-          switch (event.state) {
-            case SoulseekConnectionState.connected:
-            case SoulseekConnectionState.disconnected:
-            case SoulseekConnectionState.failed:
-            case SoulseekConnectionState.reconnecting:
-              _connecting = false;
-            case SoulseekConnectionState.connecting:
-              break;
-          }
-        });
-      },
-      onError: (Object e) {
-        if (!mounted) return;
-        _connectionGeneration++;
-        setState(() {
-          _connectionState = SoulseekConnectionState.failed;
-          _connectionMessage = e.toString();
-          _connecting = false;
-        });
-      },
+    _connectionSub?.close();
+    _connectionSub = ref.listenManual<AsyncValue<SoulseekConnectionEvent?>>(
+      soulseekConnectionProvider,
+      (_, next) => _onConnectionUpdate(next),
+      fireImmediately: true,
     );
-
-    // P2: connectionEvents приходят только при ИЗМЕНЕНИЯХ. При повторном
-    // входе на страницу живое соединение иначе отображалось бы устаревшим
-    // Disconnected — перезапрашиваем актуальный статус у натива.
-    // Дефект №3: с bind'ом snapshot теперь приходит и через event channel.
-    _queryConnectionState();
   }
 
-  Future<void> _queryConnectionState() async {
-    try {
-      final state = await SoulseekPlatformChannel.instance
-          .getConnectionState();
-      if (!mounted) return;
-      // Дефект №3: null = native не знает состояния (binder не привязан,
-      // сервис может работать) — не перезаписываем локальный статус.
-      if (state == null) return;
-      // Не затираем прогресс текущего подключения и не конкурируем со
-      // свежими push-событиями (дефект №5).
-      if (_connecting) return;
-      setState(() => _connectionState = state);
-    } catch (_) {
-      // Сервис не запущен / платформа недоступна — остаёмся на default.
+  void _onConnectionUpdate(AsyncValue<SoulseekConnectionEvent?> next) {
+    if (!mounted) return;
+    if (next.hasError) {
+      _connectionGeneration++;
+      setState(() {
+        _connectionState = SoulseekConnectionState.failed;
+        _connectionMessage = next.error.toString();
+        _connecting = false;
+      });
+      return;
     }
+    final event = next.valueOrNull;
+    if (event == null) return;
+    // Snapshot при bind'е / промежуточный дисконнект между попытками
+    // не должен сбрасывать «Connecting…» и разблокировать кнопку —
+    // иначе первое нажатие выглядит так, будто ничего не произошло.
+    if (_connectInFlight &&
+        event.state == SoulseekConnectionState.disconnected) {
+      return;
+    }
+    // Push-событие — самый свежий источник: делает устаревшими все
+    // ответы команд, отправленные до него (дефект №5).
+    _connectionGeneration++;
+    setState(() {
+      _connectionState = event.state;
+      _connectionMessage = event.message;
+      // Дефект №6: CONNECTED теперь означает завершённый логин
+      // (Connected+LoggedIn), CONNECTING — промежуточное состояние.
+      // _connecting сбрасываем только на терминальных для команды
+      // состояниях: CONNECTED / DISCONNECTED / FAILED (и RECONNECTING —
+      // исходная команда connect уже не «в процессе»).
+      switch (event.state) {
+        case SoulseekConnectionState.connected:
+        case SoulseekConnectionState.disconnected:
+        case SoulseekConnectionState.failed:
+        case SoulseekConnectionState.reconnecting:
+          _connecting = false;
+        case SoulseekConnectionState.connecting:
+          break;
+      }
+    });
   }
 
   // ── Действия ──
@@ -625,6 +651,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   Widget _buildContent(dynamic colors) {
     return ListView(
+      controller: _scrollController,
       padding: EdgeInsets.only(
         top: 0,
         bottom: 8 +
@@ -680,6 +707,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
         // === CONNECTION STATUS ===
         _Section(
+          key: _connectionSectionKey,
           title: 'Connection',
           colors: colors,
           children: [
@@ -1249,6 +1277,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
 class _Section extends StatelessWidget {
   const _Section({
+    super.key,
     required this.title,
     required this.children,
     required this.colors,

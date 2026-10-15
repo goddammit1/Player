@@ -22,9 +22,12 @@ import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
 import 'package:player/search/search.dart' as search;
+import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/source_registry.dart';
 import 'package:player/sources/track_source.dart';
+import 'package:player/ui/pages/search/search_bar_widgets.dart';
 import 'package:player/ui/pages/search_page.dart';
+import 'package:player/ui/pages/soulseek_settings_page.dart';
 
 import '../setup/test_harness.dart';
 
@@ -274,5 +277,144 @@ void main() {
       find.byKey(const ValueKey<String>('search-filter-fake_b')),
       findsOneWidget,
     );
+  });
+
+  group('Soulseek filter connection state', () {
+    const soulseekChip = ValueKey<String>('search-filter-soulseek');
+
+    /// SearchPage с источниками `fake_a` + `soulseek` и подменённым статусом
+    /// соединения; возвращает контейнер провайдеров.
+    Future<ProviderContainer> pumpSearch(
+      WidgetTester tester,
+      SoulseekConnectionState? state, {
+      bool unknown = false,
+    }) async {
+      SourceRegistry.instance.register(_EmptySource(id: 'fake_a'));
+      SourceRegistry.instance.register(_EmptySource(id: 'soulseek'));
+      addTearDown(() async => await SourceRegistry.instance.disposeAll());
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            playerServiceProvider.overrideWithValue(_FakePlayer()),
+            soulseekConnectionProvider.overrideWith(
+              (ref) => unknown
+                  ? const Stream<SoulseekConnectionEvent?>.empty()
+                  : Stream.value(
+                      state == null
+                          ? null
+                          : SoulseekConnectionEvent(state: state),
+                    ),
+            ),
+          ],
+          child: const MaterialApp(
+            home: SearchPage(
+              showNowPlayingOverlay: false,
+              showInPageSearchBar: true,
+            ),
+          ),
+        ),
+      );
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(SearchPage)),
+      );
+      await container.read(searchProvider.notifier).search('anything');
+      await tester.pump();
+      await tester.pump();
+      return container;
+    }
+
+    bool isDashed(WidgetTester tester) => tester
+        .widgetList<CustomPaint>(
+          find.descendant(
+            of: find.byKey(soulseekChip),
+            matching: find.byType(CustomPaint),
+          ),
+        )
+        .any((p) => p.painter is DashedCirclePainter);
+
+    for (final state in [
+      SoulseekConnectionState.disconnected,
+      SoulseekConnectionState.connecting,
+      SoulseekConnectionState.reconnecting,
+      SoulseekConnectionState.failed,
+    ]) {
+      testWidgets('${state.name}: dashed outline', (tester) async {
+        await pumpSearch(tester, state);
+        expect(find.byKey(soulseekChip), findsOneWidget);
+        expect(isDashed(tester), isTrue);
+      });
+    }
+
+    testWidgets('connected: solid outline, tap selects the source',
+        (tester) async {
+      final container =
+          await pumpSearch(tester, SoulseekConnectionState.connected);
+      expect(isDashed(tester), isFalse);
+
+      await tester.tap(find.byKey(soulseekChip));
+      await tester.pump();
+      expect(container.read(searchProvider).sourceId, 'soulseek');
+    });
+
+    testWidgets('state not known yet (UNKNOWN): dashed outline',
+        (tester) async {
+      await pumpSearch(tester, null, unknown: true);
+      expect(isDashed(tester), isTrue);
+    });
+
+    testWidgets('unavailable on platform (null): solid outline',
+        (tester) async {
+      await pumpSearch(tester, null);
+      expect(isDashed(tester), isFalse);
+    });
+
+    testWidgets(
+        'disconnected: tap opens Soulseek settings at Connection instead of '
+        'selecting', (tester) async {
+      // Низкий экран: секция Connection изначально вне viewport/cacheExtent.
+      tester.view.physicalSize = const Size(400, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final container =
+          await pumpSearch(tester, SoulseekConnectionState.disconnected);
+
+      await tester.tap(find.byKey(soulseekChip));
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      // Страница прокручена к Connection: заголовок секции на экране.
+      final header = find.text('CONNECTION');
+      expect(header, findsOneWidget);
+      final y = tester.getTopLeft(header).dy;
+      expect(y, inInclusiveRange(0, 640));
+
+      final page = tester.widget<SoulseekSettingsPage>(
+        find.byType(SoulseekSettingsPage),
+      );
+      expect(page.initialSection, SoulseekSettingsSection.connection);
+      expect(
+        container.read(searchProvider).sourceId,
+        search.kAllSourcesId,
+      );
+    });
+
+    testWidgets('disconnected but selected: tap still deselects',
+        (tester) async {
+      final container =
+          await pumpSearch(tester, SoulseekConnectionState.disconnected);
+      container.read(searchProvider.notifier).setSourceId('soulseek');
+      await tester.pump();
+
+      await tester.tap(find.byKey(soulseekChip));
+      await tester.pump();
+      expect(find.byType(SoulseekSettingsPage), findsNothing);
+      expect(
+        container.read(searchProvider).sourceId,
+        search.kAllSourcesId,
+      );
+    });
   });
 }

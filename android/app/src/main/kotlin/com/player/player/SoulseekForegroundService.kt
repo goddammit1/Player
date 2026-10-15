@@ -47,6 +47,15 @@ class SoulseekForegroundService : Service() {
         private const val TAG = "SoulseekFgService"
 
         const val EXTRA_COMMAND = "command"
+
+        /**
+         * Сервис жив в этом процессе (между onCreate и onDestroy). Плагин
+         * нового Flutter engine по нему отличает «соединения точно нет»
+         * от «есть, но binder ещё не привязан» (дефект №3).
+         */
+        @Volatile
+        var isRunning = false
+            private set
         const val COMMAND_START = "start"
         const val COMMAND_STOP = "stop"
 
@@ -115,6 +124,7 @@ class SoulseekForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         // Регистрируем receiver для notification actions.
         val filter = IntentFilter().apply {
             addAction(SoulseekNotification.ACTION_PAUSE_ALL)
@@ -259,6 +269,7 @@ class SoulseekForegroundService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy: cleanup")
+        isRunning = false
         transferManager?.cancelAllForShutdown()
         transferManager?.saveCheckpoints()
 

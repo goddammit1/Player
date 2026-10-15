@@ -43,7 +43,9 @@ import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
 import 'package:player/sources/source_registry.dart';
 import 'package:player/ui/pages/cached_tracks_page.dart';
+import 'package:player/ui/pages/player/player_bottom_actions.dart';
 import 'package:player/ui/widgets/artwork.dart';
+import 'package:player/ui/widgets/queue_sheet.dart';
 import 'package:player/ui/widgets/track_details_sheet.dart';
 import 'package:player/ui/widgets/track_settings_sheet.dart';
 
@@ -683,6 +685,106 @@ void main() {
       expect(find.text('Cached'), findsOneWidget);
     });
 
+    testWidgets('скорость загрузки — подпись под прогрессом; queued без скорости',
+        (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = null;
+
+      await tester.pumpWidget(_host(
+        (ctx) => showTrackSettingsSheet(ctx, track: _soulseekTrack()),
+        player,
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Download'));
+      await tester.pump();
+
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.queued,
+      ));
+      await tester.pump();
+      expect(find.text('Downloading…'), findsOneWidget);
+      expect(find.text('Queued'), findsOneWidget);
+
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.downloading,
+        bytesReceived: 25500000,
+        totalBytes: 51000000,
+        bytesPerSecond: 1258291,
+      ));
+      await tester.pump();
+      expect(find.text('Downloading… 50%'), findsOneWidget);
+      expect(find.text('1.2 MB/s'), findsOneWidget);
+    });
+
+    testWidgets('загрузка на паузе: меню показывает её как живую, «Paused»',
+        (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.paused,
+        bytesReceived: 30,
+        totalBytes: 100,
+      );
+
+      await tester.pumpWidget(_host(
+        (ctx) => showTrackSettingsSheet(ctx, track: _soulseekTrack()),
+        player,
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      // Не «Download» (повторный старт), а живая загрузка, ведущая в список.
+      expect(find.text('Download'), findsNothing);
+      expect(find.text('Downloading… 30%'), findsOneWidget);
+      expect(find.text('Paused'), findsOneWidget);
+      expect(find.byKey(const Key('track_download_progress')), findsOneWidget);
+    });
+
+    testWidgets('тап по идущей загрузке открывает список загрузок Soulseek',
+        (tester) async {
+      // Шторка загрузок слушает реальный EventChannel платформенного канала.
+      const events = EventChannel('soulseek/events');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+        events,
+        MockStreamHandler.inline(onListen: (_, _) {}),
+      );
+      addTearDown(() => TestDefaultBinaryMessengerBinding
+          .instance.defaultBinaryMessenger
+          .setMockStreamHandler(events, null));
+
+      channel.cacheEntry = null;
+      channel.transferInfo = null;
+
+      await tester.pumpWidget(_host(
+        (ctx) => showTrackSettingsSheet(ctx, track: _soulseekTrack()),
+        player,
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Download'));
+      await tester.pump();
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.downloading,
+        bytesReceived: 100,
+        totalBytes: 1000,
+      ));
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('track_download_progress')));
+      await tester.pumpAndSettle();
+
+      // Шторка трека закрыта, вместо неё — список загрузок.
+      expect(find.text('Add to playlist'), findsNothing);
+      expect(find.text('Downloads'), findsOneWidget);
+    });
+
     testWidgets('failed-событие сбрасывает состояние и показывает ошибку',
         (tester) async {
       channel.cacheEntry = null;
@@ -815,6 +917,187 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('unavailable'), findsOneWidget);
+    });
+  });
+
+  // ── Точка на кнопке меню плеера ───────────────────────────────────────
+
+  group('Player menu badge: загрузка текущего трека', () {
+    const badge = Key('player_menu_badge');
+
+    MediaItem itemFor(Track t) => MediaItem(
+          id: t.globalId,
+          title: t.title,
+          artist: t.artist,
+          extras: {'sourceId': t.sourceId, 'trackId': t.id, ...t.extra},
+        );
+
+    // Событие доставляется в микротаске после кадра pump — setState
+    // рисуется следующим кадром.
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump();
+    }
+
+    Future<void> pumpActions(WidgetTester tester, Track track) async {
+      final queueCtrl = QueueSheetController(vsync: tester);
+      addTearDown(queueCtrl.dispose);
+      await tester.pumpWidget(ProviderScope(
+        overrides: [playerServiceProvider.overrideWithValue(player)],
+        child: MaterialApp(
+          home: Scaffold(
+            body: PlayerBottomActions(
+              player: player,
+              item: itemFor(track),
+              queueCtrl: queueCtrl,
+              colors: AppColors.fixed,
+            ),
+          ),
+        ),
+      ));
+      await tester.pump();
+    }
+
+    testWidgets('transfer-события текущего трека включают и гасят точку',
+        (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = null;
+      await pumpActions(tester, _soulseekTrack());
+      expect(find.byKey(badge), findsNothing);
+
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.downloading,
+        bytesReceived: 10,
+        totalBytes: 100,
+      ));
+      await settle(tester);
+      expect(find.byKey(badge), findsOneWidget);
+
+      // Чужая загрузка не влияет.
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_other',
+        state: SoulseekTransferState.completed,
+      ));
+      await settle(tester);
+      expect(find.byKey(badge), findsOneWidget);
+
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.completed,
+      ));
+      await settle(tester);
+      expect(find.byKey(badge), findsNothing);
+    });
+
+    testWidgets(
+        'точка красная и держится на паузе; гаснет на ручной отмене и на '
+        'обрыве пира', (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = null;
+      await pumpActions(tester, _soulseekTrack());
+
+      Future<void> emit(
+        SoulseekTransferState state, {
+        String? errorCode,
+      }) async {
+        channel.emitTransfer(SoulseekTransferInfo(
+          downloadId: 'dl_ck1',
+          state: state,
+          errorCode: errorCode,
+        ));
+        await settle(tester);
+      }
+
+      Color dotColor() {
+        final box = tester.widget<Container>(find.byKey(badge));
+        return (box.decoration! as BoxDecoration).color!;
+      }
+
+      await emit(SoulseekTransferState.downloading);
+      expect(dotColor(), Colors.redAccent);
+
+      // Пауза — загрузка жива, её возобновят.
+      await emit(SoulseekTransferState.paused);
+      expect(find.byKey(badge), findsOneWidget);
+
+      // Временный сбой → менеджер возвращает в очередь (ретрай).
+      await emit(SoulseekTransferState.queued);
+      expect(find.byKey(badge), findsOneWidget);
+
+      await emit(SoulseekTransferState.cancelled);
+      expect(find.byKey(badge), findsNothing);
+
+      await emit(SoulseekTransferState.downloading);
+      expect(find.byKey(badge), findsOneWidget);
+      await emit(SoulseekTransferState.failed, errorCode: 'PEER_OFFLINE');
+      expect(find.byKey(badge), findsNothing);
+    });
+
+    testWidgets('пауза до открытия плеера — точка по снимку', (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.paused,
+      );
+      await pumpActions(tester, _soulseekTrack());
+      await settle(tester);
+      expect(find.byKey(badge), findsOneWidget);
+    });
+
+    testWidgets('загрузка шла до открытия плеера — точка по снимку',
+        (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.queued,
+      );
+      await pumpActions(tester, _soulseekTrack());
+      await settle(tester);
+      expect(find.byKey(badge), findsOneWidget);
+    });
+
+    testWidgets('смена трека переподписывает: точка гаснет', (tester) async {
+      channel.cacheEntry = null;
+      channel.transferInfo = null;
+      await pumpActions(tester, _soulseekTrack());
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.downloading,
+      ));
+      await settle(tester);
+      expect(find.byKey(badge), findsOneWidget);
+
+      // Следующий трек (другой cacheKey) не качается.
+      final next = _soulseekTrack(cacheKey: 'ck2');
+      await pumpActions(
+        tester,
+        Track(
+          id: 'res_2',
+          sourceId: next.sourceId,
+          title: 'Next',
+          artist: next.artist,
+          extra: next.extra,
+        ),
+      );
+      await settle(tester);
+      expect(find.byKey(badge), findsNothing);
+
+      // События прошлого трека больше не влияют.
+      channel.emitTransfer(const SoulseekTransferInfo(
+        downloadId: 'dl_ck1',
+        state: SoulseekTransferState.downloading,
+      ));
+      await settle(tester);
+      expect(find.byKey(badge), findsNothing);
+    });
+
+    testWidgets('не-Soulseek трек: точки нет', (tester) async {
+      await pumpActions(
+        tester,
+        const Track(id: 'mz_1', sourceId: 'muzmo', title: 'Web', artist: 'A'),
+      );
+      expect(find.byKey(badge), findsNothing);
     });
   });
 }

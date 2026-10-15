@@ -71,7 +71,10 @@ class SoulseekCacheManager(
         val artist: String? = null,
         val durationSeconds: Int? = null,
         /** Этап 2.3 серии 02: расширение файла из БД (для метки качества на Dart). */
-        val extension: String? = null
+        val extension: String? = null,
+        /** Исходный путь файла у пира: из него Dart строит название записей
+         *  без [title] (файл назван хэшем) и запрос обложки. */
+        val remoteFilename: String? = null
     )
 
     /**
@@ -101,7 +104,8 @@ class SoulseekCacheManager(
                 title = row.title,
                 artist = row.artist,
                 durationSeconds = row.durationSeconds,
-                extension = row.extension
+                extension = row.extension,
+                remoteFilename = remoteFilenameOf(row)
             )
         }
         return null
@@ -131,12 +135,39 @@ class SoulseekCacheManager(
                     title = row.title,
                     artist = row.artist,
                     durationSeconds = row.durationSeconds,
-                    extension = row.extension
+                    extension = row.extension,
+                    remoteFilename = remoteFilenameOf(row)
                 )
             )
         }
         return out
     }
+
+    /**
+     * Дописывает человекочитаемые метаданные в запись, у которой их нет
+     * (файл докачан prefetch'ем без title, загрузка восстановлена после
+     * перезапуска сервиса и т.п.). Существующий title не перезаписывается.
+     */
+    fun fillMissingMetadata(
+        cacheKey: String,
+        title: String?,
+        artist: String?,
+        durationSeconds: Int?
+    ) {
+        if (title.isNullOrBlank()) return
+        val sanitized = sanitizeCacheKey(cacheKey) ?: return
+        val row = database.getCacheEntry(sanitized) ?: return
+        if (!row.title.isNullOrBlank()) return
+        database.updateCacheMetadata(
+            sanitized,
+            title,
+            artist ?: row.artist,
+            durationSeconds ?: row.durationSeconds
+        )
+    }
+
+    private fun remoteFilenameOf(row: SoulseekDatabase.CacheEntryRow): String? =
+        runCatching { database.getRemoteFilenameByCacheKey(row.cacheKey) }.getOrNull()
 
     /**
      * Возвращает .part файл для resume, если он существует и имеет размер > 0.

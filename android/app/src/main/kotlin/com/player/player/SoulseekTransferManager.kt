@@ -3,7 +3,6 @@ package com.player.player
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 import soulseek.wrapper.ISoulseekEventSink
 import soulseek.wrapper.SoulseekBridge
@@ -76,10 +75,12 @@ class SoulseekTransferManager(
         @Volatile var sizeBytes: Long = 0L,
         val fileExtension: String,
         /** NEW-3: человекочитаемые метаданные из поисковой выдачи —
-         *  фиксируются в cache_entries при завершении загрузки. */
-        val title: String? = null,
-        val artist: String? = null,
-        val durationSeconds: Int? = null,
+         *  фиксируются в cache_entries при завершении загрузки. var:
+         *  загрузку без них (prefetch, restore) дополняет следующий
+         *  startDownload того же файла. */
+        @Volatile var title: String? = null,
+        @Volatile var artist: String? = null,
+        @Volatile var durationSeconds: Int? = null,
         @Volatile var state: TransferState,
         @Volatile var bytesReceived: Long = 0L,
         @Volatile var bytesPerSecond: Long = 0L,
@@ -87,6 +88,8 @@ class SoulseekTransferManager(
         @Volatile var retryCount: Int = 0,
         @Volatile var lastCheckpointAt: Long = 0L,
         @Volatile var lastNotificationAt: Long = 0L,
+        /** Слот параллельных загрузок текущей попытки (null — вне попытки). */
+        @Volatile var lease: PermitLease? = null,
         /** Управляет retry-loop корутины. */
         @Volatile var pauseRequested: Boolean = false,
         @Volatile var cancelRequested: Boolean = false,
@@ -95,6 +98,30 @@ class SoulseekTransferManager(
          *  (терминальным для Dart это не является). */
         @Volatile var retrySignal: Boolean = false
     )
+
+    /**
+     * Слот [semaphore], взятый попыткой загрузки. Пока пир держит файл в
+     * своей очереди, слот отпускается ([release]) — иначе такие загрузки
+     * (очередь у пира бывает многоминутной) занимают все слоты и новые
+     * загрузки стоят в локальной очереди. Когда пир начинает отдавать файл,
+     * слот берётся снова, если свободен ([tryReacquire]); если нет —
+     * загрузка идёт сверх лимита, не прерываясь.
+     */
+    class PermitLease(private val semaphore: Semaphore) {
+        private var held = true
+
+        @Synchronized
+        fun release() {
+            if (!held) return
+            held = false
+            semaphore.release()
+        }
+
+        @Synchronized
+        fun tryReacquire() {
+            if (!held && semaphore.tryAcquire()) held = true
+        }
+    }
 
     /** Все известные трансферы (активные + paused + завершённые до перечитывания БД). */
     private val transfers = ConcurrentHashMap<String, TransferContext>()
@@ -150,8 +177,15 @@ class SoulseekTransferManager(
         // 1. Cache hit: файл уже полностью скачан.
         cacheManager.getCacheEntry(cacheKey)?.let { entry ->
             Log.i(TAG, "startDownload: cache hit for $cacheKey -> ${entry.localPath}")
+            // Файл, докачанный без метаданных (prefetch), получает их сейчас.
+            cacheManager.fillMissingMetadata(cacheKey, title, artist, durationSeconds)
             // Фиксируем завершённый трансфер и шлём событие немедленно.
-            emitTransferEvent(downloadId, TransferState.COMPLETED, entry.sizeBytes, sizeBytes, 0L, entry.localPath)
+            emitTransferEvent(
+                downloadId, TransferState.COMPLETED, entry.sizeBytes, sizeBytes, 0L, entry.localPath,
+                title = title ?: entry.title,
+                artist = artist ?: entry.artist,
+                remoteFilename = remoteFilename
+            )
             return entry.localPath
         }
 
@@ -161,6 +195,12 @@ class SoulseekTransferManager(
             val ctx = transfers[existingId]!!
             if (!ctx.state.isTerminal) {
                 Log.i(TAG, "startDownload: dedupe, joining existing transfer $existingId")
+                if (ctx.title.isNullOrBlank() && !title.isNullOrBlank()) {
+                    ctx.title = title
+                    ctx.artist = artist
+                    ctx.durationSeconds = durationSeconds
+                    emitTransferEvent(ctx)
+                }
                 return existingId
             }
         }
@@ -266,9 +306,16 @@ class SoulseekTransferManager(
     fun getTransfer(downloadId: String): SoulseekTransferEvent? =
         transfers[downloadId]?.toEvent()
 
-    /** Устанавливает текущее состояние соединения (для retry-логики). */
+    /**
+     * Смена состояния соединения не от моста: намеренный disconnect
+     * (dispose моста clientStateChanged не присылает). Как и событие моста,
+     * обновляет notification и шлёт connection-событие во Flutter — иначе
+     * Flutter (фильтр поиска) продолжал бы видеть CONNECTED.
+     */
     fun setConnectionState(state: ConnectionState) {
+        if (connectionState == state) return
         setConnectionStateInternal(state)
+        eventSink(SoulseekConnectionEvent(state = state).toJson().toString())
     }
 
     /**
@@ -293,68 +340,76 @@ class SoulseekTransferManager(
             // Ждём слот очереди.
             ctx.state = TransferState.QUEUED
             emitTransferEvent(ctx)
-            semaphore.withPermit {
-                if (ctx.cancelRequested || ctx.pauseRequested) return@withPermit
+            semaphore.acquire()
+            val lease = PermitLease(semaphore)
+            ctx.lease = lease
+            try {
+                run attempt@{
+                    if (ctx.cancelRequested || ctx.pauseRequested) return@attempt
 
-                ctx.state = TransferState.DOWNLOADING
-                emitTransferEvent(ctx)
-                onActiveTransfersChanged()
+                    ctx.state = TransferState.DOWNLOADING
+                    emitTransferEvent(ctx)
+                    onActiveTransfersChanged()
 
-                try {
-                    // Новая попытка: сбрасываем сигнал прошлой промежуточной неудачи.
-                    ctx.retrySignal = false
+                    try {
+                        // Новая попытка: сбрасываем сигнал прошлой промежуточной неудачи.
+                        ctx.retrySignal = false
 
-                    // Актуализируем bytesReceived из .part файла перед стартом (resume offset).
-                    checkpointFromPartFile(ctx)
+                        // Актуализируем bytesReceived из .part файла перед стартом (resume offset).
+                        checkpointFromPartFile(ctx)
 
-                    val requestJson = JSONObject().apply {
-                        put("downloadId", ctx.downloadId)
-                        put("peerUsername", ctx.peerUsername)
-                        put("remoteFilename", ctx.remoteFilename)
-                        put("sizeBytes", ctx.sizeBytes)
-                        put("cacheKey", ctx.cacheKey)
-                        put("localDirectory", cacheDirectoryPath)
-                        put("fileExtension", ctx.fileExtension)
-                    }
-
-                    // downloadToFileAsync — блокирующий вызов C# bridge.
-                    // Возвращает немедленно (fire-and-forget внутри C#); прогресс
-                    // приходит через event sink.
-                    val result = runCatching { bridge.downloadToFileAsync(requestJson.toString()) }
-                        .getOrElse { e ->
-                            Log.e(TAG, "downloadToFileAsync JNI call failed", e)
-                            "{\"success\":false,\"errorCode\":\"JNI_ERROR\",\"errorMessage\":\"${e.message?.replace("\"", "'")}\"}"
+                        val requestJson = JSONObject().apply {
+                            put("downloadId", ctx.downloadId)
+                            put("peerUsername", ctx.peerUsername)
+                            put("remoteFilename", ctx.remoteFilename)
+                            put("sizeBytes", ctx.sizeBytes)
+                            put("cacheKey", ctx.cacheKey)
+                            put("localDirectory", cacheDirectoryPath)
+                            put("fileExtension", ctx.fileExtension)
                         }
 
-                    val parsed = BridgeCallResult.parse(result)
-                    if (!parsed.success) {
-                        throw SoulseekServiceException(
-                            parsed.errorCode ?: "BRIDGE_ERROR",
-                            parsed.errorMessage ?: "Bridge download call failed",
-                            parsed.retryable
-                        )
-                    }
+                        // downloadToFileAsync — блокирующий вызов C# bridge.
+                        // Возвращает немедленно (fire-and-forget внутри C#); прогресс
+                        // приходит через event sink.
+                        val result = runCatching { bridge.downloadToFileAsync(requestJson.toString()) }
+                            .getOrElse { e ->
+                                Log.e(TAG, "downloadToFileAsync JNI call failed", e)
+                                "{\"success\":false,\"errorCode\":\"JNI_ERROR\",\"errorMessage\":\"${e.message?.replace("\"", "'")}\"}"
+                            }
 
-                    // Ожидаем завершения: C# шлёт downloadComplete / downloadFailed
-                    // через event sink. Ждём, пока state не станет терминальным.
-                    awaitTerminalState(ctx)
-                } catch (e: SoulseekServiceException) {
-                    handleTransferFailure(ctx, e, attempt)
-                    return@withPermit
-                } catch (e: Exception) {
-                    handleTransferFailure(
-                        ctx,
-                        SoulseekServiceException(
-                            "INTERNAL_ERROR",
-                            e.message ?: "Unexpected transfer error",
-                            retryable = false
-                        ),
-                        attempt
-                    )
-                    return@withPermit
-                } finally {
-                    onActiveTransfersChanged()
+                        val parsed = BridgeCallResult.parse(result)
+                        if (!parsed.success) {
+                            throw SoulseekServiceException(
+                                parsed.errorCode ?: "BRIDGE_ERROR",
+                                parsed.errorMessage ?: "Bridge download call failed",
+                                parsed.retryable
+                            )
+                        }
+
+                        // Ожидаем завершения: C# шлёт downloadComplete / downloadFailed
+                        // через event sink. Ждём, пока state не станет терминальным.
+                        awaitTerminalState(ctx)
+                    } catch (e: SoulseekServiceException) {
+                        handleTransferFailure(ctx, e, attempt)
+                        return@attempt
+                    } catch (e: Exception) {
+                        handleTransferFailure(
+                            ctx,
+                            SoulseekServiceException(
+                                "INTERNAL_ERROR",
+                                e.message ?: "Unexpected transfer error",
+                                retryable = false
+                            ),
+                            attempt
+                        )
+                        return@attempt
+                    } finally {
+                        onActiveTransfersChanged()
+                    }
                 }
+            } finally {
+                if (ctx.lease === lease) ctx.lease = null
+                lease.release()
             }
 
             // Если terminal — выходим из retry-loop.
@@ -507,9 +562,17 @@ class SoulseekTransferManager(
                 val ctx = transfers[downloadId] ?: return
                 val mapped = BridgeStateMapper.mapTransferState(obj.optString("state", null))
                 if (!mapped.isTerminal) {
+                    // Очередь у пира слот не держит; пир начал отдавать —
+                    // слот снова наш, если свободен.
+                    if (mapped == TransferState.QUEUED_REMOTELY) {
+                        ctx.lease?.release()
+                    } else if (mapped == TransferState.DOWNLOADING) {
+                        ctx.lease?.tryReacquire()
+                    }
                     ctx.state = mapped
                     ctx.bytesReceived = obj.optLong("bytesReceived", ctx.bytesReceived)
                     emitTransferEvent(ctx)
+                    onActiveTransfersChanged()
                 }
                 // Терминальные не-Failed состояния прилетят отдельным
                 // downloadComplete/downloadFailed событием.
@@ -725,8 +788,12 @@ class SoulseekTransferManager(
         localPath: String? = null,
         errorCode: String? = null,
         retryable: Boolean = false,
-        message: String? = null
+        message: String? = null,
+        title: String? = null,
+        artist: String? = null,
+        remoteFilename: String? = null
     ) {
+        val ctx = transfers[downloadId]
         eventSink(
             SoulseekTransferEvent(
                 downloadId = downloadId,
@@ -737,7 +804,10 @@ class SoulseekTransferManager(
                 localPath = localPath,
                 errorCode = errorCode,
                 retryable = retryable,
-                message = message
+                message = message,
+                title = title ?: ctx?.title,
+                artist = artist ?: ctx?.artist,
+                remoteFilename = remoteFilename ?: ctx?.remoteFilename
             ).toJson().toString()
         )
     }
@@ -759,7 +829,10 @@ class SoulseekTransferManager(
         bytesReceived = bytesReceived,
         totalBytes = sizeBytes,
         bytesPerSecond = bytesPerSecond,
-        localPath = localPath
+        localPath = localPath,
+        title = title,
+        artist = artist,
+        remoteFilename = remoteFilename
     )
 
     private fun notFound(downloadId: String) = SoulseekServiceException(

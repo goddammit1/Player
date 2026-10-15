@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers.dart';
 import '../../core/track_actions.dart';
 import '../../models/track.dart';
+import '../../sources/soulseek_models.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/sleep_timer_sheet.dart';
 import '../widgets/snack.dart';
@@ -189,9 +190,11 @@ Future<void> showTrackContextMenu(
         ),
         TrackCacheState.downloading => item(
           Icons.downloading_rounded,
-          status.progress != null
-              ? 'Downloading… ${(status.progress! * 100).round()}%'
-              : 'Downloading…',
+          status.transfer?.state == SoulseekTransferState.paused
+              ? 'Download paused'
+              : status.progress != null
+                  ? 'Downloading… ${(status.progress! * 100).round()}%'
+                  : 'Downloading…',
           null,
           key: const Key('track_menu_downloading'),
         ),

@@ -361,6 +361,7 @@ void main() {
       String? title = 'Song',
       String? artist = 'Artist',
       int? durationSeconds = 240,
+      String? remoteFilename,
     }) {
       return SoulseekCacheEntry(
         cacheKey: cacheKey,
@@ -372,6 +373,7 @@ void main() {
         artist: artist,
         durationSeconds: durationSeconds,
         extension: extension,
+        remoteFilename: remoteFilename,
       );
     }
 
@@ -402,6 +404,30 @@ void main() {
       );
       expect(track.title, '01 - Song');
       expect(track.artist, 'Unknown');
+    });
+
+    test('без title — название из имени файла у пира, а не хэш', () {
+      final track = source.trackFromCacheEntry(entry(
+        title: null,
+        artist: null,
+        localPath: '/cache/0f3a9c.flac',
+        remoteFilename: r'@@music\Artist\Album\01 - Song.flac',
+      ));
+      expect(track.title, 'Song');
+      expect(track.artist, 'Artist');
+    });
+
+    test('remoteFilename в extra — обложка ищется очищенным запросом', () {
+      final track = source.trackFromCacheEntry(entry(
+        title: '09 Without Me',
+        artist: '1-10',
+        remoteFilename: r'@@music\Halsey\Manic\09 Without Me.flac',
+      ));
+      // Отображение — как сохранено в записи.
+      expect(track.title, '09 Without Me');
+      final q = SoulseekSource.artworkQuery(track);
+      expect(q.title, 'Without Me');
+      expect(q.artist, 'Halsey');
     });
 
     test('qualityLabel из extension записи', () {
@@ -1553,6 +1579,13 @@ void main() {
 
     File partOf(String downloadId) => File('${dir.path}/$downloadId.part');
 
+    /// Основной пир начинает отдавать файл вскоре после запроса.
+    Future<T> whilePrimarySends<T>(Future<T> playback) async {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await partOf('dl_ck_test').writeAsBytes(List<int>.filled(150, 1));
+      return playback;
+    }
+
     /// Запасной пир начинает отдавать файл вскоре после запроса.
     Future<T> whileAlternateSends<T>(Future<T> playback) async {
       await Future<void>.delayed(const Duration(milliseconds: 40));
@@ -1567,6 +1600,7 @@ void main() {
       source.streamPollInterval = const Duration(milliseconds: 5);
       source.streamStartBytes = 100;
       source.alternateStartTimeout = const Duration(milliseconds: 80);
+      source.abandonedCancelDelay = Duration.zero;
       channel.cacheEntry = null;
       channel.partPathFor = (id) => partOf(id).path;
     });
@@ -1614,6 +1648,7 @@ void main() {
       await partOf(altId).writeAsBytes(List<int>.filled(150, 1));
 
       final audio = await future;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect((audio as GrowingFile).partPath, partOf(altId).path);
       expect(channel.cancelledDownloads, ['dl_ck_test']);
@@ -1704,6 +1739,80 @@ void main() {
 
       expect(channel.startDownloadCalls.single['peerUsername'], 'peer2');
     });
+
+    // ── брошенные загрузки ──
+
+    Matcher throwsCode(String code) => throwsA(
+          isA<SoulseekException>().having((e) => e.code, 'code', code),
+        );
+
+    test('player switched track while the peer queues the file → '
+        'waiting stops, download cancelled', () async {
+      source.downloadTimeout = const Duration(seconds: 5);
+      final future = source.createPlaybackSource(_makeTrack());
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      source.cancelPendingPlayback();
+
+      await expectLater(future, throwsCode('PLAYBACK_SUPERSEDED'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(channel.cancelledDownloads, ['dl_ck_test']);
+    });
+
+    test('superseded by a new request for the same file → not cancelled',
+        () async {
+      source.downloadTimeout = const Duration(seconds: 5);
+      source.abandonedCancelDelay = const Duration(milliseconds: 20);
+      final first = source.createPlaybackSource(_makeTrack());
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      source.cancelPendingPlayback();
+      final second = source.createPlaybackSource(_makeTrack());
+      await expectLater(first, throwsCode('PLAYBACK_SUPERSEDED'));
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await partOf('dl_ck_test').writeAsBytes(List<int>.filled(150, 1));
+
+      expect(await second, isA<GrowingFile>());
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(channel.cancelledDownloads, isEmpty);
+    });
+
+    test('a manual download survives the track switch', () async {
+      source.downloadTimeout = const Duration(seconds: 5);
+      await source.startManualDownload(_makeTrack());
+      final future = source.createPlaybackSource(_makeTrack());
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      source.cancelPendingPlayback();
+
+      await expectLater(future, throwsCode('PLAYBACK_SUPERSEDED'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(channel.cancelledDownloads, isEmpty);
+    });
+
+    test('the last source timing out is cancelled too', () async {
+      source.downloadTimeout = const Duration(milliseconds: 60);
+
+      await expectLater(
+        source.createPlaybackSource(_makeTrack()),
+        throwsCode('DOWNLOAD_TIMEOUT'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(channel.cancelledDownloads, ['dl_ck_test']);
+    });
+
+    test('a playing growing file is not cancelled by an older abandoned '
+        'request', () async {
+      source.downloadTimeout = const Duration(seconds: 5);
+      final playing = await whilePrimarySends(
+        source.createPlaybackSource(_makeTrack()),
+      );
+      expect(playing, isA<GrowingFile>());
+
+      source.cancelPendingPlayback();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(channel.cancelledDownloads, isEmpty);
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -1773,6 +1882,99 @@ void main() {
   //  prefetch
   // ═══════════════════════════════════════════════════════════════════
   group('prefetch', () {
+    Track withSlots({
+      required bool primaryFree,
+      bool? alternateFree,
+      String cacheKey = 'ck_test',
+    }) {
+      final base = _makeTrack(cacheKey: cacheKey);
+      return Track(
+        id: base.id,
+        sourceId: base.sourceId,
+        title: base.title,
+        artist: base.artist,
+        duration: null,
+        artworkUrl: null,
+        extra: {
+          ...base.extra,
+          'hasFreeUploadSlot': primaryFree,
+          if (alternateFree != null)
+            'alternates': [
+              {
+                'peerUsername': 'peer2',
+                'remoteFilename': r'B\Artist - Title.flac',
+                'sizeBytes': 50000000,
+                'hasFreeUploadSlot': alternateFree,
+                'queueLength': 3,
+              },
+            ],
+        },
+      );
+    }
+
+    test('skips peers without a free upload slot', () async {
+      channel.cacheEntry = null;
+      await source.prefetch(withSlots(primaryFree: false, alternateFree: false));
+      expect(channel.startDownloadCalls, isEmpty);
+    });
+
+    test('takes an alternate with a free slot when the primary is busy',
+        () async {
+      channel.cacheEntry = null;
+      await source.prefetch(withSlots(primaryFree: false, alternateFree: true));
+      expect(channel.startDownloadCalls.single['peerUsername'], 'peer2');
+    });
+
+    test('manual download ignores the slot and starts at the primary',
+        () async {
+      channel.cacheEntry = null;
+      await source.startManualDownload(
+        withSlots(primaryFree: false, alternateFree: true),
+      );
+      expect(channel.startDownloadCalls.single['peerUsername'], 'peer1');
+    });
+
+    test('the next prefetch cancels the previous one that got no bytes',
+        () async {
+      channel.cacheEntry = null;
+      source.abandonedCancelDelay = Duration.zero;
+      channel.transfersById['dl_ck_a'] = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_a',
+        state: SoulseekTransferState.queuedRemotely,
+      );
+      await source.prefetch(withSlots(primaryFree: true, cacheKey: 'ck_a'));
+      await source.prefetch(withSlots(primaryFree: true, cacheKey: 'ck_b'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(channel.cancelledDownloads, ['dl_ck_a']);
+    });
+
+    test('a previous prefetch that is already downloading is kept', () async {
+      channel.cacheEntry = null;
+      source.abandonedCancelDelay = Duration.zero;
+      channel.transfersById['dl_ck_a'] = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_a',
+        state: SoulseekTransferState.downloading,
+        bytesReceived: 4096,
+      );
+      await source.prefetch(withSlots(primaryFree: true, cacheKey: 'ck_a'));
+      await source.prefetch(withSlots(primaryFree: true, cacheKey: 'ck_b'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(channel.cancelledDownloads, isEmpty);
+    });
+
+    test('a prefetch that does not start in time is cancelled', () async {
+      channel.cacheEntry = null;
+      source.abandonedCancelDelay = Duration.zero;
+      source.prefetchStartTimeout = const Duration(milliseconds: 30);
+      channel.transfersById['dl_ck_a'] = const SoulseekTransferInfo(
+        downloadId: 'dl_ck_a',
+        state: SoulseekTransferState.queuedRemotely,
+      );
+      await source.prefetch(withSlots(primaryFree: true, cacheKey: 'ck_a'));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(channel.cancelledDownloads, ['dl_ck_a']);
+    });
+
     test('does nothing when channel is unavailable', () async {
       channel.isAvailable = false;
       await source.prefetch(_makeTrack());
@@ -1801,6 +2003,9 @@ void main() {
       expect(call['sizeBytes'], 50000000);
       expect(call['cacheKey'], 'ck_test');
       expect(call['fileExtension'], 'flac');
+      // Без метаданных файл попал бы в кэш-лист под хэш-именем.
+      expect(call['title'], 'Title');
+      expect(call['artist'], 'Artist');
     });
 
     test('does nothing when missing required extra fields', () async {

@@ -21,6 +21,7 @@ import '../../core/providers.dart';
 import '../../sources/soulseek_models.dart';
 import '../../sources/soulseek_platform_channel.dart';
 import '../desktop/desktop_layout.dart';
+import 'byte_format.dart';
 import 'snack.dart';
 
 /// Показывает нижний лист активных загрузок Soulseek.
@@ -298,6 +299,8 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
         return 0;
       case SoulseekTransferState.queued:
         return 1;
+      case SoulseekTransferState.queuedRemotely:
+        return 1;
       case SoulseekTransferState.connecting:
         return 2;
       case SoulseekTransferState.searching:
@@ -345,12 +348,15 @@ class _TransferTile extends StatelessWidget {
     final percent = (progressValue * 100).clamp(0, 100).round();
     final isActive = t.state == SoulseekTransferState.downloading ||
         t.state == SoulseekTransferState.queued ||
+        t.state == SoulseekTransferState.queuedRemotely ||
         t.state == SoulseekTransferState.connecting ||
         t.state == SoulseekTransferState.searching;
     final isPaused = t.state == SoulseekTransferState.paused;
 
-    // Отображаемое имя: из localPath (если есть), иначе из downloadId.
+    // Файл в кэше и downloadId названы хэшем cacheKey — имя берём из
+    // метаданных загрузки, иначе из исходного имени файла у пира.
     final displayName = _displayName(t);
+    final artist = t.artist;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -376,9 +382,9 @@ class _TransferTile extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    if (t.downloadId != displayName)
+                    if (artist != null && artist.isNotEmpty)
                       Text(
-                        t.downloadId,
+                        artist,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -450,7 +456,7 @@ class _TransferTile extends StatelessWidget {
               if (t.bytesPerSecond > 0 && isActive) ...[
                 const SizedBox(width: 10),
                 Text(
-                  _formatSpeed(t.bytesPerSecond),
+                  formatSpeed(t.bytesPerSecond),
                   style: TextStyle(
                     color: colors.textSecondary,
                     fontSize: 12,
@@ -490,8 +496,17 @@ class _TransferTile extends StatelessWidget {
     );
   }
 
-  /// Извлекает отображаемое имя из [localPath] (если есть) или из [downloadId].
+  /// Название загрузки: title, иначе имя файла у пира без расширения.
+  /// [localPath] и [downloadId] — хэши, поэтому только крайний фолбэк.
   String _displayName(SoulseekTransferInfo t) {
+    final title = t.title;
+    if (title != null && title.isNotEmpty) return title;
+    final remote = t.remoteFilename;
+    if (remote != null && remote.isNotEmpty) {
+      final name = _basename(remote);
+      final dot = name.lastIndexOf('.');
+      return dot > 0 ? name.substring(0, dot) : name;
+    }
     if (t.localPath != null && t.localPath!.isNotEmpty) {
       return _basename(t.localPath!);
     }
@@ -507,24 +522,9 @@ class _TransferTile extends StatelessWidget {
   }
 
   String _formatSize(int received, int total) {
-    final r = _humanBytes(received);
-    if (total > 0) return '$r / ${_humanBytes(total)}';
+    final r = humanBytes(received);
+    if (total > 0) return '$r / ${humanBytes(total)}';
     return r;
-  }
-
-  String _formatSpeed(int bytesPerSec) => '${_humanBytes(bytesPerSec)}/s';
-
-  String _humanBytes(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var size = bytes.toDouble();
-    var unit = 0;
-    while (size >= 1024 && unit < units.length - 1) {
-      size /= 1024;
-      unit++;
-    }
-    if (unit == 0) return '$bytes B';
-    return '${size.toStringAsFixed(size >= 100 ? 0 : 1)} ${units[unit]}';
   }
 
   String _stateLabel(SoulseekTransferState s) {
@@ -537,6 +537,8 @@ class _TransferTile extends StatelessWidget {
         return 'Searching';
       case SoulseekTransferState.queued:
         return 'Queued';
+      case SoulseekTransferState.queuedRemotely:
+        return 'Queued at peer';
       case SoulseekTransferState.downloading:
         return 'Downloading';
       case SoulseekTransferState.prebuffered:
@@ -587,6 +589,10 @@ class _StateIcon extends StatelessWidget {
       ),
       SoulseekTransferState.queued => (
         Icons.hourglass_top_rounded,
+        colors.textTertiary as Color,
+      ),
+      SoulseekTransferState.queuedRemotely => (
+        Icons.schedule_rounded,
         colors.textTertiary as Color,
       ),
       SoulseekTransferState.connecting => (

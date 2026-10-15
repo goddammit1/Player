@@ -7,6 +7,7 @@ import '../../core/artwork_helper.dart';
 import '../../core/cached_tracks_service.dart';
 import '../../core/platform/haptic_helper.dart';
 import '../../core/providers.dart';
+import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import '../desktop/track_context_menu.dart';
@@ -686,6 +687,12 @@ class _TrackArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final track = item.track;
+    // Soulseek: title/artist выдачи бывают сырыми («09 Without Me», папка
+    // «1-10» вместо исполнителя) — обложку ищем тем же очищенным запросом,
+    // что и поиск, иначе она не находится.
+    final query = item.store == CacheStore.soulseek
+        ? SoulseekSource.artworkQuery(track)
+        : (artist: track.artist, title: track.title);
     return SizedBox(
       width: _Dimens.trackArtwork,
       height: _Dimens.trackArtwork,
@@ -696,8 +703,8 @@ class _TrackArtwork extends StatelessWidget {
             child: Artwork(
               trackId: track.id,
               url: track.artworkUrl,
-              artist: track.artist,
-              title: track.title,
+              artist: query.artist,
+              title: query.title,
               size: _Dimens.trackArtwork,
               borderRadius: 0,
               aspectRatio: artAspectRatio(track),

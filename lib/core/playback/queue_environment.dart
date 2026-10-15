@@ -33,6 +33,9 @@ abstract class QueueEnvironment {
   /// Что играть для трека (см. [TrackSource.createPlaybackSource]).
   Future<PlaybackSource> resolve(Track track);
 
+  /// Плеер отказался от начатых [resolve] (загружает другой трек).
+  void cancelPendingResolves();
+
   /// «Прогрев» следующего трека очереди.
   Future<void> prefetch(Track track);
 
@@ -82,6 +85,13 @@ class DefaultQueueEnvironment implements QueueEnvironment {
   @override
   Future<PlaybackSource> resolve(Track track) =>
       SourceRegistry.instance.require(track.sourceId).createPlaybackSource(track);
+
+  @override
+  void cancelPendingResolves() {
+    for (final source in SourceRegistry.instance.all) {
+      source.cancelPendingPlayback();
+    }
+  }
 
   @override
   Future<void> prefetch(Track track) =>

@@ -12,7 +12,11 @@ import org.json.JSONObject
  */
 enum class TransferState {
     IDLE, CONNECTING, SEARCHING, QUEUED, DOWNLOADING, PREBUFFERED,
-    COMPLETED, PAUSED, FAILED, CANCELLED;
+    COMPLETED, PAUSED, FAILED, CANCELLED,
+
+    /** В очереди у пира ("Queued, Remotely"): ждём, пока пир начнёт
+     *  отдавать файл; слот параллельных загрузок не занимает. */
+    QUEUED_REMOTELY;
 
     /** Терминальные состояния: трансфер завершён и не потребляет слот очереди. */
     val isTerminal: Boolean
@@ -20,7 +24,8 @@ enum class TransferState {
 
     /** Состояния, при которых трансфер числится «активным» (держит слот/lock). */
     val isActive: Boolean
-        get() = this == QUEUED || this == DOWNLOADING || this == CONNECTING
+        get() = this == QUEUED || this == DOWNLOADING || this == CONNECTING ||
+            this == QUEUED_REMOTELY
 }
 
 /**
@@ -41,7 +46,11 @@ data class SoulseekTransferEvent(
     val localPath: String? = null,
     val errorCode: String? = null,
     val retryable: Boolean = false,
-    val message: String? = null
+    val message: String? = null,
+    /** Человекочитаемое имя для листа загрузок (файл в кэше назван хэшем). */
+    val title: String? = null,
+    val artist: String? = null,
+    val remoteFilename: String? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("eventType", SoulseekEvents.TYPE_TRANSFER)
@@ -54,6 +63,9 @@ data class SoulseekTransferEvent(
         put("errorCode", errorCode ?: JSONObject.NULL)
         put("retryable", retryable)
         put("message", message ?: JSONObject.NULL)
+        put("title", title ?: JSONObject.NULL)
+        put("artist", artist ?: JSONObject.NULL)
+        put("remoteFilename", remoteFilename ?: JSONObject.NULL)
     }
 }
 
@@ -110,6 +122,7 @@ object BridgeStateMapper {
         if (raw.contains("Negotiating") || raw.contains("Initializing") || raw.contains("Initialized")) {
             return TransferState.CONNECTING
         }
+        if (raw.contains("Queued") && raw.contains("Remotely")) return TransferState.QUEUED_REMOTELY
         if (raw.contains("Requested") || raw.contains("Queued")) return TransferState.QUEUED
         return TransferState.IDLE
     }

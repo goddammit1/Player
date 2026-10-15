@@ -22,7 +22,7 @@ import 'youtube_cache.dart';
 enum TrackCacheState { notCached, downloading, cached }
 
 class TrackCacheStatus {
-  const TrackCacheStatus(this.state, {this.progress});
+  const TrackCacheStatus(this.state, {this.progress, this.transfer});
 
   static const notCached = TrackCacheStatus(TrackCacheState.notCached);
   static const cached = TrackCacheStatus(TrackCacheState.cached);
@@ -31,6 +31,9 @@ class TrackCacheStatus {
 
   /// 0..1 для [TrackCacheState.downloading]; null — прогресс неизвестен.
   final double? progress;
+
+  /// Soulseek: снимок идущего трансфера (скорость, состояние у пира).
+  final SoulseekTransferInfo? transfer;
 
   bool get isCached => state == TrackCacheState.cached;
   bool get isDownloading => state == TrackCacheState.downloading;
@@ -100,10 +103,13 @@ abstract final class TrackActions {
         final entry = await source.getCacheEntry(cacheKey);
         if (entry != null && entry.complete) return TrackCacheStatus.cached;
         final info = await source.getTransfer('dl_$cacheKey');
-        if (info != null && info.state.isActive) {
+        // Пауза — тоже живая загрузка: её возобновляют, а не начинают
+        // заново. Конец — только completed / cancelled / failed.
+        if (info != null && !info.state.isTerminal) {
           return TrackCacheStatus(
             TrackCacheState.downloading,
             progress: info.progress,
+            transfer: info,
           );
         }
         return TrackCacheStatus.notCached;
@@ -148,7 +154,7 @@ abstract final class TrackActions {
   }) async {
     final soulseek = soulseekSource(track);
     if (soulseek != null && soulseekCacheKey(track) != null) {
-      await soulseek.prefetch(track);
+      await soulseek.startManualDownload(track);
       _notifyCacheChanged(track);
       return;
     }

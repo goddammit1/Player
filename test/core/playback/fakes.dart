@@ -140,6 +140,12 @@ class FakeEnvironment implements QueueEnvironment {
     return LocalFile('/music/${track.id}.mp3');
   }
 
+  /// Сколько раз ядро отказывалось от начатых resolve.
+  int cancelPendingResolvesCalls = 0;
+
+  @override
+  void cancelPendingResolves() => cancelPendingResolvesCalls++;
+
   @override
   Future<void> prefetch(Track track) async {}
   @override

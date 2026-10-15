@@ -252,6 +252,20 @@ class SoulseekDatabase(context: Context) :
         )
     }
 
+    /**
+     * Исходный путь файла у пира для [cacheKey] — название кэш-записи без
+     * title (сам файл в кэше назван хэшем) и запрос обложки. Строки
+     * transfers живут до удаления файла из кэша.
+     */
+    fun getRemoteFilenameByCacheKey(cacheKey: String): String? {
+        val c = readableDatabase.query(
+            TABLE_TRANSFERS, arrayOf(COL_REMOTE_FILENAME),
+            "$COL_CACHE_KEY = ?", arrayOf(cacheKey),
+            null, null, "$COL_UPDATED_AT DESC", "1"
+        )
+        return c.use { if (it.moveToFirst()) it.getString(0) else null }
+    }
+
     private fun cursorToTransferRow(c: android.database.Cursor): TransferRow =
         TransferRow(
             downloadId = c.getString(c.getColumnIndexOrThrow(COL_DOWNLOAD_ID)),
@@ -310,6 +324,24 @@ class SoulseekDatabase(context: Context) :
             put(COL_SIZE_BYTES_CE, sizeBytes)
             put(COL_COMPLETE, if (complete) 1 else 0)
             put(COL_LAST_ACCESS_AT, System.currentTimeMillis())
+        }
+        writableDatabase.update(
+            TABLE_CACHE_ENTRIES, cv,
+            "$COL_CACHE_KEY = ?", arrayOf(cacheKey)
+        )
+    }
+
+    /** Записывает человекочитаемые метаданные существующей кэш-записи. */
+    fun updateCacheMetadata(
+        cacheKey: String,
+        title: String?,
+        artist: String?,
+        durationSeconds: Int?
+    ) {
+        val cv = ContentValues().apply {
+            put(COL_TITLE, title)
+            put(COL_ARTIST, artist)
+            put(COL_DURATION_SECONDS, durationSeconds)
         }
         writableDatabase.update(
             TABLE_CACHE_ENTRIES, cv,

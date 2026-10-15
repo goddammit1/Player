@@ -71,6 +71,9 @@ void main() {
       expect(backend.calls.where((c) => c.startsWith('load')),
           ['load:fake:b']);
       expect(engine.currentIndex, 1);
+      // Каждая загрузка трека сообщает источникам, что прежний resolve
+      // больше не нужен (Soulseek отменяет брошенную загрузку).
+      expect(env.cancelPendingResolvesCalls, 2);
     });
 
     test('error → evict cache and retry once', () async {

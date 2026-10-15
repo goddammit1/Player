@@ -15,6 +15,7 @@ export 'providers/appearance_provider.dart';
 export 'providers/playlist_sort_mode.dart';
 export 'providers/dynamic_colors.dart';
 export 'providers/global_theme_provider.dart';
+export 'providers/soulseek_connection_provider.dart';
 
 /// PlayerService инициализируется в main.dart и пробрасывается сюда через
 /// override. См. main.dart -> ProviderScope(overrides: [...]).
