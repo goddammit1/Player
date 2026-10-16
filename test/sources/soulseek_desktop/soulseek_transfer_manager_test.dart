@@ -452,6 +452,161 @@ void main() {
     expect(store.transfers['dl_k1']!.state, 'PAUSED');
   });
 
+  group('повтор и очистка списка', () {
+    Future<void> failInBridge(String key) async {
+      final failed = nextState(key, SoulseekTransferState.failed);
+      bridge.emit({
+        'eventType': 'downloadFailed',
+        'downloadId': bridge.lastBridgeId(key),
+        'state': 'Completed, Rejected',
+        'errorCode': 'TransferRejectedException',
+        'retryable': false,
+      });
+      await failed;
+    }
+
+    test('retry упавшей загрузки перезапускает её и доводит до конца',
+        () async {
+      await start('k1');
+      await settle();
+      await failInBridge('k1');
+      expect(store.transfers['dl_k1']!.state, 'FAILED');
+
+      expect(await manager.retryDownload('dl_k1'), isTrue);
+      await settle();
+      expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(2));
+      final payload = bridge.lastPayload('startDownload');
+      expect(payload['peerUsername'], 'peer');
+      expect(payload['remoteFilename'], r'Music\Album\01.mp3');
+      expect(payload['cacheKey'], 'k1');
+      expect(manager.getTransfer('dl_k1')!.state,
+          SoulseekTransferState.downloading);
+
+      final completed = nextState('k1', SoulseekTransferState.completed);
+      await completeInBridge('k1');
+      final info = await completed;
+      expect(info.localPath, p.join(tmp.path, 'k1.mp3'));
+      expect(info.title, 'Song');
+      expect(store.transfers['dl_k1']!.state, 'COMPLETED');
+    });
+
+    test('retry после cancel начинает с нуля, событие отменённой попытки '
+        'его не трогает', () async {
+      await start('k1');
+      await settle();
+      File(cache.partPath('k1'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([1, 2, 3]);
+      final oldAttempt = bridge.lastBridgeId('k1');
+      await manager.cancelDownload('dl_k1');
+      await settle();
+
+      expect(await manager.retryDownload('dl_k1'), isTrue);
+      expect(manager.getTransfer('dl_k1')!.bytesReceived, 0);
+      // Мост подтверждает отмену прошлой попытки уже после retry.
+      bridge.emit({
+        'eventType': 'downloadFailed',
+        'downloadId': oldAttempt,
+        'state': 'Cancelled',
+        'errorCode': 'CANCELLED',
+      });
+      await settle();
+      expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(2));
+      expect(bridge.lastBridgeId('k1'), isNot(oldAttempt));
+      expect(manager.getTransfer('dl_k1')!.state,
+          SoulseekTransferState.downloading);
+    });
+
+    test('retry не трогает завершённую, активную и неизвестную загрузку',
+        () async {
+      await start('k1');
+      await settle();
+      final completed = nextState('k1', SoulseekTransferState.completed);
+      await completeInBridge('k1');
+      await completed;
+      await start('k2');
+      await settle();
+      bridge.calls.clear();
+
+      expect(await manager.retryDownload('dl_k1'), isFalse);
+      expect(await manager.retryDownload('dl_k2'), isFalse);
+      expect(await manager.retryDownload('dl_missing'), isFalse);
+      await settle();
+      expect(bridge.methods, isNot(contains('startDownload')));
+      expect(manager.getTransfer('dl_k1')!.state,
+          SoulseekTransferState.completed);
+    });
+
+    test('clear убирает только завершённые; файлы кэша остаются', () async {
+      // k1 — COMPLETED, k2 — FAILED, k3 — CANCELLED, k4 — идёт.
+      await start('k1');
+      await settle();
+      final completed = nextState('k1', SoulseekTransferState.completed);
+      await completeInBridge('k1');
+      await completed;
+      await start('k2');
+      await settle();
+      await failInBridge('k2');
+      await start('k3');
+      await settle();
+      await manager.cancelDownload('dl_k3');
+      await start('k4');
+      await settle();
+
+      expect(await manager.clearFinishedTransfers(), 3);
+      expect(manager.getAllTransfers().map((t) => t.downloadId), ['dl_k4']);
+      expect(manager.getTransfer('dl_k4')!.state,
+          SoulseekTransferState.downloading);
+      expect(manager.getTransfer('dl_k1'), isNull);
+      expect(await manager.retryDownload('dl_k2'), isFalse);
+
+      // Готовый файл и его запись в кэше на месте; строка COMPLETED нужна
+      // кэшу для исходного имени файла.
+      expect(File(p.join(tmp.path, 'k1.mp3')).existsSync(), isTrue);
+      final entry = await cache.getCacheEntry('k1');
+      expect(entry, isNotNull);
+      expect(entry!.remoteFilename, r'Music\Album\01.mp3');
+      expect(store.transfers.keys, unorderedEquals(['dl_k1', 'dl_k4']));
+
+      // Повторная очистка — нечего убирать.
+      expect(await manager.clearFinishedTransfers(), 0);
+    });
+
+    test('убранные трансферы не возвращаются после restore', () async {
+      store.transfers['dl_a'] = const SoulseekTransferRow(
+        downloadId: 'dl_a',
+        cacheKey: 'a',
+        peerUsername: 'peer',
+        remoteFilename: 'x.mp3',
+        sizeBytes: 10,
+        state: 'DOWNLOADING',
+      );
+      await manager.restore();
+      expect(manager.getTransfer('dl_a')!.state, SoulseekTransferState.failed);
+
+      expect(await manager.clearFinishedTransfers(), 1);
+      expect(store.transfers, isEmpty);
+
+      final restarted = createManager();
+      await restarted.restore();
+      expect(restarted.getAllTransfers(), isEmpty);
+    });
+
+    test('новая загрузка того же файла после clear стартует заново',
+        () async {
+      await start('k1');
+      await settle();
+      await failInBridge('k1');
+      await manager.clearFinishedTransfers();
+
+      await start('k1');
+      await settle();
+      expect(bridge.methods.where((m) => m == 'startDownload'), hasLength(2));
+      expect(manager.getTransfer('dl_k1')!.state,
+          SoulseekTransferState.downloading);
+    });
+  });
+
   group('кэш', () {
     Future<void> put(String key, int size, {bool pinned = false, int age = 0}) async {
       final path = p.join(tmp.path, '$key.mp3');

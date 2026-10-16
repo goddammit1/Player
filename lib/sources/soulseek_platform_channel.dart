@@ -100,6 +100,12 @@ abstract class SoulseekPlatformChannel implements SoulseekChannel {
   @override
   Future<bool> cancelDownload(String downloadId);
 
+  @override
+  Future<bool> retryDownload(String downloadId);
+
+  @override
+  Future<int> clearFinishedTransfers();
+
   Future<List<SoulseekTransferInfo>> getActiveTransfers({
     bool includeTerminal = false,
   });
@@ -488,6 +494,24 @@ class AndroidSoulseekChannel extends SoulseekPlatformChannel {
       'downloadId': downloadId,
     });
     return result ?? false;
+  }
+
+  /// Перезапускает упавшую / отменённую загрузку (тот же пир и файл).
+  @override
+  Future<bool> retryDownload(String downloadId) async {
+    _requireAndroid();
+    final result = await _invoke<bool>('retryDownload', {
+      'downloadId': downloadId,
+    });
+    return result ?? false;
+  }
+
+  /// Убирает завершённые трансферы из списка; кэш не трогает.
+  @override
+  Future<int> clearFinishedTransfers() async {
+    _requireAndroid();
+    final result = await _invoke<int>('clearFinishedTransfers', null);
+    return result ?? 0;
   }
 
   /// Возвращает информацию о трансфере по downloadId (или null).

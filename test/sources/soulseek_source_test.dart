@@ -208,6 +208,12 @@ class _TestChannel implements SoulseekChannel {
     return true;
   }
 
+  @override
+  Future<bool> retryDownload(String downloadId) async => true;
+
+  @override
+  Future<int> clearFinishedTransfers() async => 0;
+
   void emitTransfer(SoulseekTransferInfo info) {
     _transferController.add(SoulseekTransferEvent(info));
   }
@@ -1335,6 +1341,42 @@ void main() {
             ),
           ),
         );
+      },
+    );
+    test(
+      'трансфер убран из списка (Clear) без файла в кэше → DOWNLOAD_REMOVED, '
+      'а не ожидание до таймаута',
+      () async {
+        channel.cacheEntry = null;
+        channel.downloadResult = const SoulseekDownloadResult(
+          downloadId: 'dl_ck_test',
+          result: 'dl_ck_test',
+          cacheHit: false,
+        );
+        channel.transferInfo = const SoulseekTransferInfo(
+          downloadId: 'dl_ck_test',
+          state: SoulseekTransferState.downloading,
+        );
+        source.pollInterval = const Duration(milliseconds: 10);
+        source.downloadTimeout = const Duration(seconds: 5);
+
+        // Терминальное событие потеряно, затем трансфер убран из списка.
+        Future.delayed(const Duration(milliseconds: 40), () {
+          channel.transferInfo = null;
+        });
+
+        final watch = Stopwatch()..start();
+        await expectLater(
+          source.resolveStreamUrl(_makeTrack()),
+          throwsA(
+            isA<SoulseekException>().having(
+              (e) => e.code,
+              'code',
+              'DOWNLOAD_REMOVED',
+            ),
+          ),
+        );
+        expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
       },
     );
   });

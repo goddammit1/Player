@@ -96,7 +96,11 @@ class SoulseekTransferManager(
         /** Сигнал промежуточной retryable-неудачи от bridge: выводит
          *  [awaitTerminalState], retry-loop продолжает с backoff
          *  (терминальным для Dart это не является). */
-        @Volatile var retrySignal: Boolean = false
+        @Volatile var retrySignal: Boolean = false,
+        /** Поколение retry-loop ([processTransfer]): после resume / retry
+         *  прежний цикл (ждущий слот, backoff или терминального состояния)
+         *  выходит, а не запускает вторую загрузку. */
+        @Volatile var loopGeneration: Int = 0
     )
 
     /**
@@ -228,9 +232,7 @@ class SoulseekTransferManager(
         onActiveTransfersChanged()
 
         // Запуск корутины-обработчика.
-        scope.launch {
-            processTransfer(ctx)
-        }
+        launchTransfer(ctx)
 
         return downloadId
     }
@@ -269,9 +271,7 @@ class SoulseekTransferManager(
         ctx.state = TransferState.QUEUED
         persistTransfer(ctx)
         emitTransferEvent(downloadId, TransferState.QUEUED, ctx.bytesReceived, ctx.sizeBytes)
-        scope.launch {
-            processTransfer(ctx)
-        }
+        launchTransfer(ctx)
     }
 
     /** Cancel: отмена + удаление .part файла. */
@@ -291,6 +291,78 @@ class SoulseekTransferManager(
         persistTransfer(ctx)
         cleanupMappings(ctx)
         onActiveTransfersChanged()
+    }
+
+    /**
+     * Повтор упавшей / отменённой загрузки тем же пиром и файлом: сброс
+     * счётчика попыток и ошибки, затем тот же путь, что у [startDownload]
+     * (слот semaphore, retry-loop). `.part`, если остался, bridge продолжит
+     * с offset; после отмены он удалён — загрузка начнётся с нуля.
+     *
+     * false — трансфер неизвестен, не FAILED / CANCELLED, или тот же файл
+     * уже качает другой трансфер.
+     */
+    fun retryDownload(downloadId: String): Boolean {
+        if (shutdown) return false
+        val ctx = transfers[downloadId] ?: return false
+        if (ctx.state != TransferState.FAILED && ctx.state != TransferState.CANCELLED) return false
+        // Второй трансфер того же cacheKey писал бы в тот же .part.
+        val otherId = cacheKeyToDownloadId[ctx.cacheKey]
+        if (otherId != null && otherId != downloadId &&
+            transfers[otherId]?.state?.isTerminal == false
+        ) return false
+
+        // Файл тем временем докачан (другим трансфером того же cacheKey).
+        cacheManager.getCacheEntry(ctx.cacheKey)?.let { entry ->
+            ctx.state = TransferState.COMPLETED
+            ctx.localPath = entry.localPath
+            ctx.bytesReceived = entry.sizeBytes
+            ctx.bytesPerSecond = 0L
+            emitTransferEvent(ctx)
+            persistTransfer(ctx)
+            onActiveTransfersChanged()
+            return true
+        }
+
+        ctx.pauseRequested = false
+        ctx.cancelRequested = false
+        ctx.retrySignal = false
+        ctx.retryCount = 0
+        ctx.bytesPerSecond = 0L
+        ctx.localPath = null
+        ctx.bytesReceived = 0L
+        checkpointFromPartFile(ctx)
+        ctx.state = TransferState.QUEUED
+        cacheKeyToDownloadId[ctx.cacheKey] = downloadId
+        persistTransfer(ctx)
+        emitTransferEvent(ctx)
+        onActiveTransfersChanged()
+        launchTransfer(ctx)
+        return true
+    }
+
+    /**
+     * Убирает завершённые (COMPLETED / FAILED / CANCELLED) трансферы из
+     * списка. Файлы кэша не трогает. Строки COMPLETED в БД остаются: по ним
+     * кэш берёт исходное имя файла у пира (название записи без title, запрос
+     * обложки), а [restoreFromDatabase] их и так не поднимает. Событий не
+     * шлёт — Flutter перечитывает список после вызова. Возвращает число
+     * убранных.
+     */
+    fun clearFinished(): Int {
+        var removed = 0
+        for (ctx in transfers.values.toList()) {
+            if (!ctx.state.isTerminal) continue
+            // Запись мог уже занять новый трансфер того же downloadId.
+            if (!transfers.remove(ctx.downloadId, ctx)) continue
+            cleanupMappings(ctx)
+            if (ctx.state != TransferState.COMPLETED) {
+                runCatching { database.deleteTransfer(ctx.downloadId) }
+                    .onFailure { Log.w(TAG, "deleteTransfer failed: ${it.message}") }
+            }
+            removed++
+        }
+        return removed
     }
 
     /** Снимок всех активных (незавершённых) трансферов — для восстановления UI. */
@@ -333,10 +405,19 @@ class SoulseekTransferManager(
     //  Core: обработка трансфера (retry-loop)
     // ───────────────────────────────────────────────────────────────────
 
-    private suspend fun processTransfer(ctx: TransferContext) {
+    /** Запуск retry-loop нового поколения: прежний цикл этого трансфера выйдет. */
+    private fun launchTransfer(ctx: TransferContext) {
+        val generation = ++ctx.loopGeneration
+        scope.launch {
+            processTransfer(ctx, generation)
+        }
+    }
+
+    private suspend fun processTransfer(ctx: TransferContext, generation: Int) {
+        fun stale() = generation != ctx.loopGeneration
         var attempt = ctx.retryCount
 
-        while (!ctx.cancelRequested && !ctx.pauseRequested) {
+        while (!ctx.cancelRequested && !ctx.pauseRequested && !stale()) {
             // Ждём слот очереди.
             ctx.state = TransferState.QUEUED
             emitTransferEvent(ctx)
@@ -345,7 +426,7 @@ class SoulseekTransferManager(
             ctx.lease = lease
             try {
                 run attempt@{
-                    if (ctx.cancelRequested || ctx.pauseRequested) return@attempt
+                    if (ctx.cancelRequested || ctx.pauseRequested || stale()) return@attempt
 
                     ctx.state = TransferState.DOWNLOADING
                     emitTransferEvent(ctx)
@@ -388,12 +469,12 @@ class SoulseekTransferManager(
 
                         // Ожидаем завершения: C# шлёт downloadComplete / downloadFailed
                         // через event sink. Ждём, пока state не станет терминальным.
-                        awaitTerminalState(ctx)
+                        awaitTerminalState(ctx, generation)
                     } catch (e: SoulseekServiceException) {
-                        handleTransferFailure(ctx, e, attempt)
+                        if (!stale()) handleTransferFailure(ctx, e, attempt)
                         return@attempt
                     } catch (e: Exception) {
-                        handleTransferFailure(
+                        if (!stale()) handleTransferFailure(
                             ctx,
                             SoulseekServiceException(
                                 "INTERNAL_ERROR",
@@ -412,8 +493,8 @@ class SoulseekTransferManager(
                 lease.release()
             }
 
-            // Если terminal — выходим из retry-loop.
-            if (ctx.state.isTerminal) break
+            // Если terminal или цикл устарел (resume / retry) — выходим.
+            if (ctx.state.isTerminal || stale()) break
 
             // Пауза/отмена — выходим.
             if (ctx.pauseRequested || ctx.cancelRequested) break
@@ -442,11 +523,13 @@ class SoulseekTransferManager(
 
     /**
      * Ожидает терминального состояния, пока C# качает. Периодически проверяет
-     * pause/cancel флаги. Возвращает когда: state terminal, pauseRequested
-     * или cancelRequested.
+     * pause/cancel флаги. Возвращает когда: state terminal, pauseRequested,
+     * cancelRequested или цикл [generation] устарел (resume / retry).
      */
-    private suspend fun awaitTerminalState(ctx: TransferContext) {
-        while (!ctx.state.isTerminal && !ctx.pauseRequested && !ctx.cancelRequested && !ctx.retrySignal) {
+    private suspend fun awaitTerminalState(ctx: TransferContext, generation: Int) {
+        while (!ctx.state.isTerminal && !ctx.pauseRequested && !ctx.cancelRequested &&
+            !ctx.retrySignal && ctx.loopGeneration == generation
+        ) {
             delay(200)
         }
     }

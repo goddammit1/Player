@@ -83,6 +83,12 @@ class _FakeChannel implements SoulseekChannel {
 
   @override
   Future<bool> cancelDownload(String downloadId) async => true;
+
+  @override
+  Future<bool> retryDownload(String downloadId) async => true;
+
+  @override
+  Future<int> clearFinishedTransfers() async => 0;
 }
 
 void main() {

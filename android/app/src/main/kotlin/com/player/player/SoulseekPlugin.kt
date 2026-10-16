@@ -610,6 +610,30 @@ class SoulseekPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHand
                     result.success(true)
                 }
 
+                "retryDownload" -> {
+                    val mgr = serviceBinder?.transferManager
+                        ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
+                    val downloadId = call.argument<String>("downloadId")
+                        ?: run { result.error("INVALID_ARGS", "downloadId is required", null); return }
+                    var retried = false
+                    serviceBinder?.executeCommandBlocking { retried = mgr.retryDownload(downloadId) }
+                    // Перезапущенная загрузка держит wake/wifi lock, как resume.
+                    // Файл мог оказаться уже в кэше (retry сразу COMPLETED) —
+                    // тогда качать нечего и lock не нужен.
+                    if (retried && mgr.getTransfer(downloadId)?.state?.isTerminal == false) {
+                        serviceBinder?.acquireLocks()
+                    }
+                    result.success(retried)
+                }
+
+                "clearFinishedTransfers" -> {
+                    val mgr = serviceBinder?.transferManager
+                        ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }
+                    var removed = 0
+                    serviceBinder?.executeCommandBlocking { removed = mgr.clearFinished() }
+                    result.success(removed)
+                }
+
                 "removeCache" -> {
                     val cache = serviceBinder?.cacheManager
                         ?: run { result.error("NOT_CONNECTED", "Service not bound", null); return }

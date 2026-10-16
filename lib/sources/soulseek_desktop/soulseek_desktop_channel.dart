@@ -531,6 +531,23 @@ class DesktopSoulseekChannel extends SoulseekPlatformChannel {
   }
 
   @override
+  Future<bool> retryDownload(String downloadId) async {
+    final manager = await _manager();
+    final state = manager.getTransfer(downloadId)?.state;
+    // Неподходящий трансфер — без лишнего подключения.
+    if (state != SoulseekTransferState.failed &&
+        state != SoulseekTransferState.cancelled) {
+      return false;
+    }
+    await _ensureConnected();
+    return manager.retryDownload(downloadId);
+  }
+
+  @override
+  Future<int> clearFinishedTransfers() async =>
+      (await _manager()).clearFinishedTransfers();
+
+  @override
   Future<SoulseekTransferInfo?> getTransfer(String downloadId) async =>
       (await _manager()).getTransfer(downloadId);
 

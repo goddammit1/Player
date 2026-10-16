@@ -228,6 +228,78 @@ class SoulseekTransferManager {
     t.wake();
   }
 
+  /// Повтор упавшей / отменённой загрузки тем же пиром и файлом: сброс
+  /// счётчика попыток и ошибки, затем тот же путь, что у [startDownload]
+  /// (слот, retry-loop). `.part`, если остался, мост продолжит с offset;
+  /// после отмены он удалён — загрузка начнётся с нуля.
+  ///
+  /// false — трансфер неизвестен, не FAILED / CANCELLED, или тот же файл уже
+  /// качает другой трансфер.
+  Future<bool> retryDownload(String downloadId) async {
+    if (_shutdown) return false;
+    final t = _transfers[downloadId];
+    if (t == null || !_retryable(t.state)) return false;
+    // Второй трансфер того же cacheKey писал бы в тот же `.part`.
+    final otherId = _cacheKeyToDownloadId[t.cacheKey];
+    final other = otherId == null ? null : _transfers[otherId];
+    if (other != null && other != t && !other.state.isTerminal) return false;
+
+    // Файл тем временем докачан (другим трансфером того же cacheKey).
+    final entry = await cache.getCacheEntry(t.cacheKey);
+    // За время await трансфер мог быть убран или уже перезапущен.
+    if (_transfers[downloadId] != t || !_retryable(t.state)) return false;
+    if (entry != null) {
+      t
+        ..state = SoulseekTransferState.completed
+        ..localPath = entry.localPath
+        ..bytesReceived = entry.sizeBytes
+        ..bytesPerSecond = 0;
+      await _persist(t);
+      _emit(t);
+      return true;
+    }
+
+    t
+      ..pauseRequested = false
+      ..cancelRequested = false
+      ..retrySignal = false
+      ..retryCount = 0
+      ..bytesReceived = 0
+      ..bytesPerSecond = 0
+      ..localPath = null
+      ..state = SoulseekTransferState.queued;
+    _cacheKeyToDownloadId[t.cacheKey] = downloadId;
+    // Отложенное удаление `.part` отменённой загрузки не должно снести файл
+    // перезапущенной.
+    cache.cancelPendingDelete(cache.partPath(t.cacheKey));
+    await _checkpointFromPart(t);
+    await _persist(t);
+    _emit(t);
+    unawaited(_process(t));
+    return true;
+  }
+
+  /// Убирает завершённые (COMPLETED / FAILED / CANCELLED) трансферы из
+  /// списка. Файлы кэша не трогает. Строки COMPLETED в БД остаются: по ним
+  /// кэш берёт исходное имя файла у пира (название записи без title, запрос
+  /// обложки), а [restore] их и так не поднимает. Событий не шлёт — UI
+  /// перечитывает список после вызова. Возвращает число убранных.
+  Future<int> clearFinishedTransfers() async {
+    final finished =
+        _transfers.values.where((t) => t.state.isTerminal).toList();
+    for (final t in finished) {
+      _transfers.remove(t.downloadId);
+      _cleanupMappings(t);
+      if (t.state == SoulseekTransferState.completed) continue;
+      try {
+        await _store.deleteTransfer(t.downloadId);
+      } catch (e) {
+        debugPrint('[Soulseek] delete transfer failed: $e');
+      }
+    }
+    return finished.length;
+  }
+
   List<SoulseekTransferInfo> getActiveTransfers() => _transfers.values
       .where((t) => !t.state.isTerminal)
       .map((t) => t.info())
@@ -557,6 +629,10 @@ class SoulseekTransferManager {
   // ───────────────────────────────────────────────────────────────────
   //  Хелперы
   // ───────────────────────────────────────────────────────────────────
+
+  /// Повторить можно только упавшую или отменённую загрузку.
+  static bool _retryable(SoulseekTransferState s) =>
+      s == SoulseekTransferState.failed || s == SoulseekTransferState.cancelled;
 
   _Transfer _require(String downloadId) {
     final t = _transfers[downloadId];

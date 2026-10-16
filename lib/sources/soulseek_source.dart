@@ -115,6 +115,17 @@ abstract class SoulseekChannel {
 
   /// Отменяет загрузку [downloadId]; false — загрузка не найдена.
   Future<bool> cancelDownload(String downloadId);
+
+  /// Перезапускает упавшую или отменённую загрузку с тем же пиром, файлом и
+  /// cacheKey. false — трансфер неизвестен или не в состоянии failed /
+  /// cancelled.
+  Future<bool> retryDownload(String downloadId);
+
+  /// Убирает завершённые (completed / failed / cancelled) трансферы из
+  /// списка. Строки failed / cancelled удаляются и из БД; строки completed
+  /// в БД остаются (по ним кэш берёт исходное имя файла у пира). Файлы кэша
+  /// не трогает. Возвращает число убранных трансферов.
+  Future<int> clearFinishedTransfers();
 }
 
 class SoulseekSource implements TrackSource, ProgressiveSearchSource {
@@ -1121,8 +1132,14 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       pollTimer?.cancel();
     }
 
+    // Трансфер хоть раз был виден (событие или getTransfer). Если потом он
+    // пропал из списка (Clear в листе загрузок) и файла в кэше нет, ждать
+    // больше нечего — завершаемся ошибкой, а не таймаутом.
+    var transferSeen = false;
+
     void handleInfo(SoulseekTransferInfo info) {
       if (info.downloadId != downloadId) return;
+      transferSeen = true;
       switch (info.state) {
         case SoulseekTransferState.completed:
           final path = info.localPath;
@@ -1162,8 +1179,10 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     // прийти между startDownload и подпиской).
     Future<void> probeOnce() async {
       // 1. Состояние трансфера.
+      var transferGone = false;
       try {
         final current = await _channel.getTransfer(downloadId);
+        transferGone = current == null && transferSeen;
         if (current != null) {
           handleInfo(current);
           if (current.state == SoulseekTransferState.completed) {
@@ -1183,9 +1202,17 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         if (entry != null && entry.complete) {
           if (!completer.isCompleted) completer.complete(entry.localPath);
           _recordCacheKey(cacheKeyForIndex);
+          return;
         }
       } catch (_) {
         // Игнорируем.
+        return;
+      }
+      if (transferGone && !completer.isCompleted) {
+        completer.completeError(const SoulseekException(
+          'DOWNLOAD_REMOVED',
+          'Download was removed from the transfer list',
+        ));
       }
     }
 

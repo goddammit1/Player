@@ -105,6 +105,9 @@ abstract class SoulseekDesktopStore {
 
   Future<void> deleteTransfersByCacheKey(String cacheKey);
 
+  /// Удаляет запись трансфера [downloadId] (очистка списка загрузок).
+  Future<void> deleteTransfer(String downloadId);
+
   /// Исходный путь файла у пира для [cacheKey] (последний трансфер) —
   /// название кэш-записи без title и запрос обложки.
   Future<String?> remoteFilenameFor(String cacheKey);
@@ -143,6 +146,10 @@ class MemorySoulseekDesktopStore implements SoulseekDesktopStore {
   @override
   Future<void> deleteTransfersByCacheKey(String cacheKey) async =>
       transfers.removeWhere((_, t) => t.cacheKey == cacheKey);
+
+  @override
+  Future<void> deleteTransfer(String downloadId) async =>
+      transfers.remove(downloadId);
 
   @override
   Future<String?> remoteFilenameFor(String cacheKey) async {
@@ -242,6 +249,12 @@ class SqliteSoulseekDesktopStore implements SoulseekDesktopStore {
   Future<void> deleteTransfersByCacheKey(String cacheKey) async {
     await (await _db)
         .delete(_transfers, where: 'cache_key = ?', whereArgs: [cacheKey]);
+  }
+
+  @override
+  Future<void> deleteTransfer(String downloadId) async {
+    await (await _db).delete(_transfers,
+        where: 'download_id = ?', whereArgs: [downloadId]);
   }
 
   @override
