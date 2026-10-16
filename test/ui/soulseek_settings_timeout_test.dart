@@ -112,6 +112,12 @@ class _FakeChannel implements SoulseekChannel {
 
   @override
   Future<bool> cancelDownload(String downloadId) async => true;
+
+  @override
+  Future<bool> retryDownload(String downloadId) async => true;
+
+  @override
+  Future<int> clearFinishedTransfers() async => 0;
 }
 
 /// Минимальный фейковый плеер (паттерн settings_subpages_test.dart).
@@ -278,9 +284,9 @@ Widget wrap(Widget home) {
   );
 }
 
-/// TextField «Search timeout (seconds)» — ищем по иконке timer_outlined.
-Finder findTimeoutField() => find.ancestor(
-      of: find.byIcon(Icons.timer_outlined),
+/// TextField «Search timeout» — ищем по ключу компактного поля.
+Finder findTimeoutField() => find.descendant(
+      of: find.byKey(const Key('soulseek_search_timeout_field')),
       matching: find.byType(TextField),
     );
 

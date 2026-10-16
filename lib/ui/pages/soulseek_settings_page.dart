@@ -2,10 +2,13 @@
 //
 // Фаза 4 — экран настроек Soulseek.
 //
-// Следует паттернам appearance_page.dart / cache_page.dart:
+// Компоновка (редизайн по plans/soulseek_pages_redesign_plan.md):
 //  - AppBar с круглой кнопкой «Назад» и заголовком 32px
-//  - Секции через _Section (uppercase заголовок)
-//  - Карточки через Container с colors.elevated + outline
+//  - Сверху карточка статуса: состояние + одна кнопка Connect / Cancel /
+//    Disconnect и переключатель «Show in search»
+//  - Группы Account (скрыта после входа), Search, Downloads и свёрнутый
+//    Advanced; плитки групп скруглены как список треков (GroupedTiles)
+//  - Только цвета AppColors; красный — лишь сбой и удаление
 //  - Анимация появления через _AppearingPageAnimator
 //
 // Android и Windows (мост внутри процесса); на других платформах и в
@@ -21,6 +24,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
@@ -33,6 +37,7 @@ import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/app_dialogs.dart';
+import '../widgets/grouped_tiles.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
 import '../widgets/soulseek_transfer_sheet.dart';
@@ -96,6 +101,23 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   // пересоздаёт клиент. Итог определяет ответ команды.
   bool _connectInFlight = false;
 
+  // Номер текущей команды connect. Cancel увеличивает его — retry-цикл
+  // прежней команды видит, что устарел, прерывается и итог не применяет.
+  // Счётчик, а не флаг: Cancel → Connect подряд не «воскрешает» отменённую
+  // команду (новая получает свой номер).
+  int _connectCommand = 0;
+
+  // Отменённые команды, чей нативный connect ещё не вернулся. Пока они
+  // доигрывают, а новой команды нет, их push-события (CONNECTING /
+  // CONNECTED) не должны менять статус после Cancel.
+  int _cancelledInFlight = 0;
+
+  // ── Активные загрузки (счётчик у строки Downloads) ──
+  final Set<String> _activeTransferIds = {};
+  StreamSubscription<SoulseekTransferEvent>? _transferSub;
+
+  bool _advancedOpen = false;
+
   // ── Доступные форматы для multi-select ──
   static const List<String> _allFormats = [
     'flac', 'wav', 'alac', 'mp3', 'aac', 'ogg',
@@ -112,6 +134,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     _enabled = SourceRegistry.isSoulseekEnabled;
     _loadSettings();
     _subscribeConnection();
+    _subscribeTransfers();
     if (widget.initialSection == SoulseekSettingsSection.connection) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToConnection());
     }
@@ -146,8 +169,43 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     _usernameController.dispose();
     _passwordController.dispose();
     _connectionSub?.close();
+    _transferSub?.cancel();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// Счётчик активных загрузок: снимок при открытии + transfer-события
+  /// (паттерн SoulseekDownloadsIndicator).
+  Future<void> _subscribeTransfers() async {
+    if (!_isAvailable) return;
+    final platform = SoulseekPlatformChannel.instance;
+    // Трансферы, о которых уже пришло событие, пока снимок в пути: снимок
+    // старше события и не должен вернуть уже завершённую загрузку.
+    Set<String>? seenBeforeSnapshot = {};
+    _transferSub = platform.transferEvents.listen((e) {
+      final info = e.transfer;
+      seenBeforeSnapshot?.add(info.downloadId);
+      final changed = info.state.isActive
+          ? _activeTransferIds.add(info.downloadId)
+          : _activeTransferIds.remove(info.downloadId);
+      if (changed && mounted) setState(() {});
+    }, onError: (_) {});
+    try {
+      final active = await platform.getActiveTransfers();
+      final seen = seenBeforeSnapshot;
+      if (!mounted) return;
+      setState(() {
+        _activeTransferIds.addAll(
+          active
+              .where((t) => t.state.isActive && !seen.contains(t.downloadId))
+              .map((t) => t.downloadId),
+        );
+      });
+    } catch (_) {
+      // Сервис ещё не поднят — счётчик появится с первым событием.
+    } finally {
+      seenBeforeSnapshot = null;
+    }
   }
 
   Future<void> _loadSettings() async {
@@ -227,6 +285,10 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
     final event = next.valueOrNull;
     if (event == null) return;
+    // Отменённый connect ещё доигрывает в нативе, а новой команды нет —
+    // его события не должны вернуть «Connecting…» / «Connected» после
+    // Cancel (итог разорвёт сама отменённая команда).
+    if (!_connectInFlight && _cancelledInFlight > 0) return;
     // Snapshot при bind'е / промежуточный дисконнект между попытками
     // не должен сбрасывать «Connecting…» и разблокировать кнопку —
     // иначе первое нажатие выглядит так, будто ничего не произошло.
@@ -270,34 +332,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  Future<void> _saveCredentials() async {
-    final username = _usernameController.text.trim();
-    final password = _passwordController.text;
-
-    if (username.isEmpty || password.isEmpty) {
-      if (mounted) {
-        showSnack(context, 'Enter username and password');
-      }
-      return;
-    }
-
-    try {
-      await SoulseekCredentials.save(
-        username: username,
-        password: password,
-      );
-      // Фаза B: проталкиваем username в нативную soulseek.db (вместе с
-      // остальными натив-релевантными настройками) — раньше Dart никогда
-      // не вызывал configureAccount, и натив жил на сид-дефолтах.
-      await _repo.syncToNative(username: username);
-      if (mounted) showSnack(context, 'Credentials saved');
-    } catch (_) {
-      if (mounted) {
-        showSnack(context, 'Failed to save credentials (secure storage)');
-      }
-    }
-  }
-
   Future<void> _connect() async {
     if (!_isAvailable) return;
 
@@ -312,6 +346,8 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     // Дефект №5: фиксируем поколение — результат команды применяем, только
     // если после её старта не приходило более свежих push-событий.
     final generation = ++_connectionGeneration;
+    final command = ++_connectCommand;
+    bool cancelled() => command != _connectCommand;
 
     _connectInFlight = true;
     setState(() {
@@ -337,6 +373,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     SoulseekException? lastError;
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (cancelled()) break;
       try {
         info = await _connectOnce(username, password);
         break;
@@ -353,7 +390,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             '${e.code} (retryable: $effectiveRetryable)',
           );
         }
-        if (!canRetry) break;
+        if (!canRetry || cancelled()) break;
         if (mounted) {
           setState(() => _connectionMessage = 'Retrying ($attempt/$maxAttempts)…');
         }
@@ -363,6 +400,16 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         lastError = SoulseekException('CONNECT_FAILED', e.toString());
         break;
       }
+    }
+
+    if (cancelled()) {
+      // Cancel уже показал «Disconnected» и снял _connectInFlight (или его
+      // заняла новая команда) — итог этой попытки не применяем. Попытка
+      // успела войти после Cancel — разрываем её, если новой команды нет
+      // (иначе disconnect оборвал бы новое подключение).
+      if (info != null && !_connectInFlight) await _disconnectQuietly();
+      _cancelledInFlight--;
+      return;
     }
 
     _connectInFlight = false;
@@ -389,7 +436,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         showErrorSnack(
           context,
           "Connected, but credentials couldn't be saved on this device. "
-          'See Troubleshooting.',
+          'See Advanced → Storage diagnostics.',
         );
       }
     } else {
@@ -413,10 +460,42 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   Future<bool> _trySaveCredentials(String username, String password) async {
     try {
       await SoulseekCredentials.save(username: username, password: password);
+      // Фаза B: проталкиваем username в нативную soulseek.db (раньше это
+      // делала кнопка «Save credentials», которой больше нет).
+      unawaited(_repo.syncToNative(username: username));
       return true;
     } catch (e) {
       if (kDebugMode) debugPrint('[Soulseek] credentials not saved: $e');
       return false;
+    }
+  }
+
+  /// Cancel во время connect: прерывает retry-цикл и сразу показывает
+  /// «Disconnected»; натив получает disconnect, чтобы бросить попытку.
+  /// Без команды в полёте (CONNECTING / RECONNECTING пришли из натива —
+  /// автопереподключение) это обычный disconnect.
+  Future<void> _cancelConnect() async {
+    if (!_connectInFlight) {
+      await _disconnect();
+      return;
+    }
+    _connectCommand++;
+    _cancelledInFlight++;
+    _connectInFlight = false;
+    _connectionGeneration++;
+    setState(() {
+      _connectionState = SoulseekConnectionState.disconnected;
+      _connectionMessage = null;
+      _connecting = false;
+    });
+    await _disconnectQuietly();
+  }
+
+  Future<void> _disconnectQuietly() async {
+    try {
+      await SoulseekPlatformChannel.instance.disconnect();
+    } catch (_) {
+      // Клиента ещё нет — разрывать нечего.
     }
   }
 
@@ -606,7 +685,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     );
   }
 
-  Widget _buildUnavailable(dynamic colors) {
+  Widget _buildUnavailable(AppColors colors) {
     return Padding(
       padding: const EdgeInsets.all(32),
       child: Center(
@@ -649,332 +728,123 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     );
   }
 
-  Widget _buildContent(dynamic colors) {
+  Widget _buildContent(AppColors colors) {
+    // Аккаунт нужен только для подключения — после входа его поля
+    // скрываются, логин виден в подзаголовке статуса.
+    final showAccount = _connectionState != SoulseekConnectionState.connected;
+
     return ListView(
       controller: _scrollController,
       padding: EdgeInsets.only(
-        top: 0,
-        bottom: 8 +
+        top: 12,
+        bottom: 24 +
             NowPlayingOverlay.miniHeight +
             MediaQuery.of(context).padding.bottom,
       ),
       children: [
-        // === P2P WARNING ===
-        _buildP2PWarning(colors),
-        const SizedBox(height: 8),
-
-        // === ENABLE TOGGLE ===
-        _Section(
-          title: 'Source',
+        // === STATUS ===
+        GroupedTiles(
+          key: _connectionSectionKey,
           colors: colors,
           children: [
-            SwitchListTile(
-              secondary: Icon(
-                Icons.hub_rounded,
-                color: colors.textPrimary,
-              ),
-              title: Text(
-                'Enable Soulseek',
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              subtitle: Text(
-                'Include Soulseek results in search',
-                style: TextStyle(color: colors.textSecondary, fontSize: 13),
-              ),
+            _buildStatusRow(colors),
+            _SwitchRow(
+              colors: colors,
+              title: 'Show in search',
               value: _enabled,
               onChanged: _toggleEnabled,
-              activeThumbColor: colors.accent,
-              activeTrackColor: colors.accent.withValues(alpha: 0.3),
-              inactiveThumbColor: colors.textSecondary,
-              inactiveTrackColor: colors.elevated,
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        _buildP2PNote(colors),
 
         // === ACCOUNT ===
-        _Section(
-          title: 'Account',
-          colors: colors,
-          children: [
-            _buildAccountSection(colors),
-          ],
+        AnimatedSize(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: showAccount
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    GroupedTilesLabel(title: 'Account', colors: colors),
+                    _buildAccountGroup(colors),
+                  ],
+                )
+              : const SizedBox(width: double.infinity),
         ),
-        const SizedBox(height: 8),
 
-        // === CONNECTION STATUS ===
-        _Section(
-          key: _connectionSectionKey,
-          title: 'Connection',
-          colors: colors,
-          children: [
-            _buildConnectionSection(colors),
-          ],
-        ),
-        const SizedBox(height: 8),
-
-        // === SEARCH FILTERS ===
-        _Section(
-          title: 'Search filters',
-          colors: colors,
-          children: [
-            _buildSearchFiltersSection(colors),
-          ],
-        ),
-        const SizedBox(height: 8),
+        // === SEARCH ===
+        GroupedTilesLabel(title: 'Search', colors: colors),
+        _buildSearchGroup(colors),
 
         // === DOWNLOADS ===
         // Лимит размера кэша — на общей странице Cache.
-        _Section(
-          title: 'Downloads',
-          colors: colors,
-          children: [
-            _buildDownloadsSection(colors),
-          ],
-        ),
-        const SizedBox(height: 8),
+        GroupedTilesLabel(title: 'Downloads', colors: colors),
+        _buildDownloadsGroup(colors),
 
-        // === SHARING ===
-        _Section(
-          title: 'Sharing',
-          colors: colors,
-          children: [
-            _buildSharingSection(colors),
-          ],
-        ),
-        const SizedBox(height: 8),
-
-        // === TROUBLESHOOTING ===
-        _Section(
-          title: 'Troubleshooting',
-          colors: colors,
-          children: [
-            _buildTroubleshootingSection(colors),
-          ],
-        ),
-        const SizedBox(height: 8),
-
-        // === DANGER ZONE ===
-        _Section(
-          title: 'Danger zone',
-          colors: colors,
-          children: [
-            _buildDangerZone(colors),
-          ],
-        ),
-        const SizedBox(height: 16),
+        // === ADVANCED ===
+        const SizedBox(height: 24),
+        _buildAdvanced(colors),
       ],
     );
   }
 
-  // ── P2P WARNING ──
+  // ── STATUS ──
 
-  Widget _buildP2PWarning(dynamic colors) {
+  Widget _buildStatusRow(AppColors colors) {
+    final connected = _connectionState == SoulseekConnectionState.connected;
+    final busy = !connected &&
+        (_connecting ||
+            _connectionState == SoulseekConnectionState.connecting ||
+            _connectionState == SoulseekConnectionState.reconnecting);
+    final username = _usernameController.text.trim();
+
+    final String subtitle;
+    if (connected) {
+      subtitle = username.isEmpty ? 'Online' : 'as $username';
+    } else if (_connectionMessage != null && _connectionMessage!.isNotEmpty) {
+      subtitle = _connectionMessage!;
+    } else {
+      subtitle = busy ? 'Signing in…' : 'Offline';
+    }
+
+    final (label, onTap) = connected
+        ? ('Disconnect', _disconnect)
+        : busy
+            ? ('Cancel', _cancelConnect)
+            : ('Connect', _connect);
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.orangeAccent.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: Colors.orangeAccent.withValues(alpha: 0.25),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              Icons.warning_amber_rounded,
-              color: Colors.orangeAccent,
-              size: 20,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Soulseek is a peer-to-peer (P2P) network. '
-                'When you download music, you connect directly to '
-                'other users\' computers. Your shared folder is '
-                'visible to others.',
-                style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 13,
-                  height: 1.4,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── ACCOUNT SECTION ──
-
-  Widget _buildAccountSection(dynamic colors) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+      child: Row(
         children: [
-          // Username
-          Text(
-            'Username',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 8),
-          _TextField(
-            controller: _usernameController,
-            colors: colors,
-            hint: 'Your Soulseek username',
-            icon: Icons.person_outline_rounded,
-          ),
-          const SizedBox(height: 16),
-
-          // Password
-          Text(
-            'Password',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 8),
-          _TextField(
-            controller: _passwordController,
-            colors: colors,
-            hint: 'Your Soulseek password',
-            icon: Icons.lock_outline_rounded,
-            obscure: _obscurePassword,
-            suffix: IconButton(
-              icon: Icon(
-                _obscurePassword
-                    ? Icons.visibility_off_outlined
-                    : Icons.visibility_outlined,
-                color: colors.textSecondary,
-                size: 20,
-              ),
-              onPressed: () {
-                setState(() => _obscurePassword = !_obscurePassword);
-              },
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Save button
-          SizedBox(
-            width: double.infinity,
-            child: _ActionButton(
-              label: 'Save credentials',
-              icon: Icons.save_outlined,
-              colors: colors,
-              onTap: _saveCredentials,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── CONNECTION SECTION ──
-
-  Widget _buildConnectionSection(dynamic colors) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Status row
-          Row(
-            children: [
-              _ConnectionStatusDot(
-                state: _connectionState,
-                colors: colors,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _connectionStateLabel,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    if (_connectionMessage != null &&
-                        _connectionMessage!.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        _connectionMessage!,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: colors.textTertiary,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ],
+          _ConnectionStatusDot(state: _connectionState, colors: colors),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _connectionStateLabel,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // Listen port
-          Text(
-            'Listener port',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: colors.textTertiary, fontSize: 12),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 8),
-          _NumericField(
-            initialValue: _listenPort,
-            colors: colors,
-            hint: '24150',
-            icon: Icons.router_rounded,
-            onChanged: _updateListenPort,
-          ),
-          const SizedBox(height: 16),
-
-          // Connect / Disconnect buttons
-          Row(
-            children: [
-              Expanded(
-                child: _ActionButton(
-                  label: _connecting ? 'Connecting…' : 'Connect',
-                  icon: Icons.power_settings_new_rounded,
-                  colors: colors,
-                  onTap: _connecting ? null : _connect,
-                  primary: true,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _ActionButton(
-                  label: 'Disconnect',
-                  icon: Icons.power_off_rounded,
-                  colors: colors,
-                  onTap: _disconnect,
-                ),
-              ),
-            ],
-          ),
+          const SizedBox(width: 12),
+          _PillButton(label: label, colors: colors, onTap: onTap),
         ],
       ),
     );
@@ -995,50 +865,97 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  // ── SEARCH FILTERS SECTION ──
-
-  Widget _buildSearchFiltersSection(dynamic colors) {
+  Widget _buildP2PNote(AppColors colors) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: Column(
+      padding: const EdgeInsets.fromLTRB(22, 10, 22, 0),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Prefer lossless
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              'Prefer lossless',
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(
+              Icons.info_outline_rounded,
+              size: 14,
+              color: colors.textTertiary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Soulseek is a peer-to-peer network: you download directly '
+              'from other users, and your shared folder is visible to them.',
               style: TextStyle(
-                color: colors.textPrimary,
-                fontWeight: FontWeight.w500,
+                color: colors.textTertiary,
+                fontSize: 12,
+                height: 1.4,
               ),
             ),
-            subtitle: Text(
-              'Only show FLAC, WAV, ALAC, APE, WV',
-              style: TextStyle(color: colors.textSecondary, fontSize: 13),
-            ),
-            value: _preferLossless,
-            onChanged: _togglePreferLossless,
-            activeThumbColor: colors.accent,
-            activeTrackColor: colors.accent.withValues(alpha: 0.3),
-            inactiveThumbColor: colors.textSecondary,
-            inactiveTrackColor: colors.elevated,
           ),
-          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
 
-          // Allowed formats
-          Text(
-            'Allowed formats',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
+  // ── ACCOUNT ──
+
+  Widget _buildAccountGroup(AppColors colors) {
+    return GroupedTiles(
+      colors: colors,
+      children: [
+        _FieldRow(
+          colors: colors,
+          label: 'Username',
+          child: _InlineTextField(
+            controller: _usernameController,
+            colors: colors,
+            hint: 'Your Soulseek username',
           ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+        ),
+        _FieldRow(
+          colors: colors,
+          label: 'Password',
+          trailing: IconButton(
+            tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+            icon: Icon(
+              _obscurePassword
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+              color: colors.textTertiary,
+              size: 20,
+            ),
+            onPressed: () {
+              setState(() => _obscurePassword = !_obscurePassword);
+            },
+          ),
+          child: _InlineTextField(
+            controller: _passwordController,
+            colors: colors,
+            hint: 'Your Soulseek password',
+            obscure: _obscurePassword,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── SEARCH ──
+
+  Widget _buildSearchGroup(AppColors colors) {
+    return GroupedTiles(
+      colors: colors,
+      children: [
+        _SwitchRow(
+          colors: colors,
+          title: 'Lossless only',
+          subtitle: 'FLAC, WAV, ALAC, APE, WV',
+          value: _preferLossless,
+          onChanged: _togglePreferLossless,
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
             children: _allFormats.map((fmt) {
               final selected = _allowedFormats.contains(fmt);
               return _FormatChip(
@@ -1049,263 +966,615 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
               );
             }).toList(),
           ),
-          const SizedBox(height: 16),
-
-          // Max file size
-          Text(
-            'Max file size (MB, 0 = unlimited)',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
+        ),
+        _Row(
+          colors: colors,
+          title: 'Max file size',
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _fileSizeLabel(_maxFileSizeMB),
+                style: TextStyle(color: colors.textSecondary, fontSize: 14),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: colors.textTertiary,
+                size: 20,
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          _NumericField(
-            initialValue: _maxFileSizeMB,
-            colors: colors,
-            hint: '0',
-            icon: Icons.compress_rounded,
-            onChanged: _updateMaxFileSize,
+          onTap: () => _pickMaxFileSize(colors),
+        ),
+        _Row(
+          colors: colors,
+          title: 'Search timeout',
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _NumericField(
+                key: const Key('soulseek_search_timeout_field'),
+                initialValue: _searchTimeoutSec,
+                colors: colors,
+                hint: '${SoulseekSettingsRepository.defaultSearchTimeoutSec}',
+                onChanged: _updateSearchTimeout,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                's',
+                style: TextStyle(color: colors.textTertiary, fontSize: 13),
+              ),
+            ],
           ),
-          const SizedBox(height: 16),
-
-          // Search timeout
-          Text(
-            'Search timeout (seconds)',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 8),
-          _NumericField(
-            initialValue: _searchTimeoutSec,
-            colors: colors,
-            hint: '${SoulseekSettingsRepository.defaultSearchTimeoutSec}',
-            icon: Icons.timer_outlined,
-            onChanged: _updateSearchTimeout,
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  // ── DOWNLOADS SECTION ──
+  static String _fileSizeLabel(int mb) => mb <= 0 ? 'Unlimited' : '$mb MB';
 
-  Widget _buildDownloadsSection(dynamic colors) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Стриминг: воспроизведение во время загрузки (.part).
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              'Play while downloading',
-              style: TextStyle(
-                color: colors.textPrimary,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            subtitle: Text(
-              'Start playback before the file is fully downloaded',
-              style: TextStyle(color: colors.textSecondary, fontSize: 13),
-            ),
-            value: _streamingEnabled,
-            onChanged: _toggleStreaming,
-            activeThumbColor: colors.accent,
-            activeTrackColor: colors.accent.withValues(alpha: 0.3),
-            inactiveThumbColor: colors.textSecondary,
-            inactiveTrackColor: colors.elevated,
-          ),
-          const SizedBox(height: 8),
+  Future<void> _pickMaxFileSize(AppColors colors) async {
+    final options = <int>{..._fileSizePresets, _maxFileSizeMB}.toList()..sort();
+    // 0 (без лимита) — в начало списка.
+    options
+      ..remove(0)
+      ..insert(0, 0);
 
-          // Max parallel downloads
-          Text(
-            'Max parallel downloads',
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '$_maxParallelDownloads',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 24,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          Slider(
-            value: _maxParallelDownloads.toDouble(),
-            min: 2,
-            max: 5,
-            divisions: 3,
-            activeColor: colors.accent,
-            inactiveColor: colors.elevated,
-            onChanged: (v) => _updateMaxParallel(v.round()),
-          ),
-          const SizedBox(height: 16),
-
-          // Quick access: active downloads
-          SizedBox(
-            width: double.infinity,
-            child: _ActionButton(
-              label: 'Active downloads',
-              icon: Icons.download_rounded,
-              colors: colors,
-              onTap: () => showSoulseekTransferSheet(context),
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          // Quick access: общий список кэшированных треков
-          SizedBox(
-            width: double.infinity,
-            child: _ActionButton(
-              label: 'Cached tracks',
-              icon: Icons.storage_rounded,
-              colors: colors,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const CachedTracksPage()),
-              ),
-            ),
-          ),
-        ],
+    final picked = await showDesktopModalSheet<int>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => _OptionSheet<int>(
+        colors: colors,
+        title: 'Max file size',
+        options: options,
+        selected: _maxFileSizeMB,
+        labelOf: _fileSizeLabel,
       ),
+    );
+    if (picked == null || picked == _maxFileSizeMB || !mounted) return;
+    setState(() => _maxFileSizeMB = picked);
+    await _updateMaxFileSize('$picked');
+  }
+
+  // ── DOWNLOADS ──
+
+  Widget _buildDownloadsGroup(AppColors colors) {
+    final active = _activeTransferIds.length;
+    return GroupedTiles(
+      colors: colors,
+      children: [
+        _SwitchRow(
+          colors: colors,
+          title: 'Play while downloading',
+          subtitle: 'Start before the file is fully downloaded',
+          value: _streamingEnabled,
+          onChanged: _toggleStreaming,
+        ),
+        _Row(
+          colors: colors,
+          title: 'Parallel downloads',
+          trailing: _Segmented<int>(
+            colors: colors,
+            values: const [2, 3, 4, 5],
+            selected: _maxParallelDownloads,
+            labelOf: (v) => '$v',
+            onChanged: _updateMaxParallel,
+          ),
+        ),
+        _Row(
+          colors: colors,
+          icon: Icons.download_rounded,
+          title: 'Downloads',
+          trailing: _NavTrailing(
+            colors: colors,
+            value: active > 0 ? '$active active' : null,
+          ),
+          onTap: () => showSoulseekTransferSheet(context),
+        ),
+        _Row(
+          colors: colors,
+          icon: Icons.storage_rounded,
+          title: 'Cached tracks',
+          trailing: _NavTrailing(colors: colors),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const CachedTracksPage()),
+          ),
+        ),
+      ],
     );
   }
 
-  // ── SHARING SECTION ──
+  // ── ADVANCED ──
 
-  Widget _buildSharingSection(dynamic colors) {
-    final displayPath = _sharingDirectory.isNotEmpty
+  Widget _buildAdvanced(AppColors colors) {
+    final sharedPath = _sharingDirectory.isNotEmpty
         ? _sharingDirectory
         : 'Internal storage (default)';
 
-    return ListTile(
-      leading: Icon(Icons.folder_shared_outlined, color: colors.textPrimary),
-      title: Text(
-        'Shared directory',
-        style: TextStyle(
-          color: colors.textPrimary,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      subtitle: Text(
-        displayPath,
-        style: TextStyle(color: colors.textSecondary, fontSize: 13),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Icon(
-        Icons.info_outline_rounded,
-        color: colors.textTertiary,
-        size: 20,
-      ),
-      onTap: () {
-        if (mounted) {
-          showAppInfoDialog(
-            context: context,
-            title: 'Shared directory',
-            subtitle: 'Soulseek shares files from the internal storage '
-                'directory of the app. On Android, this is the app\'s '
-                'private storage area. Downloaded files are cached here '
-                'and available for sharing with other Soulseek users.',
-          );
-        }
-      },
-    );
-  }
-
-  // ── TROUBLESHOOTING ──
-
-  Widget _buildTroubleshootingSection(dynamic colors) {
-    return ListTile(
-      leading: Icon(Icons.bug_report_outlined, color: colors.textPrimary),
-      title: Text(
-        'Secure storage diagnostics',
-        style: TextStyle(
-          color: colors.textPrimary,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      subtitle: Text(
-        'Report for the developer if credentials fail to save. '
-        'Contains no passwords.',
-        style: TextStyle(color: colors.textSecondary, fontSize: 13),
-      ),
-      trailing: Icon(
-        Icons.chevron_right_rounded,
-        color: colors.textTertiary,
-        size: 20,
-      ),
-      onTap: () => showAppReportDialog(
-        context: context,
-        title: 'Diagnostics',
-        subtitle: 'Send this report to the developer',
-        report: SecureStorageDiagnostics.buildReport(),
-        shareSubject: 'Player: secure storage diagnostics',
-      ),
-    );
-  }
-
-  // ── DANGER ZONE ──
-
-  Widget _buildDangerZone(dynamic colors) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-      child: _ActionButton(
-        label: 'Clear credentials',
-        icon: Icons.no_encryption_gmailerrorred_outlined,
+    // Одна группа: заголовок и раскрытые строки — общие скругления, как у
+    // остальных групп страницы.
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+      alignment: Alignment.topCenter,
+      child: GroupedTiles(
         colors: colors,
-        onTap: _clearCredentials,
-        destructive: true,
+        children: [
+          _Row(
+            colors: colors,
+            title: 'Advanced',
+            trailing: AnimatedRotation(
+              turns: _advancedOpen ? 0.5 : 0,
+              duration: const Duration(milliseconds: 200),
+              child: Icon(
+                Icons.expand_more_rounded,
+                color: colors.textTertiary,
+              ),
+            ),
+            onTap: () => setState(() => _advancedOpen = !_advancedOpen),
+          ),
+          if (_advancedOpen) ...[
+            _Row(
+              colors: colors,
+              title: 'Listener port',
+              trailing: _NumericField(
+                key: const Key('soulseek_listen_port_field'),
+                initialValue: _listenPort,
+                colors: colors,
+                hint: '24150',
+                width: 72,
+                onChanged: _updateListenPort,
+              ),
+            ),
+            _Row(
+              colors: colors,
+              title: 'Shared folder',
+              subtitle: sharedPath,
+              trailing: Icon(
+                Icons.info_outline_rounded,
+                color: colors.textTertiary,
+                size: 20,
+              ),
+              onTap: () => showAppInfoDialog(
+                context: context,
+                title: 'Shared folder',
+                subtitle: 'Soulseek shares files from the internal '
+                    'storage directory of the app. On Android, '
+                    "this is the app's private storage area. "
+                    'Downloaded files are cached here and '
+                    'available for sharing with other Soulseek '
+                    'users.',
+              ),
+            ),
+            _Row(
+              colors: colors,
+              title: 'Storage diagnostics',
+              subtitle: 'Report for the developer if credentials '
+                  'fail to save. Contains no passwords.',
+              trailing: _NavTrailing(colors: colors),
+              onTap: () => showAppReportDialog(
+                context: context,
+                title: 'Diagnostics',
+                subtitle: 'Send this report to the developer',
+                report: SecureStorageDiagnostics.buildReport(),
+                shareSubject: 'Player: secure storage diagnostics',
+              ),
+            ),
+            _Row(
+              colors: colors,
+              title: 'Clear credentials',
+              titleColor: Colors.redAccent,
+              onTap: _clearCredentials,
+            ),
+          ],
+        ],
       ),
     );
   }
 }
 
+/// Пресеты листа «Max file size» (МБ, 0 — без лимита).
+const List<int> _fileSizePresets = [0, 50, 100, 200, 500];
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SHARED WIDGETS
 // ═══════════════════════════════════════════════════════════════════════
 
-class _Section extends StatelessWidget {
-  const _Section({
-    super.key,
-    required this.title,
-    required this.children,
+class _Row extends StatelessWidget {
+  const _Row({
     required this.colors,
+    required this.title,
+    this.subtitle,
+    this.icon,
+    this.trailing,
+    this.onTap,
+    this.titleColor,
   });
 
+  final AppColors colors;
   final String title;
-  final List<Widget> children;
-  final dynamic colors;
+  final String? subtitle;
+  final IconData? icon;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+  final Color? titleColor;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return InkWell(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 52),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              if (icon != null) ...[
+                Icon(icon, color: colors.textSecondary, size: 20),
+                const SizedBox(width: 14),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: titleColor ?? colors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colors.textTertiary,
+                          fontSize: 12,
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (trailing != null) ...[
+                const SizedBox(width: 12),
+                trailing!,
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.colors,
+    required this.title,
+    required this.value,
+    required this.onChanged,
+    this.subtitle,
+  });
+
+  final AppColors colors;
+  final String title;
+  final String? subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Row(
+      colors: colors,
+      title: title,
+      subtitle: subtitle,
+      onTap: () => onChanged(!value),
+      trailing: Switch.adaptive(
+        value: value,
+        onChanged: onChanged,
+        activeThumbColor: colors.accent,
+        activeTrackColor: colors.accent.withValues(alpha: 0.3),
+        inactiveThumbColor: colors.textSecondary,
+        inactiveTrackColor: colors.background,
+      ),
+    );
+  }
+}
+
+/// Строка формы: метка фиксированной ширины + поле ввода.
+class _FieldRow extends StatelessWidget {
+  const _FieldRow({
+    required this.colors,
+    required this.label,
+    required this.child,
+    this.trailing,
+  });
+
+  final AppColors colors;
+  final String label;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 52),
+      child: Padding(
+        padding: EdgeInsets.only(left: 16, right: trailing == null ? 16 : 4),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 88,
+              child: Text(
+                label,
+                style: TextStyle(color: colors.textTertiary, fontSize: 13),
+              ),
+            ),
+            Expanded(child: child),
+            ?trailing,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineTextField extends StatelessWidget {
+  const _InlineTextField({
+    required this.controller,
+    required this.colors,
+    required this.hint,
+    this.obscure = false,
+  });
+
+  final TextEditingController controller;
+  final AppColors colors;
+  final String hint;
+  final bool obscure;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      autocorrect: false,
+      enableSuggestions: !obscure,
+      style: TextStyle(color: colors.textPrimary, fontSize: 15),
+      cursorColor: colors.textPrimary,
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
+        border: InputBorder.none,
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+      ),
+    );
+  }
+}
+
+/// Значение справа у навигационной строки + шеврон.
+class _NavTrailing extends StatelessWidget {
+  const _NavTrailing({required this.colors, this.value});
+
+  final AppColors colors;
+  final String? value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-          child: Text(
-            title.toUpperCase(),
+        if (value != null) ...[
+          Text(
+            value!,
             style: TextStyle(
-              color: colors.textTertiary,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1,
+              color: colors.textSecondary,
+              fontSize: 14,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+          const SizedBox(width: 4),
+        ],
+        Icon(Icons.chevron_right_rounded, color: colors.textTertiary, size: 20),
+      ],
+    );
+  }
+}
+
+class _Segmented<T> extends StatelessWidget {
+  const _Segmented({
+    required this.colors,
+    required this.values,
+    required this.selected,
+    required this.labelOf,
+    required this.onChanged,
+  });
+
+  final AppColors colors;
+  final List<T> values;
+  final T selected;
+  final String Function(T) labelOf;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final v in values)
+            _SegmentOption(
+              label: labelOf(v),
+              selected: v == selected,
+              colors: colors,
+              onTap: () => onChanged(v),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SegmentOption extends StatelessWidget {
+  const _SegmentOption({
+    required this.label,
+    required this.selected,
+    required this.colors,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final AppColors colors;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? colors.elevatedVariant : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          constraints: const BoxConstraints(minWidth: 34, minHeight: 30),
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? colors.textPrimary : colors.textTertiary,
+              fontSize: 13,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         ),
-        ...children,
-      ],
+      ),
+    );
+  }
+}
+
+class _PillButton extends StatelessWidget {
+  const _PillButton({
+    required this.label,
+    required this.colors,
+    required this.onTap,
+  });
+
+  final String label;
+  final AppColors colors;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.elevatedVariant,
+      shape: StadiumBorder(side: BorderSide(color: colors.outline)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Лист выбора одного значения из списка (галочка у текущего).
+class _OptionSheet<T> extends StatelessWidget {
+  const _OptionSheet({
+    required this.colors,
+    required this.title,
+    required this.options,
+    required this.selected,
+    required this.labelOf,
+  });
+
+  final AppColors colors;
+  final String title;
+  final List<T> options;
+  final T selected;
+  final String Function(T) labelOf;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(
+        bottom: 16 + MediaQuery.of(context).padding.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: Container(
+              margin: const EdgeInsets.only(top: 10),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: colors.textTertiary,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 18, 22, 12),
+            child: Text(
+              title,
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          GroupedTiles(
+            colors: colors,
+            children: [
+              for (final o in options)
+                _Row(
+                  colors: colors,
+                  title: labelOf(o),
+                  trailing: Icon(
+                    Icons.check_rounded,
+                    size: 20,
+                    color: o == selected
+                        ? colors.textPrimary
+                        : Colors.transparent,
+                  ),
+                  onTap: () => Navigator.of(context).pop(o),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1339,67 +1608,21 @@ class _CircleButton extends StatelessWidget {
   }
 }
 
-class _TextField extends StatelessWidget {
-  const _TextField({
-    required this.controller,
-    required this.colors,
-    required this.hint,
-    required this.icon,
-    this.obscure = false,
-    this.suffix,
-  });
-
-  final TextEditingController controller;
-  final dynamic colors;
-  final String hint;
-  final IconData icon;
-  final bool obscure;
-  final Widget? suffix;
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      obscureText: obscure,
-      style: TextStyle(color: colors.textPrimary, fontSize: 15),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
-        filled: true,
-        fillColor: colors.elevated,
-        prefixIcon: Icon(icon, color: colors.textSecondary, size: 20),
-        suffixIcon: suffix,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: colors.outline, width: 1),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: colors.outline, width: 1),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: colors.accent.withValues(alpha: 0.5), width: 1),
-        ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      ),
-    );
-  }
-}
-
+/// Компактное числовое поле в строке (таймаут, порт).
 class _NumericField extends StatefulWidget {
   const _NumericField({
+    super.key,
     required this.initialValue,
     required this.colors,
     required this.hint,
-    required this.icon,
     required this.onChanged,
+    this.width = 56,
   });
 
   final int initialValue;
-  final dynamic colors;
+  final AppColors colors;
   final String hint;
-  final IconData icon;
+  final double width;
 
   /// Вызывается, когда значение поля считается подтверждённым: по Enter
   /// (onSubmitted), по потере фокуса или по debounce ~500 мс после
@@ -1482,108 +1705,41 @@ class _NumericFieldState extends State<_NumericField> {
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: _controller,
-      focusNode: _focusNode,
-      keyboardType: TextInputType.number,
-      style: TextStyle(color: widget.colors.textPrimary, fontSize: 15),
-      decoration: InputDecoration(
-        hintText: widget.hint,
-        hintStyle: TextStyle(color: widget.colors.textTertiary, fontSize: 15),
-        filled: true,
-        fillColor: widget.colors.elevated,
-        prefixIcon: Icon(widget.icon, color: widget.colors.textSecondary, size: 20),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: widget.colors.outline, width: 1),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: widget.colors.outline, width: 1),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              BorderSide(color: widget.colors.accent.withValues(alpha: 0.5), width: 1),
-        ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      ),
-      onChanged: (_) => _onTextChanged(),
-      onSubmitted: (_) => _commitNow(),
+    final colors = widget.colors;
+    final border = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(10),
+      borderSide: BorderSide(color: colors.outline, width: 1),
     );
-  }
-}
-
-class _ActionButton extends StatelessWidget {
-  const _ActionButton({
-    required this.label,
-    required this.icon,
-    required this.colors,
-    required this.onTap,
-    this.primary = false,
-    this.destructive = false,
-  });
-
-  final String label;
-  final IconData icon;
-  final dynamic colors;
-  final VoidCallback? onTap;
-  final bool primary;
-  final bool destructive;
-
-  @override
-  Widget build(BuildContext context) {
-    final bgColor = destructive
-        ? Colors.redAccent.withValues(alpha: 0.08)
-        : primary
-            ? colors.elevatedHi
-            : colors.elevated;
-    final fgColor = destructive
-        ? Colors.redAccent
-        : primary
-            ? Colors.white
-            : colors.textPrimary;
-    final borderColor = destructive
-        ? Colors.redAccent.withValues(alpha: 0.2)
-        : colors.outline;
-
-    return Material(
-      color: bgColor,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          height: 48,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: borderColor, width: 1),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: fgColor, size: 20),
-              const SizedBox(width: 8),
-              // В узкой кнопке (две в ряд на телефоне) подпись не влезала
-              // на пару пикселей — RenderFlex overflow. Слегка ужимаем.
-              Flexible(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    style: TextStyle(
-                      color: fgColor,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+    return SizedBox(
+      width: widget.width,
+      child: TextField(
+        controller: _controller,
+        focusNode: _focusNode,
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        textAlign: TextAlign.center,
+        cursorColor: colors.textPrimary,
+        style: TextStyle(
+          color: colors.textPrimary,
+          fontSize: 14,
+          fontFeatures: const [FontFeature.tabularFigures()],
         ),
+        decoration: InputDecoration(
+          hintText: widget.hint,
+          hintStyle: TextStyle(color: colors.textTertiary, fontSize: 14),
+          filled: true,
+          fillColor: colors.background,
+          isDense: true,
+          border: border,
+          enabledBorder: border,
+          focusedBorder: border.copyWith(
+            borderSide: BorderSide(color: colors.elevatedHi, width: 1),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+        ),
+        onChanged: (_) => _onTextChanged(),
+        onSubmitted: (_) => _commitNow(),
       ),
     );
   }
@@ -1599,36 +1755,33 @@ class _FormatChip extends StatelessWidget {
 
   final String label;
   final bool selected;
-  final dynamic colors;
+  final AppColors colors;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: selected
-          ? colors.accent.withValues(alpha: 0.15)
-          : colors.elevated,
-      borderRadius: BorderRadius.circular(10),
+      color: selected ? colors.elevatedVariant : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(8),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: selected
-                  ? colors.accent.withValues(alpha: 0.4)
-                  : colors.outline,
+              color: selected ? colors.elevatedHi : colors.outline,
               width: 1,
             ),
           ),
           child: Text(
             label,
             style: TextStyle(
-              color: selected ? colors.accent : colors.textSecondary,
-              fontSize: 13,
+              color: selected ? colors.textPrimary : colors.textTertiary,
+              fontSize: 12,
               fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              letterSpacing: 0.3,
             ),
           ),
         ),
@@ -1644,14 +1797,15 @@ class _ConnectionStatusDot extends StatelessWidget {
   });
 
   final SoulseekConnectionState state;
-  final dynamic colors;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
+    // Монохромно в цветах палитры; цветной — только сбой.
     final (color, pulsing) = switch (state) {
-      SoulseekConnectionState.connected => (Colors.greenAccent, false),
-      SoulseekConnectionState.connecting => (Colors.orangeAccent, true),
-      SoulseekConnectionState.reconnecting => (Colors.orangeAccent, true),
+      SoulseekConnectionState.connected => (colors.textPrimary, false),
+      SoulseekConnectionState.connecting => (colors.textSecondary, true),
+      SoulseekConnectionState.reconnecting => (colors.textSecondary, true),
       SoulseekConnectionState.failed => (Colors.redAccent, false),
       SoulseekConnectionState.disconnected => (colors.textTertiary, false),
     };
@@ -1660,8 +1814,8 @@ class _ConnectionStatusDot extends StatelessWidget {
       return _PulsingDot(color: color);
     }
     return Container(
-      width: 12,
-      height: 12,
+      width: 10,
+      height: 10,
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
@@ -1705,8 +1859,8 @@ class _PulsingDotState extends State<_PulsingDot>
         return Opacity(
           opacity: 0.4 + (_controller.value * 0.6),
           child: Container(
-            width: 12,
-            height: 12,
+            width: 10,
+            height: 10,
             decoration: BoxDecoration(
               color: widget.color,
               shape: BoxShape.circle,

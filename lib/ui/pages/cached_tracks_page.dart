@@ -14,6 +14,7 @@ import '../desktop/track_context_menu.dart';
 import '../widgets/app_dialogs.dart';
 import '../widgets/artwork.dart';
 import '../widgets/byte_format.dart';
+import '../widgets/grouped_tiles.dart';
 import '../widgets/snack.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../widgets/wave_bars.dart';
@@ -31,17 +32,9 @@ abstract final class _Dimens {
   static const double trackArtwork = 56;
   static const double trackRowHeight = 64;
 
-  static const double radiusM = 15;
-  static const double radiusXS = 5;
   static const double radiusArtwork = 12;
 }
 
-BorderRadius _trackBorderRadius(bool isFirst, bool isLast) => BorderRadius.only(
-  topLeft: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
-  topRight: Radius.circular(isFirst ? _Dimens.radiusM : _Dimens.radiusXS),
-  bottomLeft: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
-  bottomRight: Radius.circular(isLast ? _Dimens.radiusM : _Dimens.radiusXS),
-);
 
 String _fmtDuration(Duration d) {
   final h = d.inHours;
@@ -560,7 +553,7 @@ class _CachedTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final track = item.track;
     final colors = ref.watch(animatedPaletteProvider);
-    final borderRadius = _trackBorderRadius(isFirst, isLast);
+    final borderRadius = groupedTileRadius(isFirst, isLast);
     final isCurrentTrack = ref.watch(
       _currentTrackIdProvider.select((id) => id.valueOrNull == track.globalId),
     );

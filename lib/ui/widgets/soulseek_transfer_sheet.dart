@@ -1,13 +1,13 @@
 // lib/ui/widgets/soulseek_transfer_sheet.dart
 //
-// Фаза 4 — нижний лист активных загрузок Soulseek.
+// Фаза 4 — нижний лист загрузок Soulseek (редизайн по
+// plans/soulseek_pages_redesign_plan.md).
 //
-// Показывает список активных/недавних трансферов с:
-//  - идентификатором загрузки (и именем файла из localPath, если доступно)
-//  - индикатором статуса (queued / downloading / paused / completed / failed)
-//  - прогресс-баром с процентами
-//  - скоростью (KB/s) и размером (получено / всего)
-//  - кнопками Pause / Resume / Cancel
+// Две группы плиток — «In progress» и «Finished» — со скруглениями как у
+// списка треков. Плитка: обложка (ленивый поиск по artist/title, как в
+// Cached tracks) · название и строка статуса · метка формата справа ·
+// управление: кольцо прогресса с паузой/продолжением, отмена, повтор для
+// упавших/отменённых. Цвета — только из AppColors; красный — лишь «Failed».
 //
 // Автообновление через transferEvents stream + периодический poll
 // getActiveTransfers для состояний, которые не шлют события.
@@ -18,17 +18,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../sources/soulseek_artwork_query.dart';
 import '../../sources/soulseek_models.dart';
 import '../../sources/soulseek_platform_channel.dart';
 import '../desktop/desktop_layout.dart';
+import 'artwork.dart';
 import 'byte_format.dart';
+import 'grouped_tiles.dart';
 import 'snack.dart';
 
-/// Показывает нижний лист активных загрузок Soulseek.
+/// Показывает нижний лист загрузок Soulseek.
 Future<void> showSoulseekTransferSheet(BuildContext context) {
   if (isDesktop) {
     return showDesktopModalSheet(
       context: context,
+      backgroundColor: Colors.transparent,
       builder: (_) => const _TransferSheet(),
     );
   }
@@ -129,6 +133,27 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
     }
   }
 
+  Future<void> _retry(String downloadId) async {
+    try {
+      final restarted = await _platform.retryDownload(downloadId);
+      if (!restarted && mounted) {
+        showSnack(context, "Couldn't retry this download");
+      }
+    } catch (_) {
+      if (mounted) showSnack(context, "Couldn't retry this download");
+    }
+    await _refresh();
+  }
+
+  Future<void> _clearFinished() async {
+    try {
+      await _platform.clearFinishedTransfers();
+    } catch (_) {
+      if (mounted) showSnack(context, "Couldn't clear finished downloads");
+    }
+    await _refresh();
+  }
+
   // ── UI ──
 
   @override
@@ -136,6 +161,15 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
     final colors = ref.watch(animatedPaletteProvider);
     final media = MediaQuery.of(context);
     final maxHeight = media.size.height * 0.85;
+
+    final inProgress = _transfers.where((t) => !_isFinished(t.state)).toList()
+      ..sort(
+        (a, b) => _statePriority(a.state).compareTo(_statePriority(b.state)),
+      );
+    final finished = _transfers.where((t) => _isFinished(t.state)).toList()
+      ..sort(
+        (a, b) => _statePriority(a.state).compareTo(_statePriority(b.state)),
+      );
 
     return Container(
       constraints: BoxConstraints(maxHeight: maxHeight),
@@ -145,26 +179,31 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildHandle(colors),
-          _buildHeader(colors),
-          const Divider(height: 1),
+          _buildHeader(colors, inProgress, hasFinished: finished.isNotEmpty),
           Flexible(
             child: _loading
                 ? _buildLoading(colors)
                 : _transfers.isEmpty
-                    ? _buildEmpty(colors)
-                    : _buildList(colors, media.padding.bottom),
+                ? _buildEmpty(colors)
+                : _buildList(
+                    colors,
+                    inProgress,
+                    finished,
+                    media.padding.bottom,
+                  ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildHandle(dynamic colors) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 10),
+  Widget _buildHandle(AppColors colors) {
+    return Center(
       child: Container(
+        margin: const EdgeInsets.only(top: 10),
         width: 40,
         height: 4,
         decoration: BoxDecoration(
@@ -175,70 +214,90 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
     );
   }
 
-  Widget _buildHeader(dynamic colors) {
+  Widget _buildHeader(
+    AppColors colors,
+    List<SoulseekTransferInfo> inProgress, {
+    required bool hasFinished,
+  }) {
+    final active = inProgress.where((t) => t.state.isActive).length;
+    final speed = inProgress
+        .where((t) => t.state == SoulseekTransferState.downloading)
+        .fold<int>(0, (sum, t) => sum + t.bytesPerSecond);
+    final summary = active == 0
+        ? null
+        : speed > 0
+        ? '$active active · ${formatSpeed(speed)}'
+        : '$active active';
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 16, 12),
+      padding: const EdgeInsets.fromLTRB(22, 18, 12, 4),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          Icon(Icons.download_rounded, color: colors.textPrimary, size: 22),
-          const SizedBox(width: 10),
           Expanded(
-            child: Text(
-              'Downloads',
-              style: TextStyle(
-                color: colors.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Downloads',
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (summary != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    summary,
+                    style: TextStyle(
+                      color: colors.textTertiary,
+                      fontSize: 12,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
-          if (_transfers.any(_isActive))
-            Text(
-              '${_transfers.where(_isActive).length} active',
-              style: TextStyle(
-                color: colors.textSecondary,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
+          if (hasFinished)
+            TextButton(
+              onPressed: _clearFinished,
+              style: TextButton.styleFrom(
+                foregroundColor: colors.textSecondary,
+                visualDensity: VisualDensity.compact,
+                textStyle: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
+              child: const Text('Clear'),
             ),
-          const SizedBox(width: 8),
-          IconButton(
-            onPressed: () => Navigator.of(context).maybePop(),
-            icon: Icon(Icons.close_rounded, color: colors.textSecondary),
-            iconSize: 22,
-            visualDensity: VisualDensity.compact,
-          ),
         ],
       ),
     );
   }
 
-  bool _isActive(SoulseekTransferInfo t) => t.state.isActive;
-
-  Widget _buildLoading(dynamic colors) {
+  Widget _buildLoading(AppColors colors) {
     return SizedBox(
       height: 120,
       child: Center(
         child: CircularProgressIndicator(
           strokeWidth: 2,
-          color: colors.accent,
+          color: colors.textSecondary,
         ),
       ),
     );
   }
 
-  Widget _buildEmpty(dynamic colors) {
+  Widget _buildEmpty(AppColors colors) {
     return SizedBox(
       height: 200,
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.cloud_download_rounded,
-              size: 40,
-              color: colors.textTertiary,
-            ),
+            Icon(Icons.download_rounded, size: 36, color: colors.textTertiary),
             const SizedBox(height: 12),
             Text(
               'No active downloads',
@@ -251,10 +310,7 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
             const SizedBox(height: 4),
             Text(
               'Downloads from Soulseek will appear here',
-              style: TextStyle(
-                color: colors.textTertiary,
-                fontSize: 13,
-              ),
+              style: TextStyle(color: colors.textTertiary, fontSize: 13),
             ),
           ],
         ),
@@ -262,36 +318,42 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
     );
   }
 
-  Widget _buildList(dynamic colors, double bottomInset) {
-    // Сортировка: активные первыми, затем completed, затем failed/cancelled.
-    final sorted = [..._transfers]..sort((a, b) {
-        final pa = _statePriority(a.state);
-        final pb = _statePriority(b.state);
-        return pa.compareTo(pb);
-      });
+  Widget _buildList(
+    AppColors colors,
+    List<SoulseekTransferInfo> inProgress,
+    List<SoulseekTransferInfo> finished,
+    double bottomInset,
+  ) {
+    Widget tile(SoulseekTransferInfo t) => _TransferTile(
+      key: ValueKey(t.downloadId),
+      transfer: t,
+      colors: colors,
+      onPause: () => _pause(t.downloadId),
+      onResume: () => _resume(t.downloadId),
+      onCancel: () => _cancel(t.downloadId),
+      onRetry: () => _retry(t.downloadId),
+    );
 
-    return ListView.separated(
+    return ListView(
       shrinkWrap: true,
-      padding: EdgeInsets.only(top: 4, bottom: 16 + bottomInset),
-      itemCount: sorted.length,
-      separatorBuilder: (_, _) => Divider(
-        height: 1,
-        indent: 16,
-        endIndent: 16,
-        color: colors.outline.withValues(alpha: 0.3),
-      ),
-      itemBuilder: (context, index) {
-        final t = sorted[index];
-        return _TransferTile(
-          transfer: t,
-          colors: colors,
-          onPause: () => _pause(t.downloadId),
-          onResume: () => _resume(t.downloadId),
-          onCancel: () => _cancel(t.downloadId),
-        );
-      },
+      padding: EdgeInsets.only(bottom: 16 + bottomInset),
+      children: [
+        if (inProgress.isNotEmpty) ...[
+          GroupedTilesLabel(title: 'In progress', colors: colors, top: 18),
+          GroupedTiles(colors: colors, children: inProgress.map(tile).toList()),
+        ],
+        if (finished.isNotEmpty) ...[
+          GroupedTilesLabel(title: 'Finished', colors: colors, top: 18),
+          GroupedTiles(colors: colors, children: finished.map(tile).toList()),
+        ],
+      ],
     );
   }
+
+  static bool _isFinished(SoulseekTransferState s) =>
+      s == SoulseekTransferState.completed ||
+      s == SoulseekTransferState.failed ||
+      s == SoulseekTransferState.cancelled;
 
   int _statePriority(SoulseekTransferState s) {
     switch (s) {
@@ -309,9 +371,9 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
         return 4;
       case SoulseekTransferState.paused:
         return 5;
-      case SoulseekTransferState.completed:
-        return 6;
       case SoulseekTransferState.failed:
+        return 6;
+      case SoulseekTransferState.completed:
         return 7;
       case SoulseekTransferState.cancelled:
         return 8;
@@ -327,173 +389,223 @@ class _TransferSheetState extends ConsumerState<_TransferSheet> {
 
 class _TransferTile extends StatelessWidget {
   const _TransferTile({
+    super.key,
     required this.transfer,
     required this.colors,
     required this.onPause,
     required this.onResume,
     required this.onCancel,
+    required this.onRetry,
   });
 
+  static const double _artSize = 44;
+
   final SoulseekTransferInfo transfer;
-  final dynamic colors;
+  final AppColors colors;
   final VoidCallback onPause;
   final VoidCallback onResume;
   final VoidCallback onCancel;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
     final t = transfer;
-    // progress может быть null (если totalBytes <= 0) — используем 0.0.
-    final progressValue = t.progress ?? 0.0;
-    final percent = (progressValue * 100).clamp(0, 100).round();
-    final isActive = t.state == SoulseekTransferState.downloading ||
-        t.state == SoulseekTransferState.queued ||
-        t.state == SoulseekTransferState.queuedRemotely ||
-        t.state == SoulseekTransferState.connecting ||
-        t.state == SoulseekTransferState.searching;
-    final isPaused = t.state == SoulseekTransferState.paused;
+    final title = _displayName(t);
+    final format = _format(t);
+    final dimmed = t.state == SoulseekTransferState.cancelled;
 
-    // Файл в кэше и downloadId названы хэшем cacheKey — имя берём из
-    // метаданных загрузки, иначе из исходного имени файла у пира.
-    final displayName = _displayName(t);
-    final artist = t.artist;
+    // Обложку ищем тем же очищенным запросом, что и Cached tracks:
+    // title/artist выдачи бывают сырыми («09 Without Me»).
+    final remote = t.remoteFilename;
+    final query = (remote != null && remote.isNotEmpty)
+        ? soulseekArtworkQuery(
+            remote,
+            fallbackArtist: t.artist ?? '',
+            fallbackTitle: title,
+          )
+        : (artist: t.artist ?? '', title: title);
 
+    // Приглушается только содержимое отменённой загрузки — кнопка «Retry»
+    // остаётся яркой, это главное действие плитки.
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+      child: Row(
         children: [
-          // ── Строка: иконка статуса + имя ──
-          Row(
-            children: [
-              _StateIcon(state: t.state, colors: colors),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
+          Expanded(
+            child: Opacity(
+              opacity: dimmed ? 0.55 : 1,
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Artwork(
+                      // id Soulseek-трека — его cacheKey (downloadId = dl_<cacheKey>):
+                      // та же своя обложка и тот же кэш поиска, что в Cached tracks.
+                      trackId: t.downloadId.replaceFirst('dl_', ''),
+                      url: null,
+                      artist: query.artist.isEmpty ? null : query.artist,
+                      title: query.title,
+                      size: _artSize,
+                      borderRadius: 0,
                     ),
-                    if (artist != null && artist.isNotEmpty)
-                      Text(
-                        artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: colors.textSecondary,
-                          fontSize: 12,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              // ── Кнопки управления ──
-              if (isActive || isPaused) ...[
-                if (isPaused)
-                  _ControlButton(
-                    icon: Icons.play_arrow_rounded,
-                    colors: colors,
-                    onTap: onResume,
-                  )
-                else
-                  _ControlButton(
-                    icon: Icons.pause_rounded,
-                    colors: colors,
-                    onTap: onPause,
                   ),
-                _ControlButton(
-                  icon: Icons.close_rounded,
-                  colors: colors,
-                  onTap: onCancel,
-                  destructive: true,
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 10),
-
-          // ── Прогресс-бар ──
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: progressValue,
-              minHeight: 6,
-              backgroundColor: colors.elevated,
-              color: _progressColor(t.state, colors),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textPrimary,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text.rich(
+                          _statusLine(t),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textTertiary,
+                            fontSize: 12,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (format != null) ...[
+                    const SizedBox(width: 8),
+                    _FormatBadge(label: format, colors: colors),
+                  ],
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 6),
-
-          // ── Строка: процент / размер / скорость / сообщение ──
-          Row(
-            children: [
-              Text(
-                '$percent%',
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                _formatSize(t.bytesReceived, t.totalBytes),
-                style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 12,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-              if (t.bytesPerSecond > 0 && isActive) ...[
-                const SizedBox(width: 10),
-                Text(
-                  formatSpeed(t.bytesPerSecond),
-                  style: TextStyle(
-                    color: colors.textSecondary,
-                    fontSize: 12,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ],
-              const Spacer(),
-              if (t.state == SoulseekTransferState.failed &&
-                  t.message != null &&
-                  t.message!.isNotEmpty)
-                Expanded(
-                  child: Text(
-                    t.message!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.right,
-                    style: TextStyle(
-                      color: Colors.redAccent,
-                      fontSize: 11,
-                    ),
-                  ),
-                )
-              else
-                Text(
-                  _stateLabel(t.state),
-                  style: TextStyle(
-                    color: colors.textTertiary,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-            ],
-          ),
+          const SizedBox(width: 2),
+          ..._controls(t),
         ],
       ),
     );
+  }
+
+  /// Строка под названием: исполнитель · прогресс/статус.
+  TextSpan _statusLine(SoulseekTransferInfo t) {
+    final percent = ((t.progress ?? 0.0) * 100).clamp(0, 100).round();
+    final parts = <InlineSpan>[];
+    void add(String text, {Color? color}) {
+      if (parts.isNotEmpty) parts.add(const TextSpan(text: ' · '));
+      parts.add(
+        TextSpan(
+          text: text,
+          style: color == null ? null : TextStyle(color: color),
+        ),
+      );
+    }
+
+    final artist = t.artist;
+    if (artist != null && artist.isNotEmpty) add(artist);
+
+    switch (t.state) {
+      case SoulseekTransferState.downloading:
+      case SoulseekTransferState.prebuffered:
+        // Скорость — суммой в заголовке листа: в плитке рядом с метой и
+        // двумя кнопками ей не хватает места.
+        add('$percent%');
+      case SoulseekTransferState.paused:
+        add('$percent%');
+        add('Paused');
+      case SoulseekTransferState.completed:
+        add(t.totalBytes > 0 ? humanBytes(t.totalBytes) : 'Completed');
+      case SoulseekTransferState.failed:
+        add('Failed', color: Colors.redAccent);
+        final message = t.message;
+        if (message != null && message.isNotEmpty) add(message);
+      default:
+        add(_stateLabel(t.state));
+    }
+    return TextSpan(children: parts);
+  }
+
+  List<Widget> _controls(SoulseekTransferInfo t) {
+    final progress = t.progress ?? 0.0;
+    switch (t.state) {
+      case SoulseekTransferState.downloading:
+        return [
+          _IconTap(
+            icon: Icons.close_rounded,
+            tooltip: 'Cancel',
+            colors: colors,
+            onTap: onCancel,
+          ),
+          _ProgressRing(
+            value: progress,
+            icon: Icons.pause_rounded,
+            tooltip: 'Pause',
+            colors: colors,
+            onTap: onPause,
+          ),
+        ];
+      case SoulseekTransferState.paused:
+        return [
+          _IconTap(
+            icon: Icons.close_rounded,
+            tooltip: 'Cancel',
+            colors: colors,
+            onTap: onCancel,
+          ),
+          _ProgressRing(
+            value: progress,
+            icon: Icons.play_arrow_rounded,
+            tooltip: 'Resume',
+            colors: colors,
+            onTap: onResume,
+          ),
+        ];
+      case SoulseekTransferState.queued:
+      case SoulseekTransferState.queuedRemotely:
+      case SoulseekTransferState.connecting:
+      case SoulseekTransferState.searching:
+        return [
+          _ProgressRing(
+            value: 0,
+            icon: Icons.close_rounded,
+            tooltip: 'Cancel',
+            colors: colors,
+            onTap: onCancel,
+          ),
+        ];
+      case SoulseekTransferState.prebuffered:
+        return [_ProgressRing(value: progress, colors: colors)];
+      case SoulseekTransferState.completed:
+        return [
+          SizedBox.square(
+            dimension: 36,
+            child: Icon(
+              Icons.check_rounded,
+              size: 20,
+              color: colors.textSecondary,
+            ),
+          ),
+        ];
+      case SoulseekTransferState.failed:
+      case SoulseekTransferState.cancelled:
+        return [
+          _IconTap(
+            icon: Icons.refresh_rounded,
+            tooltip: 'Retry',
+            colors: colors,
+            onTap: onRetry,
+            size: 20,
+          ),
+        ];
+      case SoulseekTransferState.idle:
+        return const [SizedBox(width: 36)];
+    }
   }
 
   /// Название загрузки: title, иначе имя файла у пира без расширения.
@@ -513,18 +625,24 @@ class _TransferTile extends StatelessWidget {
     return t.downloadId;
   }
 
+  /// Формат файла — расширение исходного имени у пира (FLAC, MP3…).
+  String? _format(SoulseekTransferInfo t) {
+    final remote = t.remoteFilename;
+    if (remote == null || remote.isEmpty) return null;
+    final name = _basename(remote);
+    final dot = name.lastIndexOf('.');
+    if (dot <= 0 || dot >= name.length - 1) return null;
+    final ext = name.substring(dot + 1);
+    if (ext.length > 4) return null;
+    return ext.toUpperCase();
+  }
+
   String _basename(String path) {
     final i = path.lastIndexOf('/');
     final j = path.lastIndexOf('\\');
     final idx = i > j ? i : j;
     if (idx >= 0 && idx < path.length - 1) return path.substring(idx + 1);
     return path;
-  }
-
-  String _formatSize(int received, int total) {
-    final r = humanBytes(received);
-    if (total > 0) return '$r / ${humanBytes(total)}';
-    return r;
   }
 
   String _stateLabel(SoulseekTransferState s) {
@@ -553,115 +671,118 @@ class _TransferTile extends StatelessWidget {
         return 'Cancelled';
     }
   }
-
-  Color _progressColor(SoulseekTransferState s, dynamic colors) {
-    switch (s) {
-      case SoulseekTransferState.completed:
-        return Colors.greenAccent;
-      case SoulseekTransferState.failed:
-        return Colors.redAccent;
-      case SoulseekTransferState.cancelled:
-        return colors.textTertiary as Color;
-      case SoulseekTransferState.paused:
-        return Colors.orangeAccent;
-      default:
-        return colors.accent as Color;
-    }
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Small widgets
 // ═══════════════════════════════════════════════════════════════════════
 
-class _StateIcon extends StatelessWidget {
-  const _StateIcon({required this.state, required this.colors});
+class _FormatBadge extends StatelessWidget {
+  const _FormatBadge({required this.label, required this.colors});
 
-  final SoulseekTransferState state;
-  final dynamic colors;
+  final String label;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
-    final (icon, color) = switch (state) {
-      SoulseekTransferState.downloading => (
-        Icons.downloading_rounded,
-        colors.accent as Color,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: colors.outline, width: 1),
       ),
-      SoulseekTransferState.queued => (
-        Icons.hourglass_top_rounded,
-        colors.textTertiary as Color,
+      child: Text(
+        label,
+        style: TextStyle(
+          color: colors.textSecondary,
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.4,
+        ),
       ),
-      SoulseekTransferState.queuedRemotely => (
-        Icons.schedule_rounded,
-        colors.textTertiary as Color,
-      ),
-      SoulseekTransferState.connecting => (
-        Icons.wifi_find_rounded,
-        colors.textTertiary as Color,
-      ),
-      SoulseekTransferState.searching => (
-        Icons.search_rounded,
-        colors.textTertiary as Color,
-      ),
-      SoulseekTransferState.prebuffered => (
-        Icons.memory_rounded,
-        colors.textTertiary as Color,
-      ),
-      SoulseekTransferState.paused => (
-        Icons.pause_circle_outline_rounded,
-        Colors.orangeAccent,
-      ),
-      SoulseekTransferState.completed => (
-        Icons.check_circle_rounded,
-        Colors.greenAccent,
-      ),
-      SoulseekTransferState.failed => (
-        Icons.error_outline_rounded,
-        Colors.redAccent,
-      ),
-      SoulseekTransferState.cancelled => (
-        Icons.cancel_rounded,
-        colors.textTertiary as Color,
-      ),
-      SoulseekTransferState.idle => (
-        Icons.circle_outlined,
-        colors.textTertiary as Color,
-      ),
-    };
-
-    return Icon(icon, color: color, size: 22);
+    );
   }
 }
 
-class _ControlButton extends StatelessWidget {
-  const _ControlButton({
-    required this.icon,
+/// Кольцо прогресса (как индикатор загрузок на десктопе) с иконкой
+/// действия внутри. Без [onTap] — только индикатор.
+class _ProgressRing extends StatelessWidget {
+  const _ProgressRing({
+    required this.value,
     required this.colors,
-    required this.onTap,
-    this.destructive = false,
+    this.icon,
+    this.tooltip,
+    this.onTap,
   });
 
-  final IconData icon;
-  final dynamic colors;
-  final VoidCallback onTap;
-  final bool destructive;
+  final double value;
+  final AppColors colors;
+  final IconData? icon;
+  final String? tooltip;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(
-            icon,
-            size: 20,
-            color: destructive
-                ? Colors.redAccent
-                : colors.textSecondary as Color,
+    final ring = SizedBox.square(
+      dimension: 36,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          SizedBox.square(
+            dimension: 28,
+            child: CircularProgressIndicator(
+              value: value.clamp(0.0, 1.0),
+              strokeWidth: 2,
+              strokeCap: StrokeCap.round,
+              color: colors.textPrimary,
+              backgroundColor: colors.outline,
+            ),
+          ),
+          if (icon != null) Icon(icon, size: 16, color: colors.textPrimary),
+        ],
+      ),
+    );
+    if (onTap == null) return ring;
+    return Tooltip(
+      message: tooltip ?? '',
+      child: Material(
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(onTap: onTap, child: ring),
+      ),
+    );
+  }
+}
+
+class _IconTap extends StatelessWidget {
+  const _IconTap({
+    required this.icon,
+    required this.tooltip,
+    required this.colors,
+    required this.onTap,
+    this.size = 18,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final AppColors colors;
+  final VoidCallback onTap;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox.square(
+            dimension: 36,
+            child: Icon(icon, size: size, color: colors.textSecondary),
           ),
         ),
       ),

@@ -32,6 +32,7 @@ import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
 import 'package:player/models/track.dart';
 import 'package:player/ui/pages/soulseek_settings_page.dart';
+import 'package:player/ui/widgets/soulseek_transfer_sheet.dart';
 
 import '../setup/test_harness.dart';
 
@@ -223,6 +224,10 @@ void main() {
   // handler'а: ошибка Completer'а из другой зоны считалась бы необработанной).
   late PlatformException? connectError;
   late int connectCalls;
+  late int disconnectCalls;
+  late List<Map<String, Object?>> transfersReply;
+  late List<String> retried;
+  late int clearCalls;
 
   setUp(() async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
@@ -237,6 +242,10 @@ void main() {
     connectReply = Completer<Map<String, Object?>>();
     connectError = null;
     connectCalls = 0;
+    disconnectCalls = 0;
+    transfersReply = const [];
+    retried = [];
+    clearCalls = 0;
 
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methodsChannel, (call) async {
@@ -250,6 +259,19 @@ void main() {
           return reply;
         case 'getConnectionState':
           return 'UNKNOWN';
+        case 'disconnect':
+          disconnectCalls++;
+          return true;
+        case 'getActiveTransfers':
+          return transfersReply;
+        case 'retryDownload':
+          retried.add((call.arguments as Map)['downloadId'] as String);
+          return true;
+        case 'clearFinishedTransfers':
+          clearCalls++;
+          final removed = transfersReply.length;
+          transfersReply = const [];
+          return removed;
       }
       return null;
     });
@@ -271,10 +293,15 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     await tester.pumpAndSettle();
 
+    final callsBefore = connectCalls;
     await tester.tap(find.text('Connect'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+    // До нативного connect — secure storage и startService: под нагрузкой
+    // (полный прогон) фиксированных 100 мс бывает мало.
+    for (var i = 0; i < 20 && connectCalls == callsBefore; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
     await tester.pump();
-    expect(connectCalls, 1);
+    expect(connectCalls, callsBefore + 1);
     expect(find.text('Connect'), findsNothing);
   }
 
@@ -301,7 +328,9 @@ void main() {
         await tester.pump();
 
         expect(find.text('Connected'), findsOneWidget);
-        expect(find.text('Connect'), findsOneWidget);
+        // После входа единственная кнопка статуса — Disconnect.
+        expect(find.text('Disconnect'), findsOneWidget);
+        expect(find.text('Connect'), findsNothing);
         expect(connectCalls, 1);
         expect(find.textContaining("couldn't be saved"), findsNothing);
       });
@@ -366,6 +395,225 @@ void main() {
         expect(find.text('Connected'), findsOneWidget);
         expect(find.textContaining("couldn't be saved"), findsOneWidget);
         expect(connectCalls, 1);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Редизайн: одна кнопка статуса, Advanced, лист загрузок
+  // ═══════════════════════════════════════════════════════════════════════
+
+  testWidgets(
+      'Cancel во время подключения: статус Disconnected, поздний ответ '
+      'connect не применяется и разрывается', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await openPageAndTapConnect(tester);
+        expect(find.text('Cancel'), findsOneWidget);
+
+        await tester.tap(find.text('Cancel'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await tester.pump();
+        expect(find.text('Disconnected'), findsOneWidget);
+        expect(find.text('Connect'), findsOneWidget);
+
+        // Натив всё-таки вошёл — страница не показывает «Connected»
+        // и разрывает это соединение.
+        connectReply.complete({'username': 'user', 'state': 'CONNECTED'});
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+        expect(find.text('Connected'), findsNothing);
+        expect(find.text('Disconnected'), findsOneWidget);
+        expect(disconnectCalls, 2);
+        expect(find.textContaining('Connection failed'), findsNothing);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('после входа поля аккаунта скрыты', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await tester.pumpWidget(wrap(const SoulseekSettingsPage()));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pumpAndSettle();
+        expect(find.text('Username'), findsOneWidget);
+
+        await tester.tap(find.text('Connect'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        connectReply.complete({'username': 'user', 'state': 'CONNECTED'});
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump(const Duration(milliseconds: 400));
+
+        expect(find.text('as user'), findsOneWidget);
+        expect(find.text('Username'), findsNothing);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('Advanced свёрнут по умолчанию и раскрывается по тапу',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await tester.pumpWidget(wrap(const SoulseekSettingsPage()));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pumpAndSettle();
+        expect(find.text('Listener port'), findsNothing);
+        expect(find.text('Clear credentials'), findsNothing);
+
+        await tester.tap(find.text('Advanced'));
+        await tester.pumpAndSettle();
+        expect(find.text('Listener port'), findsOneWidget);
+        expect(find.text('Clear credentials'), findsOneWidget);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets(
+      'лист загрузок: группы, формат из имени файла, Retry и Clear '
+      'уходят в натив', (tester) async {
+    transfersReply = [
+      {
+        'downloadId': 'dl_a',
+        'state': 'DOWNLOADING',
+        'bytesReceived': 50,
+        'totalBytes': 100,
+        'bytesPerSecond': 1024,
+        'title': 'Song A',
+        'artist': 'Artist A',
+        'remoteFilename': r'music\Artist A\01 Song A.flac',
+      },
+      {
+        'downloadId': 'dl_b',
+        'state': 'FAILED',
+        'message': 'Peer offline',
+        'title': 'Song B',
+        'artist': 'Artist B',
+        'remoteFilename': 'music/Artist B/Song B.mp3',
+      },
+    ];
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await tester.pumpWidget(wrap(Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => showSoulseekTransferSheet(context),
+              child: const Text('open'),
+            ),
+          ),
+        )));
+        await tester.tap(find.text('open'));
+        await tester.pump(const Duration(milliseconds: 400));
+        // Ответ getActiveTransfers приходит асинхронно после initState листа.
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+        // Дождаться конца анимации появления листа (иначе тап мимо).
+        await tester.pump(const Duration(milliseconds: 500));
+
+        expect(find.text('IN PROGRESS'), findsOneWidget);
+        expect(find.text('FINISHED'), findsOneWidget);
+        expect(find.text('FLAC'), findsOneWidget);
+        expect(find.text('MP3'), findsOneWidget);
+        expect(find.textContaining('Peer offline'), findsOneWidget);
+
+        await tester.tap(find.byTooltip('Retry'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await tester.pump();
+        expect(retried, ['dl_b']);
+
+        await tester.tap(find.text('Clear'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(clearCalls, 1);
+        expect(find.text('No active downloads'), findsOneWidget);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+  testWidgets(
+      'автопереподключение из натива (без команды): Cancel разрывает '
+      'соединение', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await tester.pumpWidget(wrap(const SoulseekSettingsPage()));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pumpAndSettle();
+
+        await pushConnectionEvent('RECONNECTING');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await tester.pump();
+        expect(find.text('Reconnecting…'), findsOneWidget);
+        expect(find.text('Cancel'), findsOneWidget);
+
+        await tester.tap(find.text('Cancel'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await tester.pump();
+        expect(disconnectCalls, 1);
+        // Статус + snack «Disconnected» от обычного disconnect.
+        expect(find.text('Disconnected'), findsNWidgets(2));
+        expect(find.text('Reconnecting…'), findsNothing);
+        expect(find.text('Connect'), findsOneWidget);
+        expect(connectCalls, 0);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets(
+      'Cancel и сразу Connect: отменённая команда не применяет итог и не '
+      'рвёт новое подключение', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await openPageAndTapConnect(tester);
+
+        await tester.tap(find.text('Cancel'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        await tester.pump();
+        expect(disconnectCalls, 1);
+
+        await tester.tap(find.text('Connect'));
+        for (var i = 0; i < 20 && connectCalls < 2; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await tester.pump();
+        expect(connectCalls, 2);
+        expect(find.text('Cancel'), findsOneWidget);
+
+        // Обе нативные попытки возвращаются одним ответом.
+        connectReply.complete({'username': 'user', 'state': 'CONNECTED'});
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+
+        expect(find.text('Connected'), findsOneWidget);
+        expect(find.text('Disconnect'), findsOneWidget);
+        // Отменённая команда не разорвала новое соединение.
+        expect(disconnectCalls, 1);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());

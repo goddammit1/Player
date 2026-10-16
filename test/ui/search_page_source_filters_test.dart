@@ -385,8 +385,8 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
       }
 
-      // Страница прокручена к Connection: заголовок секции на экране.
-      final header = find.text('CONNECTION');
+      // Страница показывает карточку статуса: кнопка Connect на экране.
+      final header = find.text('Connect');
       expect(header, findsOneWidget);
       final y = tester.getTopLeft(header).dy;
       expect(y, inInclusiveRange(0, 640));
