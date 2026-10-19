@@ -1,7 +1,7 @@
 // Widget-тесты Этапа 3 серии 02 (UI):
 //   - CACHE-UI-01: единый список кэш-треков (Soulseek + стриминговый кэш):
 //     тап → setQueue из trackFromCacheEntry, long-press → track settings
-//     sheet, группировка по дате кэширования, свайп-удаление, pin;
+//     sheet, группировка по дате кэширования, свайп-удаление;
 //   - PLAYER-DL-01: source-aware тайл Download (native cache hit → «Cached»,
 //     prefetch по тапу без dio-двойной загрузки, прогресс/завершение из
 //     transferEvents, сброс после failed, не-Soulseek путь не тронут);
@@ -42,7 +42,7 @@ import 'package:player/sources/artwork_provider.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/sources/soulseek_source.dart';
 import 'package:player/sources/source_registry.dart';
-import 'package:player/ui/pages/cached_tracks_page.dart';
+import 'package:player/ui/pages/downloads_page.dart';
 import 'package:player/ui/pages/player/player_bottom_actions.dart';
 import 'package:player/ui/widgets/artwork.dart';
 import 'package:player/ui/widgets/queue_sheet.dart';
@@ -352,7 +352,7 @@ Future<void> _openAndLoad(WidgetTester tester) async {
 /// Открывает единый список кэш-треков (бывшая Soulseek cache sheet).
 Future<void> _openCachedTracks(BuildContext context) =>
     Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const CachedTracksPage()),
+      MaterialPageRoute<void>(builder: (_) => const DownloadsPage()),
     );
 
 /// Soulseek-трек с полным extra (как из поиска) — для Download-тайла.
@@ -451,6 +451,12 @@ void main() {
     // плагина нет → MissingPluginException). Подключаем БД к temp-каталогу.
     await TestHarness.setUpDb();
 
+    // Downloads слушает transfer-события платформенного канала.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockStreamHandler(
+      const EventChannel('soulseek/events'),
+      MockStreamHandler.inline(onListen: (_, _) {}),
+    );
     methodCalls = [];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methodsChannel, (call) async {
@@ -459,7 +465,6 @@ void main() {
         case 'getCacheEntries':
           return channel.cacheEntries.map(entryToMap).toList();
         case 'removeCache':
-        case 'pinCache':
           return true;
         default:
           return null;
@@ -468,6 +473,8 @@ void main() {
   });
 
   tearDown(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockStreamHandler(const EventChannel('soulseek/events'), null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methodsChannel, null);
     ArtworkHelper.disableDbReadsForTesting = false;
@@ -562,22 +569,6 @@ void main() {
       expect(find.text('Title A'), findsNothing);
       final remove = methodCalls.where((c) => c.method == 'removeCache');
       expect(remove.single.arguments, {'cacheKey': 'ck1'});
-
-      await tester.pump(const Duration(seconds: 3));
-    });
-
-    testWidgets('кнопка-булавка закрепляет трек', (tester) async {
-      channel.cacheEntries = [_entry('ck1', 'Title A')];
-
-      await tester.pumpWidget(_host(_openCachedTracks, player));
-      await _openAndLoad(tester);
-
-      await tester.tap(find.byIcon(Icons.push_pin_outlined));
-      await tester.pumpAndSettle();
-
-      final pin = methodCalls.where((c) => c.method == 'pinCache');
-      expect(pin.single.arguments, {'cacheKey': 'ck1', 'pinned': true});
-      expect(find.byIcon(Icons.push_pin_rounded), findsOneWidget);
 
       await tester.pump(const Duration(seconds: 3));
     });
@@ -752,17 +743,6 @@ void main() {
 
     testWidgets('тап по идущей загрузке открывает список загрузок Soulseek',
         (tester) async {
-      // Шторка загрузок слушает реальный EventChannel платформенного канала.
-      const events = EventChannel('soulseek/events');
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockStreamHandler(
-        events,
-        MockStreamHandler.inline(onListen: (_, _) {}),
-      );
-      addTearDown(() => TestDefaultBinaryMessengerBinding
-          .instance.defaultBinaryMessenger
-          .setMockStreamHandler(events, null));
-
       channel.cacheEntry = null;
       channel.transferInfo = null;
 
@@ -784,11 +764,15 @@ void main() {
       await tester.pump();
 
       await tester.tap(find.byKey(const Key('track_download_progress')));
-      await tester.pumpAndSettle();
+      // Кэш читается из sqflite — под FakeAsync не завершается, поэтому
+      // без pumpAndSettle (спиннер крутится).
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
 
-      // Шторка трека закрыта, вместо неё — список загрузок.
+      // Шторка трека закрыта, вместо неё — страница Downloads.
       expect(find.text('Add to playlist'), findsNothing);
-      expect(find.text('Downloads'), findsOneWidget);
+      expect(find.byType(DownloadsPage), findsOneWidget);
     });
 
     testWidgets('failed-событие сбрасывает состояние и показывает ошибку',

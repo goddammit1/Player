@@ -8,7 +8,7 @@
 // - loadAll после точечных set-методов
 // - buildFilters / applyToSource: фильтры и таймаут применяются к
 //   SoulseekSource (разрыв №2 устранён на уровне репозитория)
-// - isEnabled / setEnabled (feature flag в БД)
+// - (бывший флаг «Show in search» удалён — Soulseek в поиске всегда)
 
 import 'dart:async';
 
@@ -104,7 +104,6 @@ void main() {
     test('loadAll returns defaults when DB is empty', () async {
       final s = await SoulseekSettingsRepository.instance.loadAll();
 
-      expect(s.enabled, isFalse);
       expect(s.listenPort, 24150);
       expect(s.cacheLimitMB, 1024);
       expect(s.maxParallelDownloads, 3);
@@ -115,17 +114,12 @@ void main() {
       expect(s.sharingDirectory, '');
       expect(s.streamingEnabled, isTrue);
     });
-
-    test('isEnabled defaults to false when key is missing', () async {
-      expect(await SoulseekSettingsRepository.instance.isEnabled(), isFalse);
-    });
   });
 
   group('SoulseekSettingsRepository - roundtrip', () {
     test('save all → loadAll returns saved values', () async {
       final repo = SoulseekSettingsRepository.instance;
 
-      await repo.setEnabled(true);
       await repo.setListenPort(12345);
       await repo.setCacheLimitMB(2048);
       await repo.setMaxParallelDownloads(5);
@@ -138,7 +132,6 @@ void main() {
 
       final s = await repo.loadAll();
 
-      expect(s.enabled, isTrue);
       expect(s.listenPort, 12345);
       expect(s.cacheLimitMB, 2048);
       expect(s.maxParallelDownloads, 5);
@@ -333,14 +326,12 @@ void main() {
       final source = SoulseekSource(channel: _FakeChannel());
       SourceRegistry.instance.register(source);
 
-      await repo.setEnabled(true);
       await repo.setAllowedFormats({'flac'});
       await repo.setMaxFileSizeMB(200);
       await repo.setSearchTimeoutSec(30);
       final backup = await AppDatabase.instance.exportFullBackup();
 
       // Состояние «до импорта» отличается от бэкапа во всём.
-      await SourceRegistry.setSoulseekEnabled(false);
       await repo.setAllowedFormats({'mp3'});
       await repo.setMaxFileSizeMB(0);
       await repo.setSearchTimeoutSec(5);
@@ -350,13 +341,10 @@ void main() {
       await SourceRegistry.reloadSoulseekSettings();
 
       final s = await repo.loadAll();
-      expect(s.enabled, isTrue);
       expect(s.allowedFormats, {'flac'});
       expect(s.maxFileSizeMB, 200);
       expect(s.searchTimeoutSec, 30);
 
-      expect(SourceRegistry.isSoulseekEnabled, isTrue);
-      expect(SourceRegistry.instance.isDisabled('soulseek'), isFalse);
       expect(source.searchFilters.extensions, ['flac']);
       expect(source.searchFilters.maxSizeBytes, 200 * 1024 * 1024);
       expect(source.searchTimeoutMs, 30000);

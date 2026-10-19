@@ -10,6 +10,7 @@ import '../../core/playlist_cache_service.dart';
 import '../../core/providers.dart';
 import '../../models/playlist.dart';
 import '../../models/track.dart';
+import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../widgets/artwork.dart';
 import '../widgets/wave_bars.dart';
@@ -1955,7 +1956,10 @@ class _ReplacementSheetBodyState extends ConsumerState<_ReplacementSheetBody> {
     });
 
     try {
-      final sources = SourceRegistry.instance.searchable;
+      // Soulseek не ищем: P2P-поиск идёт до таймаута (десятки секунд),
+      // а замена нужна из стриминговых источников.
+      final sources = SourceRegistry.instance.searchable
+          .where((s) => s.id != SoulseekSource.sourceId);
       final lists = await Future.wait(
         sources.map((s) async {
           try {

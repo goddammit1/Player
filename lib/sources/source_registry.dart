@@ -1,6 +1,7 @@
 import '../core/soulseek_settings_repository.dart';
 import '../core/youtube_cache.dart';
 import 'muzmo_source.dart';
+import 'soulseek_platform_channel.dart';
 import 'soulseek_source.dart';
 import 'soundcloud_source.dart';
 import 'track_source.dart';
@@ -38,79 +39,32 @@ class SourceRegistry {
     register(SoundCloudSource(cache: cache));
 
     // Soulseek — регистрируем ВСЕГДА (обратная совместимость: треки из
-    // плейлистов не крашатся при resolve). В searchable попадает только
-    // если feature flag включён (см. [_soulseekEnabled]).
+    // плейлистов не крашатся при resolve). В поиске — везде, где есть
+    // нативная часть (Android, Windows с мостом); отдельного переключателя
+    // больше нет.
     register(SoulseekSource());
-    if (!_soulseekEnabled) {
+    if (!SoulseekPlatformChannel.instance.isAvailable) {
       _disabledForSearch.add('soulseek');
     }
   }
 
-  // ───────────────────────────────────────────────────────────────────
-  //  Soulseek feature flag
-  // ───────────────────────────────────────────────────────────────────
-
-  /// Текущее состояние feature flag. По умолчанию выключен.
-  ///
-  /// Загружается из SQLite (через SoulseekSettingsRepository) через
-  /// [loadSoulseekEnabled] при старте приложения (до вызова
-  /// [registerDefaults]).
-  static bool _soulseekEnabled = false;
-
-  /// Возвращает текущее состояние feature flag Soulseek.
-  static bool get isSoulseekEnabled => _soulseekEnabled;
-
-  /// Загружает feature flag из SQLite (таблица `settings`). Должна
-  /// вызываться ДО [registerDefaults] (например, в main.dart перед
-  /// инициализацией реестра источников).
-  static Future<void> loadSoulseekEnabled() async {
-    try {
-      _soulseekEnabled = await SoulseekSettingsRepository.instance.isEnabled();
-    } catch (_) {
-      _soulseekEnabled = false;
-    }
-  }
-
-  /// Перечитывает настройки Soulseek из БД в рантайм-состояние: feature
-  /// flag, поисковые фильтры/таймаут источника и натив-ключи soulseek.db.
+  /// Перечитывает настройки Soulseek из БД в рантайм-состояние: поисковые
+  /// фильтры/таймаут источника и натив-ключи soulseek.db.
   ///
   /// Нужна после импорта полного бэкапа: таблица `settings` замещается
-  /// целиком, а флаг, фильтры и натив иначе жили бы на старых значениях
-  /// до рестарта. До [registerDefaults] (авто-восстановление на старте)
-  /// источник ещё не зарегистрирован — обновляется только флаг, остальное
-  /// main.dart применит сам после регистрации.
+  /// целиком, а фильтры и натив иначе жили бы на старых значениях до
+  /// рестарта. До [registerDefaults] (авто-восстановление на старте)
+  /// источник ещё не зарегистрирован — main.dart применит настройки сам
+  /// после регистрации.
   static Future<void> reloadSoulseekSettings() async {
-    await loadSoulseekEnabled();
     final source = instance._sources['soulseek'];
     if (source == null) return;
-    if (_soulseekEnabled) {
-      instance._disabledForSearch.remove('soulseek');
-    } else {
-      instance._disabledForSearch.add('soulseek');
-    }
     if (source is SoulseekSource) {
       try {
         await SoulseekSettingsRepository.instance.applyToSource(source);
       } catch (_) {}
     }
     await SoulseekSettingsRepository.instance.syncToNative();
-  }
-
-  /// Включает или выключает Soulseek для поиска.
-  ///
-  /// Сохраняет значение в SQLite (через SoulseekSettingsRepository) и
-  /// обновляет [_disabledForSearch] в реестре. Может вызываться в
-  /// рантайме (UI Фазы 4: переключатель).
-  static Future<void> setSoulseekEnabled(bool enabled) async {
-    _soulseekEnabled = enabled;
-    try {
-      await SoulseekSettingsRepository.instance.setEnabled(enabled);
-    } catch (_) {}
-    if (enabled) {
-      instance._disabledForSearch.remove('soulseek');
-    } else {
-      instance._disabledForSearch.add('soulseek');
-    }
   }
 
   void register(TrackSource source) {

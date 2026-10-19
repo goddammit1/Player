@@ -12,6 +12,8 @@
 //
 // Проверяется полная цепочка: поле ← БД при открытии, поле → БД при правке,
 // поле → SoulseekSource, коммит при dispose до срабатывания debounce.
+// Поле теперь — горизонтальное колесо (_WheelPicker): те же разрывы
+// проверяются через его FixedExtentScrollController.
 //
 // Подмены (паттерны soulseek_stage3_ui_test.dart / settings_subpages_test.dart):
 //   - debugDefaultTargetPlatformOverride = android (иначе страница показывает
@@ -284,16 +286,25 @@ Widget wrap(Widget home) {
   );
 }
 
-/// TextField «Search timeout» — ищем по ключу компактного поля.
-Finder findTimeoutField() => find.descendant(
-      of: find.byKey(const Key('soulseek_search_timeout_field')),
-      matching: find.byType(TextField),
-    );
+/// Колесо «Search timeout» — ищем по ключу.
+final Finder timeoutWheel =
+    find.byKey(const Key('soulseek_search_timeout_wheel'));
 
-String timeoutFieldText() {
-  final field = testerInstance.widget<TextField>(findTimeoutField());
-  return field.controller!.text;
+/// Нижняя граница колеса (_minSearchTimeoutSec страницы): индекс 0.
+const int wheelMin = 3;
+
+FixedExtentScrollController wheelController() {
+  final wheel = testerInstance.widget<ListWheelScrollView>(
+    find.descendant(
+      of: timeoutWheel,
+      matching: find.byType(ListWheelScrollView),
+    ),
+  );
+  return wheel.controller! as FixedExtentScrollController;
 }
+
+/// Значение, на котором стоит колесо.
+String timeoutFieldText() => '${wheelController().selectedItem + wheelMin}';
 
 // Доступ к текущему WidgetTester из timeoutFieldText (устанавливается
 // в каждом тесте) — тестам удобнее читать текст контроллера напрямую.
@@ -355,8 +366,9 @@ void main() {
       // значение из БД (45) не отображалось после асинхронного loadAll.
       expect(timeoutFieldText(), '45');
 
-      // Меняем значение в поле: 30.
-      await tester.enterText(findTimeoutField(), '30');
+      // Меняем значение колеса: 30.
+      wheelController().jumpToItem(30 - wheelMin);
+      await tester.pump();
       // Debounce 500 мс → коммит (onChanged → _updateSearchTimeout).
       await Future<void>.delayed(const Duration(milliseconds: 600));
       await tester.pump();
@@ -457,8 +469,12 @@ void main() {
       expect(timeoutFieldText(), '10'); // дефолт: БД пуста
 
       // Правка < 500 мс до закрытия — debounce ещё не сработал.
-      await tester.enterText(findTimeoutField(), '25');
+      // Тап по правому соседу — шаг +1 (анимация 200 мс).
+      final box = tester.getRect(timeoutWheel);
+      await tester.tapAt(box.centerRight - const Offset(5, 0));
       await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(timeoutFieldText(), '11');
 
       // Уходим со страницы: dispose обязан закоммитить pending-правку.
       await tester.tap(find.byIcon(Icons.chevron_left_rounded));
@@ -466,8 +482,8 @@ void main() {
       await tester.pumpAndSettle();
 
       final settings = await SoulseekSettingsRepository.instance.loadAll();
-      expect(settings.searchTimeoutSec, 25);
-      expect(source.searchTimeoutMs, 25000);
+      expect(settings.searchTimeoutSec, 11);
+      expect(source.searchTimeoutMs, 11000);
       });
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());

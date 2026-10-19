@@ -14,14 +14,14 @@ import '../../sources/artwork_provider.dart';
 import '../../sources/soulseek_platform_channel.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/byte_format.dart';
-import 'cached_tracks_page.dart';
+import 'downloads_page.dart';
 
 /// Страница управления кэшем.
 ///
 /// - Audio cache: общий для всех источников — стриминговый кэш
 ///   (muzmo/SoundCloud, легаси YouTube) и Soulseek (Android и Windows).
 ///   Размер и очистка — суммарные, лимиты у хранилищ раздельные
-///   (у каждого своя LRU-эвикция). Список треков — [CachedTracksPage].
+///   (у каждого своя LRU-эвикция). Список треков — [DownloadsPage].
 /// - Artwork cache: обложки (CachedNetworkImage хранит сам, мы лишь
 ///   ограничиваем его размер через ImageCache + свой дисковый кэш)
 class CachePage extends ConsumerStatefulWidget {
@@ -134,9 +134,9 @@ class _CachePageState extends ConsumerState<CachePage> {
 
   Future<void> _openCachedTracks() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const CachedTracksPage()),
+      MaterialPageRoute(builder: (_) => const DownloadsPage()),
     );
-    // Треки могли удалить/открепить в списке.
+    // Треки могли удалить в списке.
     if (mounted) await _refreshStats();
   }
 

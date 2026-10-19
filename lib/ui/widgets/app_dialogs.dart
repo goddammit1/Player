@@ -52,6 +52,8 @@ Future<String?> showAppInputDialog({
   String hintText = 'Write here...',
   String confirmLabel = 'Save',
   String cancelLabel = 'Cancel',
+  TextInputType? keyboardType,
+  List<TextInputFormatter>? inputFormatters,
 }) {
   return _showConceptDialog<String>(
     context: context,
@@ -62,6 +64,8 @@ Future<String?> showAppInputDialog({
       hintText: hintText,
       confirmLabel: confirmLabel,
       cancelLabel: cancelLabel,
+      keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
     ),
   );
 }
@@ -87,6 +91,8 @@ class _AppInputDialog extends ConsumerStatefulWidget {
     required this.hintText,
     required this.confirmLabel,
     required this.cancelLabel,
+    this.keyboardType,
+    this.inputFormatters,
   });
 
   final String title;
@@ -95,6 +101,8 @@ class _AppInputDialog extends ConsumerStatefulWidget {
   final String hintText;
   final String confirmLabel;
   final String cancelLabel;
+  final TextInputType? keyboardType;
+  final List<TextInputFormatter>? inputFormatters;
 
   @override
   ConsumerState<_AppInputDialog> createState() => _AppInputDialogState();
@@ -136,6 +144,8 @@ class _AppInputDialogState extends ConsumerState<_AppInputDialog> {
         child: TextField(
           controller: _controller,
           autofocus: true,
+          keyboardType: widget.keyboardType,
+          inputFormatters: widget.inputFormatters,
           style: TextStyle(color: colors.textPrimary, fontSize: 16),
           textAlignVertical: TextAlignVertical.center,
           decoration: InputDecoration(

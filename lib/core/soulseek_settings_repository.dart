@@ -30,7 +30,6 @@ import 'database/app_database.dart';
 /// Значения по умолчанию перенесены из бывшего класса `SoulseekPrefs`
 /// (lib/ui/pages/soulseek_settings_page.dart) без изменений.
 class SoulseekSettings {
-  final bool enabled;
   final int listenPort;
   final int cacheLimitMB;
   final int maxParallelDownloads;
@@ -44,7 +43,6 @@ class SoulseekSettings {
   final bool streamingEnabled;
 
   const SoulseekSettings({
-    this.enabled = false,
     this.listenPort = SoulseekSettingsRepository.defaultListenPort,
     this.cacheLimitMB = SoulseekSettingsRepository.defaultCacheLimitMB,
     this.maxParallelDownloads =
@@ -69,6 +67,8 @@ class SoulseekSettingsRepository {
       SoulseekSettingsRepository._();
 
   // ── Ключи в таблице settings ──
+  /// Бывший переключатель «Show in search» (Soulseek теперь в поиске
+  /// всегда); ключ остаётся только в списке legacy-миграции.
   static const String keyEnabled = 'soulseek_enabled';
   static const String keyListenPort = 'soulseek_listen_port';
   static const String keyCacheLimitMB = 'soulseek_cache_limit_mb';
@@ -131,7 +131,6 @@ class SoulseekSettingsRepository {
     final formatsRaw =
         await _readString(keyAllowedFormats, defaultAllowedFormats);
     return SoulseekSettings(
-      enabled: await _readBool(keyEnabled, false),
       listenPort: await _readInt(keyListenPort, defaultListenPort),
       cacheLimitMB: await _readInt(keyCacheLimitMB, defaultCacheLimitMB),
       maxParallelDownloads:
@@ -150,13 +149,7 @@ class SoulseekSettingsRepository {
     );
   }
 
-  /// Текущее значение feature flag Soulseek (дефолт — false).
-  Future<bool> isEnabled() => _readBool(keyEnabled, false);
-
   // ── Запись (точечная, по одному ключу) ──
-
-  Future<void> setEnabled(bool value) =>
-      AppDatabase.instance.setSetting(keyEnabled, value.toString());
 
   /// set-методы натив-релевантных ключей (порт/кэш/параллелизм) после
   /// записи в Dart-БД проталкивают значения в нативную soulseek.db —

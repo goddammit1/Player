@@ -104,7 +104,6 @@ void main() {
       await migrate();
 
       final s = await SoulseekSettingsRepository.instance.loadAll();
-      expect(s.enabled, isTrue);
       expect(s.searchTimeoutSec, 30);
     });
 

@@ -21,6 +21,7 @@ import 'core/providers.dart';
 import 'core/soulseek_settings_repository.dart';
 import 'core/youtube_cache.dart';
 import 'sources/soulseek_desktop/soulseek_desktop_channel.dart';
+import 'sources/soulseek_session_transfers.dart';
 import 'sources/soulseek_source.dart';
 import 'sources/source_registry.dart';
 import 'core/notifications/playlist_cache_notifier.dart';
@@ -108,15 +109,10 @@ Future<void> main() async {
         FlutterError.dumpErrorToConsole(details);
       };
 
-      // === SOULSEEK FEATURE FLAG ===
-      // Загружаем флаг ДО registerDefaults, чтобы решение о включении
-      // Soulseek в searchable-список принималось на основе сохранённого
-      // значения (теперь в SQLite, см. SoulseekSettingsRepository),
-      // а не дефолтного false.
-      await SourceRegistry.loadSoulseekEnabled();
-      // =============================
-
       SourceRegistry.instance.registerDefaults();
+      // Загрузки этой сессии: упавшие из прошлых запусков страница
+      // Downloads не показывает.
+      SoulseekSessionTransfers.instance.start();
 
       // === SOULSEEK: ПРИМЕНЕНИЕ ФИЛЬТРОВ НА СТАРТЕ (разрыв №2) ===
       // SoulseekSource создаётся с пустыми searchFilters; раньше фильтры

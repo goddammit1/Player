@@ -21,7 +21,7 @@ import 'package:player/core/youtube_cache.dart';
 import 'package:player/models/track.dart';
 import 'package:player/sources/soulseek_models.dart';
 import 'package:player/ui/pages/cache_page.dart';
-import 'package:player/ui/pages/cached_tracks_page.dart';
+import 'package:player/ui/pages/downloads_page.dart';
 
 import '../setup/test_harness.dart';
 
@@ -63,9 +63,17 @@ void main() {
     // syncToNative лимита Soulseek уходит в натив — глушим канал.
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methods, (_) async => true);
+    // Downloads слушает transfer-события платформенного канала.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockStreamHandler(
+      const EventChannel('soulseek/events'),
+      MockStreamHandler.inline(onListen: (_, _) {}),
+    );
   });
 
   tearDown(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockStreamHandler(const EventChannel('soulseek/events'), null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(methods, null);
     ArtworkHelper.disableDbReadsForTesting = false;
@@ -158,7 +166,7 @@ void main() {
     });
     await tester.pumpAndSettle();
 
-    expect(find.byType(CachedTracksPage), findsOneWidget);
+    expect(find.byType(DownloadsPage), findsOneWidget);
     expect(find.text('Soul ck1'), findsOneWidget);
     expect(find.text('muzmo_1'), findsOneWidget);
   });

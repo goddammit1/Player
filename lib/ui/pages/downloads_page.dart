@@ -1,3 +1,17 @@
+// lib/ui/pages/downloads_page.dart
+//
+// Downloads — единый экран загрузок и кэша (бывшие лист загрузок Soulseek
+// и страница Cached tracks):
+//  - сверху «Downloading» — идущие загрузки Soulseek с живым прогрессом и
+//    приостановленные (пауза пользователя или закрытие приложения —
+//    натив поднимает их после рестарта, их можно продолжить);
+//  - «Failed» — упавшие в этой сессии, с повтором; ошибки прошлых запусков
+//    не показываются (SoulseekSessionTransfers), отменённые пользователем —
+//    тоже;
+//  - ниже — готовые треки (стриминговый кэш + Soulseek) по дням: загрузка,
+//    дошедшая до конца, появляется здесь же, в «Today».
+// Тап играет, long-press открывает меню трека, свайп влево удаляет файл.
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,6 +21,9 @@ import '../../core/artwork_helper.dart';
 import '../../core/cached_tracks_service.dart';
 import '../../core/platform/haptic_helper.dart';
 import '../../core/providers.dart';
+import '../../sources/soulseek_models.dart';
+import '../../sources/soulseek_platform_channel.dart';
+import '../../sources/soulseek_session_transfers.dart';
 import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
@@ -16,8 +33,16 @@ import '../widgets/artwork.dart';
 import '../widgets/byte_format.dart';
 import '../widgets/grouped_tiles.dart';
 import '../widgets/snack.dart';
+import '../widgets/soulseek_transfer_tile.dart';
 import '../widgets/track_settings_sheet.dart';
 import '../widgets/wave_bars.dart';
+
+/// Открывает Downloads поверх всего приложения — для мест вне обычного
+/// дерева навигации (top bar десктопа, шторка трека).
+Future<void> openDownloadsPage(BuildContext context) {
+  final nav = rootNavigatorKey.currentState ?? Navigator.of(context);
+  return nav.push(MaterialPageRoute(builder: (_) => const DownloadsPage()));
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CONSTANTS
@@ -66,40 +91,96 @@ final _currentTrackIdProvider = StreamProvider<String?>((ref) {
   return player.mediaItem.map((item) => item?.id);
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  CACHED TRACKS PAGE
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Единый список кэшированных треков (стриминговый кэш + Soulseek),
-/// сгруппированный по дате кэширования. Стиль карточек — как в истории
-/// и плейлистах: тап играет, long-press открывает меню трека, свайп
-/// влево удаляет файл из кэша, булавка закрепляет от LRU-эвикции.
-class CachedTracksPage extends ConsumerStatefulWidget {
-  const CachedTracksPage({super.key});
-
-  @override
-  ConsumerState<CachedTracksPage> createState() => _CachedTracksPageState();
+/// Порядок в группе: сначала то, что качается сейчас.
+int _statePriority(SoulseekTransferState s) {
+  switch (s) {
+    case SoulseekTransferState.downloading:
+      return 0;
+    case SoulseekTransferState.prebuffered:
+      return 1;
+    case SoulseekTransferState.connecting:
+      return 2;
+    case SoulseekTransferState.queued:
+    case SoulseekTransferState.queuedRemotely:
+      return 3;
+    case SoulseekTransferState.searching:
+      return 4;
+    case SoulseekTransferState.paused:
+      return 5;
+    case SoulseekTransferState.failed:
+      return 6;
+    case SoulseekTransferState.cancelled:
+      return 7;
+    case SoulseekTransferState.completed:
+    case SoulseekTransferState.idle:
+      return 8;
+  }
 }
 
-class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
+// ═══════════════════════════════════════════════════════════════════════════
+//  DOWNLOADS PAGE
+// ═══════════════════════════════════════════════════════════════════════════
+
+class DownloadsPage extends ConsumerStatefulWidget {
+  const DownloadsPage({super.key, this.channel});
+
+  /// Канал Soulseek (тесты); по умолчанию — платформенный.
+  final SoulseekPlatformChannel? channel;
+
+  @override
+  ConsumerState<DownloadsPage> createState() => _DownloadsPageState();
+}
+
+class _DownloadsPageState extends ConsumerState<DownloadsPage> {
   final TextEditingController _searchCtl = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   String _queryNormalized = '';
 
   List<CachedTrack> _items = const [];
+  late CacheUsage _usage = CacheUsage.of(_items);
   bool _loading = true;
 
   /// Поколение загрузки: результат устаревшего [_refresh] (например,
   /// начатого до свайп-удаления) не должен перетирать более свежий.
   int _loadGeneration = 0;
 
+  // ── Загрузки Soulseek ──
+  final Map<String, SoulseekTransferInfo> _transfers = {};
+  StreamSubscription<SoulseekTransferEvent>? _transferSub;
+
+  /// Номер последнего события по каждому трансферу: снимок, запрошенный
+  /// раньше события, не откатывает и не удаляет более свежее состояние.
+  final Map<String, int> _eventSeq = {};
+  int _seq = 0;
+
+  /// Скорость и прогресс не всегда приходят событиями — пока данные идут,
+  /// список перечитывается раз в секунду.
+  Timer? _pollTimer;
+
+  /// Загрузка дошла до конца → трек появится в кэше. Натив дописывает
+  /// запись кэша после события (у больших файлов — заметно позже), поэтому
+  /// список перечитывается дважды.
+  final List<Timer> _cacheRefreshTimers = [];
+
   CachedTracksService get _service => ref.read(cachedTracksServiceProvider);
+
+  SoulseekPlatformChannel get _channel =>
+      widget.channel ?? SoulseekPlatformChannel.instance;
+
+  SoulseekSessionTransfers get _session => SoulseekSessionTransfers.instance;
 
   @override
   void initState() {
     super.initState();
     _searchCtl.addListener(_onSearchChanged);
     _refresh();
+    if (_channel.isAvailable) {
+      _transferSub = _channel.transferEvents.listen(
+        _onTransferEvent,
+        onError: (_) {},
+      );
+      _refreshTransfers();
+    }
   }
 
   @override
@@ -107,6 +188,11 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
     _searchCtl.removeListener(_onSearchChanged);
     _searchCtl.dispose();
     _searchFocus.dispose();
+    _transferSub?.cancel();
+    _pollTimer?.cancel();
+    for (final t in _cacheRefreshTimers) {
+      t.cancel();
+    }
     super.dispose();
   }
 
@@ -123,14 +209,214 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
     } catch (_) {
       if (!mounted || gen != _loadGeneration) return;
       setState(() => _loading = false);
-      showSnack(context, 'Failed to load cached tracks');
+      showSnack(context, 'Failed to load downloads');
       return;
     }
     if (!mounted || gen != _loadGeneration) return;
     setState(() {
       _items = items;
+      _usage = CacheUsage.of(items);
       _loading = false;
     });
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([_refresh(), _refreshTransfers()]);
+  }
+
+  // ---- Загрузки ----
+
+  void _onTransferEvent(SoulseekTransferEvent e) {
+    if (!mounted) return;
+    final info = e.transfer;
+    // Событие пришло, пока страница открыта, — загрузка точно из этой
+    // сессии (глобальный трекер мог подписаться позже, в тестах — нет).
+    _session.add(info.downloadId);
+    _eventSeq[info.downloadId] = ++_seq;
+    if (_applyTransfer(info)) setState(() {});
+    _syncPolling();
+  }
+
+  /// Обновляет запись (false — ничего не изменилось); завершение загрузки
+  /// → перечитать кэш.
+  bool _applyTransfer(SoulseekTransferInfo info) {
+    final previous = _transfers[info.downloadId];
+    if (previous != null && _sameTransfer(previous, info)) return false;
+    _transfers[info.downloadId] = info;
+    final completed = info.state == SoulseekTransferState.completed;
+    // Первое, что страница узнала о загрузке этой сессии, — уже
+    // «completed» (событие обогнало снимок): кэш тоже перечитываем.
+    // Завершённые в прошлых запусках давно в кэше — их не трогаем.
+    final justCompleted = completed &&
+        (previous == null
+            ? _session.contains(info.downloadId)
+            : previous.state != SoulseekTransferState.completed);
+    if (justCompleted) _scheduleCacheRefresh();
+    return true;
+  }
+
+  static bool _sameTransfer(SoulseekTransferInfo a, SoulseekTransferInfo b) =>
+      a.state == b.state &&
+      a.bytesReceived == b.bytesReceived &&
+      a.totalBytes == b.totalBytes &&
+      a.bytesPerSecond == b.bytesPerSecond &&
+      a.message == b.message &&
+      a.title == b.title &&
+      a.artist == b.artist &&
+      a.remoteFilename == b.remoteFilename;
+
+  void _scheduleCacheRefresh() {
+    for (final t in _cacheRefreshTimers) {
+      t.cancel();
+    }
+    _cacheRefreshTimers
+      ..clear()
+      ..add(Timer(const Duration(milliseconds: 600), _refresh))
+      ..add(Timer(const Duration(milliseconds: 2500), _refresh));
+  }
+
+  Future<void> _refreshTransfers() async {
+    if (!_channel.isAvailable) return;
+    final requestedAt = _seq;
+    final List<SoulseekTransferInfo> list;
+    try {
+      list = await _channel.getActiveTransfers(includeTerminal: true);
+    } catch (_) {
+      // Сервис ещё не поднят — загрузок нет, список появится с событием.
+      if (mounted) _syncPolling();
+      return;
+    }
+    if (!mounted) return;
+    // Событие пришло, пока снимок был в пути, — оно свежее снимка.
+    bool newerThanSnapshot(String id) => (_eventSeq[id] ?? 0) > requestedAt;
+    var changed = false;
+    final ids = <String>{};
+    for (final t in list) {
+      ids.add(t.downloadId);
+      if (newerThanSnapshot(t.downloadId)) continue;
+      if (_applyTransfer(t)) changed = true;
+    }
+    final before = _transfers.length;
+    _transfers.removeWhere(
+      (id, _) => !ids.contains(id) && !newerThanSnapshot(id),
+    );
+    if (_transfers.length != before) changed = true;
+    if (changed) setState(() {});
+    _syncPolling();
+  }
+
+  /// Данные идут — скорость и прогресс меняются каждую секунду. Очередь,
+  /// пауза и прочие состояния меняются событиями, их не опрашиваем.
+  static bool _isTransferring(SoulseekTransferInfo t) =>
+      t.state == SoulseekTransferState.downloading ||
+      t.state == SoulseekTransferState.prebuffered;
+
+  void _syncPolling() {
+    final busy = _transfers.values.any(_isTransferring);
+    if (busy && _pollTimer == null) {
+      _pollTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => _refreshTransfers(),
+      );
+    } else if (!busy) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
+  }
+
+  /// Идёт или стоит на паузе — группа «Downloading». Пауза показывается
+  /// и из прошлых запусков: её поставил пользователь или закрытие
+  /// приложения, а не ошибка, — загрузку можно продолжить.
+  bool _isInProgress(SoulseekTransferInfo t) {
+    switch (t.state) {
+      case SoulseekTransferState.downloading:
+      case SoulseekTransferState.prebuffered:
+      case SoulseekTransferState.connecting:
+      case SoulseekTransferState.queued:
+      case SoulseekTransferState.queuedRemotely:
+      case SoulseekTransferState.searching:
+      case SoulseekTransferState.paused:
+        return true;
+      case SoulseekTransferState.failed:
+      case SoulseekTransferState.cancelled:
+      case SoulseekTransferState.completed:
+      case SoulseekTransferState.idle:
+        return false;
+    }
+  }
+
+  /// Упала в этой сессии — группа «Failed». Отменённые пользователем не
+  /// показываются: их убрали намеренно.
+  bool _isFailed(SoulseekTransferInfo t) =>
+      t.state == SoulseekTransferState.failed &&
+      _session.contains(t.downloadId);
+
+  bool _matchesQuery(SoulseekTransferInfo t) {
+    final q = _queryNormalized;
+    if (q.isEmpty) return true;
+    return soulseekTransferTitle(t).toLowerCase().contains(q) ||
+        (t.artist ?? '').toLowerCase().contains(q);
+  }
+
+  List<SoulseekTransferInfo> _visibleTransfers(
+    bool Function(SoulseekTransferInfo) test,
+  ) {
+    return _transfers.values
+        .where((t) => test(t) && _matchesQuery(t))
+        .toList()
+      ..sort(
+        (a, b) => _statePriority(a.state).compareTo(_statePriority(b.state)),
+      );
+  }
+
+  Future<void> _pause(String id) async {
+    try {
+      await _channel.pauseDownload(id);
+    } catch (_) {
+      if (mounted) showSnack(context, 'Failed to pause download');
+    }
+    await _refreshTransfers();
+  }
+
+  Future<void> _resume(String id) async {
+    try {
+      await _channel.resumeDownload(id);
+    } catch (_) {
+      if (mounted) showSnack(context, 'Failed to resume download');
+    }
+    await _refreshTransfers();
+  }
+
+  Future<void> _cancel(String id) async {
+    try {
+      await _channel.cancelDownload(id);
+    } catch (_) {
+      if (mounted) showSnack(context, 'Failed to cancel download');
+    }
+    await _refreshTransfers();
+  }
+
+  Future<void> _retry(String id) async {
+    try {
+      final restarted = await _channel.retryDownload(id);
+      if (!restarted && mounted) {
+        showSnack(context, "Couldn't retry this download");
+      }
+    } catch (_) {
+      if (mounted) showSnack(context, "Couldn't retry this download");
+    }
+    await _refreshTransfers();
+  }
+
+  /// Убирает упавшие из списка (натив забывает и завершённые — они уже
+  /// в кэше ниже).
+  Future<void> _clearFailed() async {
+    try {
+      await _channel.clearFinishedTransfers();
+    } catch (_) {
+      if (mounted) showSnack(context, "Couldn't clear failed downloads");
+    }
+    await _refreshTransfers();
   }
 
   static bool _sameEntry(CachedTrack a, CachedTrack b) =>
@@ -145,7 +431,7 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
     }).toList();
   }
 
-  // ---- Действия ----
+  // ---- Действия с готовыми треками ----
 
   /// Очередь — видимый (отфильтрованный) список, старт с выбранного.
   /// Фильтр «источник отключён» (как в истории) не нужен: файлы локальные
@@ -165,7 +451,7 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
     if (mounted) await _refresh();
   }
 
-  /// Десктоп: правый клик. Кэшем управляет сам экран (pin / remove через
+  /// Десктоп: правый клик. Кэшем управляет сам экран (remove через
   /// [_service] знает оба хранилища), поэтому Download-пункт меню скрыт.
   void _showContextMenu(CachedTrack item, Offset position) {
     showTrackContextMenu(
@@ -173,17 +459,10 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
       track: item.track,
       position: position,
       showCacheAction: false,
-      leading: [
-        TrackMenuAction(
-          icon: item.pinned ? Icons.push_pin : Icons.push_pin_outlined,
-          label: item.pinned ? 'Unpin' : 'Pin',
-          onSelected: () => _togglePin(item),
-        ),
-      ],
       trailing: [
         TrackMenuAction(
           icon: Icons.delete_outline_rounded,
-          label: 'Remove from cache',
+          label: 'Remove from downloads',
           destructive: true,
           onSelected: () => _remove(item),
         ),
@@ -197,49 +476,37 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
     _loadGeneration++;
     setState(() {
       _items = _items.where((i) => !_sameEntry(i, item)).toList();
+      _usage = CacheUsage.of(_items);
     });
     try {
       await _service.remove(item);
-      if (mounted) showSnack(context, 'Removed from cache');
+      if (mounted) showSnack(context, 'Removed from downloads');
     } on CacheActionException catch (e) {
       if (mounted) showSnack(context, e.message);
       await _refresh();
     } catch (_) {
-      if (mounted) showSnack(context, 'Failed to remove from cache');
+      if (mounted) showSnack(context, 'Failed to remove');
       await _refresh();
-    }
-  }
-
-  Future<void> _togglePin(CachedTrack item) async {
-    try {
-      final updated = await _service.setPinned(item, !item.pinned);
-      if (!mounted) return;
-      setState(() {
-        _items = [for (final i in _items) _sameEntry(i, item) ? updated : i];
-      });
-      showSnack(context, updated.pinned ? 'Pinned' : 'Unpinned');
-    } catch (_) {
-      if (mounted) showSnack(context, 'Failed to update pin status');
     }
   }
 
   Future<void> _confirmClear() async {
     final confirmed = await showAppConfirmDialog(
       context: context,
-      title: 'Clear cached tracks',
-      subtitle: 'All cached tracks, including pinned ones and Soulseek '
+      title: 'Clear downloads',
+      subtitle: 'All downloaded and cached tracks, including Soulseek '
           'downloads, will be deleted.\nThis action cannot be undone.',
       confirmLabel: 'Clear',
       isDestructive: true,
     );
     if (confirmed != true) return;
-    String message = 'Cached tracks cleared';
+    String message = 'Downloads cleared';
     try {
       await _service.clearAudio();
     } on CacheActionException catch (e) {
       message = e.message;
     } catch (_) {
-      message = 'Failed to clear cached tracks';
+      message = 'Failed to clear downloads';
     }
     if (!mounted) return;
     showSnack(context, message);
@@ -254,27 +521,46 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
   Widget build(BuildContext context) {
     final colors = ref.watch(animatedPaletteProvider);
     final visible = _filtered;
+    final inProgress = _visibleTransfers(_isInProgress);
+    final failed = _visibleTransfers(_isFailed);
+    final hasTransfers = _transfers.values.any(
+      (t) => _isInProgress(t) || _isFailed(t),
+    );
 
     final Widget body;
-    if (_loading) {
+    if (_loading && !hasTransfers) {
       body = Center(child: CircularProgressIndicator(color: colors.accent));
-    } else if (_items.isEmpty) {
+    } else if (_items.isEmpty && !hasTransfers) {
       body = _EmptyState(colors: colors);
     } else {
       body = RefreshIndicator(
         color: colors.accent,
-        onRefresh: _refresh,
-        child: _CachedBody(
+        onRefresh: _refreshAll,
+        child: _DownloadsBody(
           visible: visible,
-          usage: CacheUsage.of(_items),
+          inProgress: inProgress,
+          failed: failed,
+          usage: _usage,
           hasQuery: _queryNormalized.isNotEmpty,
           colors: colors,
+          transferTile: (t, {required isFirst, required isLast}) =>
+              SoulseekTransferTile(
+                key: ValueKey('transfer_${t.downloadId}'),
+                transfer: t,
+                colors: colors,
+                isFirst: isFirst,
+                isLast: isLast,
+                onPause: () => _pause(t.downloadId),
+                onResume: () => _resume(t.downloadId),
+                onCancel: () => _cancel(t.downloadId),
+                onRetry: () => _retry(t.downloadId),
+              ),
           onPlay: (item) => _play(item, visible),
           onMenu: _showTrackMenu,
           onContextMenu: _showContextMenu,
           onRemove: _remove,
-          onTogglePin: _togglePin,
           onClear: _confirmClear,
+          onClearFailed: _clearFailed,
         ),
       );
     }
@@ -308,7 +594,7 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
                   colors: colors,
                   controller: _searchCtl,
                   focusNode: _searchFocus,
-                  hint: 'Find in cache',
+                  hint: 'Find in downloads',
                 ),
               ),
             ],
@@ -332,34 +618,82 @@ class _CachedTracksPageState extends ConsumerState<CachedTracksPage> {
 //  ТЕЛО СПИСКА
 // ═══════════════════════════════════════════════════════════════════════════
 
-class _CachedBody extends StatelessWidget {
-  const _CachedBody({
+typedef _TransferTileBuilder = Widget Function(
+  SoulseekTransferInfo transfer, {
+  required bool isFirst,
+  required bool isLast,
+});
+
+class _DownloadsBody extends StatelessWidget {
+  const _DownloadsBody({
     required this.visible,
+    required this.inProgress,
+    required this.failed,
     required this.usage,
     required this.hasQuery,
     required this.colors,
+    required this.transferTile,
     required this.onPlay,
     required this.onMenu,
     required this.onContextMenu,
     required this.onRemove,
-    required this.onTogglePin,
     required this.onClear,
+    required this.onClearFailed,
   });
 
   final List<CachedTrack> visible;
+  final List<SoulseekTransferInfo> inProgress;
+  final List<SoulseekTransferInfo> failed;
   final CacheUsage usage;
   final bool hasQuery;
   final AppColors colors;
+  final _TransferTileBuilder transferTile;
   final void Function(CachedTrack) onPlay;
   final void Function(CachedTrack) onMenu;
   final void Function(CachedTrack, Offset globalPosition) onContextMenu;
   final void Function(CachedTrack) onRemove;
-  final void Function(CachedTrack) onTogglePin;
   final VoidCallback onClear;
+  final VoidCallback onClearFailed;
 
-  /// Заголовки дней + треки с флагами первого/последнего в группе.
+  /// Группы загрузок, затем заголовки дней + треки с флагами
+  /// первого/последнего в группе.
   List<_RowItem> _buildItems() {
     final items = <_RowItem>[];
+
+    void addTransfers(
+      String title,
+      List<SoulseekTransferInfo> list, {
+      String? trailing,
+      VoidCallback? onTrailing,
+    }) {
+      if (list.isEmpty) return;
+      items.add(_RowItem.header(
+        title,
+        trailing: trailing,
+        onTrailing: onTrailing,
+      ));
+      for (var i = 0; i < list.length; i++) {
+        items.add(_RowItem.transfer(
+          list[i],
+          isFirst: i == 0,
+          isLast: i == list.length - 1,
+        ));
+      }
+    }
+
+    final speed = inProgress.fold<int>(0, (s, t) => s + t.bytesPerSecond);
+    addTransfers(
+      'Downloading',
+      inProgress,
+      trailing: speed > 0 ? formatSpeed(speed) : null,
+    );
+    addTransfers(
+      'Failed',
+      failed,
+      trailing: 'Clear',
+      onTrailing: onClearFailed,
+    );
+
     String? currentDay;
     for (var i = 0; i < visible.length; i++) {
       final day = _dayLabel(visible[i].cachedAt);
@@ -395,7 +729,7 @@ class _CachedBody extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Cached',
+                        'Downloads',
                         style: TextStyle(
                           color: colors.textPrimary,
                           fontSize: 32,
@@ -413,34 +747,35 @@ class _CachedBody extends StatelessWidget {
                     ],
                   ),
                 ),
-                TextButton.icon(
-                  onPressed: onClear,
-                  icon: Icon(
-                    Icons.delete_outline_rounded,
-                    color: colors.textSecondary,
-                    size: 20,
-                  ),
-                  label: Text(
-                    'Clear',
-                    style: TextStyle(
+                if (usage.trackCount > 0)
+                  TextButton.icon(
+                    onPressed: onClear,
+                    icon: Icon(
+                      Icons.delete_outline_rounded,
                       color: colors.textSecondary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
+                      size: 20,
+                    ),
+                    label: Text(
+                      'Clear',
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                   ),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                ),
               ],
             ),
           ),
         ),
-        if (visible.isEmpty && hasQuery)
+        if (items.isEmpty && hasQuery)
           SliverFillRemaining(
             hasScrollBody: false,
             child: Center(
@@ -463,16 +798,19 @@ class _CachedBody extends StatelessWidget {
                 final item = items[index];
                 final header = item.header;
                 if (header != null) {
-                  return Padding(
-                    padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
-                    child: Text(
-                      header,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                  return _SectionHeader(
+                    title: header,
+                    trailing: item.trailing,
+                    onTrailing: item.onTrailing,
+                    colors: colors,
+                  );
+                }
+                final transfer = item.transfer;
+                if (transfer != null) {
+                  return transferTile(
+                    transfer,
+                    isFirst: item.isFirst,
+                    isLast: item.isLast,
                   );
                 }
                 final cached = item.cached!;
@@ -485,7 +823,6 @@ class _CachedBody extends StatelessWidget {
                   onLongPress: () => onMenu(cached),
                   onContextMenu: (pos) => onContextMenu(cached, pos),
                   onDismissed: () => onRemove(cached),
-                  onTogglePin: () => onTogglePin(cached),
                 );
               }, childCount: items.length),
             ),
@@ -496,8 +833,9 @@ class _CachedBody extends StatelessWidget {
 }
 
 class _RowItem {
-  const _RowItem.header(this.header)
+  const _RowItem.header(this.header, {this.trailing, this.onTrailing})
       : cached = null,
+        transfer = null,
         isFirst = false,
         isLast = false;
 
@@ -505,12 +843,90 @@ class _RowItem {
     this.cached, {
     required this.isFirst,
     required this.isLast,
-  }) : header = null;
+  })  : header = null,
+        transfer = null,
+        trailing = null,
+        onTrailing = null;
+
+  const _RowItem.transfer(
+    this.transfer, {
+    required this.isFirst,
+    required this.isLast,
+  })  : header = null,
+        cached = null,
+        trailing = null,
+        onTrailing = null;
 
   final String? header;
+
+  /// Подпись справа от заголовка группы (скорость или кнопка «Clear»).
+  final String? trailing;
+  final VoidCallback? onTrailing;
+
   final CachedTrack? cached;
+  final SoulseekTransferInfo? transfer;
   final bool isFirst;
   final bool isLast;
+}
+
+/// Заголовок группы: день кэширования или группа загрузок.
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.title,
+    required this.colors,
+    this.trailing,
+    this.onTrailing,
+  });
+
+  final String title;
+  final AppColors colors;
+  final String? trailing;
+  final VoidCallback? onTrailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final trailingStyle = TextStyle(
+      color: colors.textSecondary,
+      fontSize: 14,
+      fontWeight: FontWeight.w500,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 16, 0, 8),
+      child: SizedBox(
+        height: 32,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (trailing != null)
+              onTrailing == null
+                  ? Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Text(trailing!, style: trailingStyle),
+                    )
+                  : TextButton(
+                      onPressed: onTrailing,
+                      style: TextButton.styleFrom(
+                        foregroundColor: colors.textSecondary,
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(trailing!, style: trailingStyle),
+                    ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -526,7 +942,6 @@ class _CachedTile extends ConsumerWidget {
     required this.onTap,
     required this.onLongPress,
     required this.onDismissed,
-    required this.onTogglePin,
     required this.onContextMenu,
   });
 
@@ -536,7 +951,6 @@ class _CachedTile extends ConsumerWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final VoidCallback onDismissed;
-  final VoidCallback onTogglePin;
   final ValueChanged<Offset> onContextMenu;
 
   String _subtitle() {
@@ -636,7 +1050,8 @@ class _CachedTile extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  if (track.duration != null)
+                  if (track.duration != null) ...[
+                    const SizedBox(width: 8),
                     Text(
                       _fmtDuration(track.duration!),
                       style: TextStyle(
@@ -645,17 +1060,8 @@ class _CachedTile extends ConsumerWidget {
                         fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                     ),
-                  IconButton(
-                    onPressed: onTogglePin,
-                    tooltip: item.pinned ? 'Unpin' : 'Pin',
-                    icon: Icon(
-                      item.pinned
-                          ? Icons.push_pin_rounded
-                          : Icons.push_pin_outlined,
-                      size: 20,
-                      color: item.pinned ? colors.accent : colors.textTertiary,
-                    ),
-                  ),
+                  ],
+                  const SizedBox(width: 16),
                 ],
               ),
             ),
@@ -742,7 +1148,7 @@ class _EmptyState extends StatelessWidget {
             Icon(Icons.download_done_rounded, size: 40, color: colors.textTertiary),
             const SizedBox(height: 12),
             Text(
-              'No cached tracks',
+              'No downloads yet',
               style: TextStyle(color: colors.textSecondary, fontSize: 16),
             ),
             const SizedBox(height: 4),

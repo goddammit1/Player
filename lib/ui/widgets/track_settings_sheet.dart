@@ -17,10 +17,10 @@ import '../../sources/soulseek_source.dart';
 import 'artwork.dart';
 import 'byte_format.dart';
 import '../desktop/desktop_layout.dart';
+import '../pages/downloads_page.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import 'soulseek_folder_sheet.dart';
-import 'soulseek_transfer_sheet.dart';
 
 // =============================================================================
 // PUBLIC API
@@ -807,15 +807,16 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
     };
   }
 
-  /// Список загрузок Soulseek. Из шторки — вместо неё, как «Open folder».
+  /// Страница Downloads. Из шторки — шторка закрывается, как при
+  /// «Open folder».
   void _openTransfers(BuildContext context) {
     if (!widget.insideSheet) {
-      showSoulseekTransferSheet(context);
+      openDownloadsPage(context);
       return;
     }
     final nav = Navigator.of(context);
     nav.pop();
-    showSoulseekTransferSheet(nav.context);
+    openDownloadsPage(nav.context);
   }
 
   void _showSnack(String message, {Duration? duration}) {

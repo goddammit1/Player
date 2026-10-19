@@ -30,9 +30,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player/core/player_service_interface.dart';
 import 'package:player/core/providers.dart';
+import 'package:player/core/soulseek_credentials.dart';
 import 'package:player/models/track.dart';
 import 'package:player/ui/pages/soulseek_settings_page.dart';
-import 'package:player/ui/widgets/soulseek_transfer_sheet.dart';
+import 'package:player/sources/soulseek_session_transfers.dart';
+import 'package:player/ui/pages/downloads_page.dart';
 
 import '../setup/test_harness.dart';
 
@@ -437,7 +439,8 @@ void main() {
     }
   });
 
-  testWidgets('после входа поля аккаунта скрыты', (tester) async {
+  testWidgets('после входа логин в статусе, Save неактивна без правок',
+      (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 3000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     try {
@@ -445,8 +448,6 @@ void main() {
         await tester.pumpWidget(wrap(const SoulseekSettingsPage()));
         await Future<void>.delayed(const Duration(milliseconds: 100));
         await tester.pumpAndSettle();
-        expect(find.text('Username'), findsOneWidget);
-
         await tester.tap(find.text('Connect'));
         await Future<void>.delayed(const Duration(milliseconds: 50));
         connectReply.complete({'username': 'user', 'state': 'CONNECTED'});
@@ -454,7 +455,15 @@ void main() {
         await tester.pump(const Duration(milliseconds: 400));
 
         expect(find.text('as user'), findsOneWidget);
-        expect(find.text('Username'), findsNothing);
+        // Поля остаются (смена аккаунта), Save ждёт правки.
+        expect(find.text('Save'), findsOneWidget);
+        final save = tester.widget<InkWell>(
+          find.ancestor(
+            of: find.text('Save'),
+            matching: find.byType(InkWell),
+          ),
+        );
+        expect(save.onTap, isNull);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -472,12 +481,24 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         await tester.pumpAndSettle();
         expect(find.text('Listener port'), findsNothing);
-        expect(find.text('Clear credentials'), findsNothing);
+        expect(find.text('Clear account data'), findsNothing);
 
-        await tester.tap(find.text('Advanced'));
+        // Свои слайдер и колесо подписаны для экранного диктора.
+        final semantics = tester.ensureSemantics();
+        await tester.pump();
+        expect(find.bySemanticsLabel('Max file size'), findsOneWidget);
+        expect(find.bySemanticsLabel('Parallel downloads'), findsOneWidget);
+        expect(
+          find.bySemanticsLabel('Search timeout, seconds'),
+          findsOneWidget,
+        );
+        semantics.dispose();
+
+        await tester.tap(find.text('Show more'));
         await tester.pumpAndSettle();
         expect(find.text('Listener port'), findsOneWidget);
-        expect(find.text('Clear credentials'), findsOneWidget);
+        expect(find.text('Clear account data'), findsOneWidget);
+        expect(find.text('Show less'), findsOneWidget);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -486,8 +507,8 @@ void main() {
   });
 
   testWidgets(
-      'лист загрузок: группы, формат из имени файла, Retry и Clear '
-      'уходят в натив', (tester) async {
+      'Downloads: группы загрузок, формат из имени файла, упавшие прошлых '
+      'сессий скрыты, Retry и Clear уходят в натив', (tester) async {
     transfersReply = [
       {
         'downloadId': 'dl_a',
@@ -507,32 +528,40 @@ void main() {
         'artist': 'Artist B',
         'remoteFilename': 'music/Artist B/Song B.mp3',
       },
+      // Упала в прошлом запуске (натив поднял из БД) — не показывается.
+      {
+        'downloadId': 'dl_c',
+        'state': 'FAILED',
+        'title': 'Song C',
+        'remoteFilename': 'music/Artist C/Song C.mp3',
+      },
+      // Завершённая — уже в списке готовых треков, не в группах загрузок.
+      {
+        'downloadId': 'dl_d',
+        'state': 'COMPLETED',
+        'title': 'Song D',
+        'remoteFilename': 'music/Artist D/Song D.mp3',
+      },
     ];
+    SoulseekSessionTransfers.instance.add('dl_b');
     await tester.binding.setSurfaceSize(const Size(1000, 3000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     try {
       await tester.runAsync(() async {
-        await tester.pumpWidget(wrap(Builder(
-          builder: (context) => Scaffold(
-            body: TextButton(
-              onPressed: () => showSoulseekTransferSheet(context),
-              child: const Text('open'),
-            ),
-          ),
-        )));
-        await tester.tap(find.text('open'));
-        await tester.pump(const Duration(milliseconds: 400));
-        // Ответ getActiveTransfers приходит асинхронно после initState листа.
+        await tester.pumpWidget(wrap(const DownloadsPage()));
+        // Ответы getActiveTransfers и кэша приходят асинхронно.
         await Future<void>.delayed(const Duration(milliseconds: 100));
         await tester.pump();
-        // Дождаться конца анимации появления листа (иначе тап мимо).
-        await tester.pump(const Duration(milliseconds: 500));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
 
-        expect(find.text('IN PROGRESS'), findsOneWidget);
-        expect(find.text('FINISHED'), findsOneWidget);
-        expect(find.text('FLAC'), findsOneWidget);
-        expect(find.text('MP3'), findsOneWidget);
+        expect(find.text('Downloading'), findsOneWidget);
+        expect(find.text('Failed'), findsOneWidget);
+        expect(find.textContaining('FLAC · Artist A · 50%'), findsOneWidget);
+        expect(find.textContaining('MP3 · Artist B · Failed'), findsOneWidget);
         expect(find.textContaining('Peer offline'), findsOneWidget);
+        expect(find.text('Song C'), findsNothing);
+        expect(find.text('Song D'), findsNothing);
 
         await tester.tap(find.byTooltip('Retry'));
         await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -543,7 +572,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         await tester.pump(const Duration(milliseconds: 100));
         expect(clearCalls, 1);
-        expect(find.text('No active downloads'), findsOneWidget);
+        expect(find.text('No downloads yet'), findsOneWidget);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -614,6 +643,57 @@ void main() {
         expect(find.text('Disconnect'), findsOneWidget);
         // Отменённая команда не разорвала новое соединение.
         expect(disconnectCalls, 1);
+      });
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets(
+      'Save and reconnect с неверным паролем не затирает рабочие креды; '
+      'новые сохраняются только после успешного входа', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    try {
+      await tester.runAsync(() async {
+        await openPageAndTapConnect(tester);
+        connectReply.complete({'username': 'user', 'state': 'CONNECTED'});
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+        expect(find.text('Connected'), findsOneWidget);
+
+        // Опечатка в пароле → кнопка предлагает переподключиться.
+        await tester.enterText(find.byType(TextField).at(1), 'typo');
+        await tester.pump();
+        expect(find.text('Save and reconnect'), findsOneWidget);
+
+        connectError = PlatformException(
+          code: 'LoginRejectedException',
+          message: 'rejected',
+          details: {'retryable': false},
+        );
+        await tester.tap(find.text('Save and reconnect'));
+        for (var i = 0; i < 20 && connectCalls < 2; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+
+        expect(disconnectCalls, greaterThanOrEqualTo(1));
+        expect(find.text('Connection failed'), findsOneWidget);
+        expect((await SoulseekCredentials.load())!.password, 'pass');
+
+        // Успешный вход с новыми данными — теперь они сохраняются.
+        connectError = null;
+        await tester.tap(find.text('Connect'));
+        for (var i = 0; i < 20 && connectCalls < 3; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await tester.pump();
+        expect(find.text('Connected'), findsOneWidget);
+        expect((await SoulseekCredentials.load())!.password, 'typo');
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());

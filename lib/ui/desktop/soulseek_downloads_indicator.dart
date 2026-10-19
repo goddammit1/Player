@@ -9,8 +9,8 @@ import '../../core/providers.dart';
 import '../../sources/soulseek_desktop/soulseek_desktop_channel.dart';
 import '../../sources/soulseek_models.dart';
 import '../../sources/soulseek_platform_channel.dart';
+import '../pages/downloads_page.dart';
 import '../widgets/snack.dart';
-import '../widgets/soulseek_transfer_sheet.dart';
 import 'design/dimens.dart';
 
 /// Круглая кнопка в top bar: активные загрузки Soulseek (кольцо общего
@@ -103,7 +103,7 @@ class _SoulseekDownloadsIndicatorState
           shape: const CircleBorder(),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
-            onTap: () => showSoulseekTransferSheet(context),
+            onTap: () => openDownloadsPage(context),
             child: SizedBox.square(
               dimension: Dimens.topBarHeight,
               child: Stack(

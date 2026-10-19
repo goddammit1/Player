@@ -2,12 +2,14 @@
 //
 // Фаза 4 — экран настроек Soulseek.
 //
-// Компоновка (редизайн по plans/soulseek_pages_redesign_plan.md):
+// Компоновка (редизайн по plans/soulseek_pages_redesign_plan.md и
+// концепту пользователя):
 //  - AppBar с круглой кнопкой «Назад» и заголовком 32px
-//  - Сверху карточка статуса: состояние + одна кнопка Connect / Cancel /
-//    Disconnect и переключатель «Show in search»
-//  - Группы Account (скрыта после входа), Search, Downloads и свёрнутый
-//    Advanced; плитки групп скруглены как список треков (GroupedTiles)
+//  - Сверху карточка статуса: крупная кнопка Connect / Cancel / Disconnect,
+//    под ней состояние, логин и суммарная скорость загрузок
+//  - Группы Account (поля + Save), Search, Downloads и свёрнутый Advanced;
+//    плитки групп скруглены как список треков (GroupedTiles)
+//  - Числовые настройки — слайдеры со ступенями и колесо таймаута
 //  - Только цвета AppColors; красный — лишь сбой и удаление
 //  - Анимация появления через _AppearingPageAnimator
 //
@@ -37,11 +39,11 @@ import '../../sources/soulseek_source.dart';
 import '../../sources/source_registry.dart';
 import '../desktop/desktop_layout.dart';
 import '../widgets/app_dialogs.dart';
+import '../widgets/byte_format.dart';
 import '../widgets/grouped_tiles.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
-import '../widgets/soulseek_transfer_sheet.dart';
-import 'cached_tracks_page.dart';
+import 'downloads_page.dart';
 
 /// Репозиторий настроек Soulseek (SQLite). Дефолты и ключи — там же
 /// (раньше здесь был класс SoulseekPrefs с SharedPreferences-ключами).
@@ -63,13 +65,20 @@ class SoulseekSettingsPage extends ConsumerStatefulWidget {
 }
 
 class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
-  // ── Флаг включения ──
-  bool _enabled = false;
-
   // ── Учётные данные ──
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+
+  // Сохранённые учётные данные: Save активна, только пока поля от них
+  // отличаются.
+  String _savedUsername = '';
+  String _savedPassword = '';
+  bool _accountDirty = false;
+
+  // Логин последнего входа — подзаголовок статуса не меняется, пока
+  // пользователь правит поле Username.
+  String _accountName = '';
 
   // ── Параметры (дефолты — из SoulseekSettingsRepository) ──
   int _listenPort = SoulseekSettingsRepository.defaultListenPort;
@@ -112,8 +121,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   // CONNECTED) не должны менять статус после Cancel.
   int _cancelledInFlight = 0;
 
-  // ── Активные загрузки (счётчик у строки Downloads) ──
-  final Set<String> _activeTransferIds = {};
+  // ── Активные загрузки: id → скорость (счётчик у строки Downloads и
+  // суммарная скорость в статусе) ──
+  final Map<String, int> _activeSpeeds = {};
   StreamSubscription<SoulseekTransferEvent>? _transferSub;
 
   bool _advancedOpen = false;
@@ -131,7 +141,8 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   @override
   void initState() {
     super.initState();
-    _enabled = SourceRegistry.isSoulseekEnabled;
+    _usernameController.addListener(_onAccountEdited);
+    _passwordController.addListener(_onAccountEdited);
     _loadSettings();
     _subscribeConnection();
     _subscribeTransfers();
@@ -166,12 +177,27 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   @override
   void dispose() {
+    _usernameController.removeListener(_onAccountEdited);
+    _passwordController.removeListener(_onAccountEdited);
     _usernameController.dispose();
     _passwordController.dispose();
     _connectionSub?.close();
     _transferSub?.cancel();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// Загрузка идёт или ждёт очереди (prebuffered — трек уже играет, но
+  /// данные ещё качаются).
+  static bool _isActiveTransfer(SoulseekTransferState s) =>
+      s.isActive || s == SoulseekTransferState.prebuffered;
+
+  /// Перестраиваем страницу, только когда меняется доступность Save.
+  void _onAccountEdited() {
+    final dirty = _usernameController.text.trim() != _savedUsername ||
+        _passwordController.text != _savedPassword;
+    if (dirty == _accountDirty || !mounted) return;
+    setState(() => _accountDirty = dirty);
   }
 
   /// Счётчик активных загрузок: снимок при открытии + transfer-события
@@ -185,21 +211,24 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     _transferSub = platform.transferEvents.listen((e) {
       final info = e.transfer;
       seenBeforeSnapshot?.add(info.downloadId);
-      final changed = info.state.isActive
-          ? _activeTransferIds.add(info.downloadId)
-          : _activeTransferIds.remove(info.downloadId);
-      if (changed && mounted) setState(() {});
+      if (_isActiveTransfer(info.state)) {
+        if (_activeSpeeds[info.downloadId] == info.bytesPerSecond) return;
+        _activeSpeeds[info.downloadId] = info.bytesPerSecond;
+      } else if (_activeSpeeds.remove(info.downloadId) == null) {
+        return;
+      }
+      if (mounted) setState(() {});
     }, onError: (_) {});
     try {
       final active = await platform.getActiveTransfers();
       final seen = seenBeforeSnapshot;
       if (!mounted) return;
       setState(() {
-        _activeTransferIds.addAll(
-          active
-              .where((t) => t.state.isActive && !seen.contains(t.downloadId))
-              .map((t) => t.downloadId),
-        );
+        for (final t in active) {
+          if (_isActiveTransfer(t.state) && !seen.contains(t.downloadId)) {
+            _activeSpeeds[t.downloadId] = t.bytesPerSecond;
+          }
+        }
       });
     } catch (_) {
       // Сервис ещё не поднят — счётчик появится с первым событием.
@@ -222,8 +251,11 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         // username: из secure storage (с паролем) или из БД (быстрый путь).
         _usernameController.text = creds?.username ?? usernameQuick ?? '';
         _passwordController.text = creds?.password ?? '';
+        _savedUsername = _usernameController.text.trim();
+        _savedPassword = _passwordController.text;
+        _accountName = _savedUsername;
+        _accountDirty = false;
 
-        _enabled = settings.enabled;
         _listenPort = settings.listenPort;
         _maxParallelDownloads = settings.maxParallelDownloads;
         _preferLossless = settings.preferLossless;
@@ -321,17 +353,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   // ── Действия ──
 
-  Future<void> _toggleEnabled(bool value) async {
-    setState(() => _enabled = value);
-    await SourceRegistry.setSoulseekEnabled(value);
-    if (mounted) {
-      showSnack(
-        context,
-        value ? 'Soulseek enabled' : 'Soulseek disabled',
-      );
-    }
-  }
-
   Future<void> _connect() async {
     if (!_isAvailable) return;
 
@@ -351,16 +372,11 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
     _connectInFlight = true;
     setState(() {
+      _accountName = username;
       _connecting = true;
       _connectionState = SoulseekConnectionState.connecting;
       _connectionMessage = null;
     });
-
-    // Сохраняем один раз, до цикла подключения. Сбой secure storage не
-    // блокирует подключение: креды и так уходят в натив только в памяти при
-    // каждом connect, а запасного хранилища нет намеренно — пароль живёт
-    // только в Keystore. Пользователь лишь узнаёт, что данные не запомнятся.
-    final saved = await _trySaveCredentials(username, password);
 
     // P3: первый коннект после старта сервиса иногда падает по
     // SocketException (DNS proxy errno=111) — C# bridge классифицирует
@@ -412,6 +428,14 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       return;
     }
 
+    // Креды сохраняем только после успешного входа: опечатка в пароле
+    // («Save and reconnect») не должна затереть рабочие данные. Сбой
+    // secure storage не мешает соединению — креды уходят в натив только в
+    // памяти, а запасного хранилища нет намеренно (пароль живёт только в
+    // Keystore); пользователь лишь узнаёт, что данные не запомнятся.
+    // Сохраняем и при закрытой странице — вход уже состоялся.
+    final saved = info == null || await _trySaveCredentials(username, password);
+
     _connectInFlight = false;
     if (!mounted) return;
 
@@ -460,13 +484,43 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   Future<bool> _trySaveCredentials(String username, String password) async {
     try {
       await SoulseekCredentials.save(username: username, password: password);
-      // Фаза B: проталкиваем username в нативную soulseek.db (раньше это
-      // делала кнопка «Save credentials», которой больше нет).
+      // Фаза B: проталкиваем username в нативную soulseek.db.
       unawaited(_repo.syncToNative(username: username));
+      _savedUsername = username;
+      _savedPassword = password;
+      _onAccountEdited();
       return true;
     } catch (e) {
       if (kDebugMode) debugPrint('[Soulseek] credentials not saved: $e');
       return false;
+    }
+  }
+
+  /// Save в группе Account. Подключённый клиент переподключается с новыми
+  /// данными (connect сам их сохранит); без соединения — только сохранение.
+  Future<void> _saveAccount() async {
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text;
+    if (username.isEmpty || password.isEmpty) {
+      showSnack(context, 'Enter username and password');
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    if (_connectionState == SoulseekConnectionState.connected) {
+      await _disconnectQuietly();
+      if (mounted) await _connect();
+      return;
+    }
+    final saved = await _trySaveCredentials(username, password);
+    if (!mounted) return;
+    if (saved) {
+      showSnack(context, 'Saved');
+    } else {
+      showErrorSnack(
+        context,
+        "Credentials couldn't be saved on this device. "
+        'See Advanced → Storage diagnostics.',
+      );
     }
   }
 
@@ -550,6 +604,8 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     try {
       await SoulseekCredentials.clear();
       if (mounted) {
+        _savedUsername = '';
+        _savedPassword = '';
         setState(() {
           _usernameController.clear();
           _passwordController.clear();
@@ -563,10 +619,24 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   // ── Персист (SQLite через репозиторий) ──
 
-  Future<void> _updateListenPort(String text) async {
+  Future<void> _editListenPort() async {
+    final text = await showAppInputDialog(
+      context: context,
+      title: 'Listener port',
+      subtitle: 'Port for incoming peer connections (1–65535)',
+      initialValue: '$_listenPort',
+      hintText: '${SoulseekSettingsRepository.defaultListenPort}',
+      keyboardType: TextInputType.number,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+    );
+    if (text == null || !mounted) return;
     final port = int.tryParse(text);
-    if (port == null || port < 1 || port > 65535) return;
-    _listenPort = port;
+    if (port == null || port < 1 || port > 65535) {
+      showErrorSnack(context, 'Port must be between 1 and 65535');
+      return;
+    }
+    if (port == _listenPort) return;
+    setState(() => _listenPort = port);
     await _repo.setListenPort(port);
   }
 
@@ -599,17 +669,17 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     await _applyFiltersToSource();
   }
 
-  Future<void> _updateMaxFileSize(String text) async {
-    final mb = int.tryParse(text);
-    if (mb == null || mb < 0) return;
-    _maxFileSizeMB = mb;
+  Future<void> _updateMaxFileSize(int mb) async {
+    if (mb < 0 || mb == _maxFileSizeMB) return;
+    setState(() => _maxFileSizeMB = mb);
     await _repo.setMaxFileSizeMB(mb);
     await _applyFiltersToSource();
   }
 
-  Future<void> _updateSearchTimeout(String text) async {
-    final sec = int.tryParse(text);
-    if (sec == null || sec < 1) return;
+  /// Без setState: колесо уже показывает значение, а вызов возможен из
+  /// dispose колеса (коммит отложенной правки при закрытии страницы).
+  Future<void> _updateSearchTimeout(int sec) async {
+    if (sec < 1) return;
     _searchTimeoutSec = sec;
     await _repo.setSearchTimeoutSec(sec);
     // Разрыв №3: применяем новый таймаут к SoulseekSource сразу (как у
@@ -729,10 +799,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   }
 
   Widget _buildContent(AppColors colors) {
-    // Аккаунт нужен только для подключения — после входа его поля
-    // скрываются, логин виден в подзаголовке статуса.
-    final showAccount = _connectionState != SoulseekConnectionState.connected;
-
     return ListView(
       controller: _scrollController,
       padding: EdgeInsets.only(
@@ -743,48 +809,31 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       ),
       children: [
         // === STATUS ===
-        GroupedTiles(
+        KeyedSubtree(
           key: _connectionSectionKey,
-          colors: colors,
-          children: [
-            _buildStatusRow(colors),
-            _SwitchRow(
-              colors: colors,
-              title: 'Show in search',
-              value: _enabled,
-              onChanged: _toggleEnabled,
-            ),
-          ],
+          child: _buildStatusCard(colors),
         ),
         _buildP2PNote(colors),
 
         // === ACCOUNT ===
-        AnimatedSize(
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOutCubic,
-          alignment: Alignment.topCenter,
-          child: showAccount
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    GroupedTilesLabel(title: 'Account', colors: colors),
-                    _buildAccountGroup(colors),
-                  ],
-                )
-              : const SizedBox(width: double.infinity),
-        ),
+        _SectionLabel(title: 'Account', colors: colors),
+        _buildAccountGroup(colors),
 
         // === SEARCH ===
-        GroupedTilesLabel(title: 'Search', colors: colors),
+        _SectionLabel(title: 'Search', colors: colors),
         _buildSearchGroup(colors),
+        _Caption(
+          text: 'Larger files are hidden from search results',
+          colors: colors,
+        ),
 
         // === DOWNLOADS ===
         // Лимит размера кэша — на общей странице Cache.
-        GroupedTilesLabel(title: 'Downloads', colors: colors),
+        _SectionLabel(title: 'Downloads', colors: colors),
         _buildDownloadsGroup(colors),
 
         // === ADVANCED ===
-        const SizedBox(height: 24),
+        _SectionLabel(title: 'Advanced', colors: colors),
         _buildAdvanced(colors),
       ],
     );
@@ -792,17 +841,18 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   // ── STATUS ──
 
-  Widget _buildStatusRow(AppColors colors) {
+  Widget _buildStatusCard(AppColors colors) {
     final connected = _connectionState == SoulseekConnectionState.connected;
     final busy = !connected &&
         (_connecting ||
             _connectionState == SoulseekConnectionState.connecting ||
             _connectionState == SoulseekConnectionState.reconnecting);
-    final username = _usernameController.text.trim();
 
     final String subtitle;
     if (connected) {
-      subtitle = username.isEmpty ? 'Online' : 'as $username';
+      final speed = _activeSpeeds.values.fold<int>(0, (a, b) => a + b);
+      final who = _accountName.isEmpty ? 'Online' : 'as $_accountName';
+      subtitle = speed > 0 ? '$who · ${formatSpeed(speed)}' : who;
     } else if (_connectionMessage != null && _connectionMessage!.isNotEmpty) {
       subtitle = _connectionMessage!;
     } else {
@@ -816,36 +866,60 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             : ('Connect', _connect);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
-      child: Row(
-        children: [
-          _ConnectionStatusDot(state: _connectionState, colors: colors),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _connectionStateLabel,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: colors.textTertiary, fontSize: 12),
-                ),
-              ],
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Material(
+        color: colors.elevated,
+        borderRadius: BorderRadius.circular(18),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Connect — главное действие страницы (заливка акцентом);
+            // Cancel / Disconnect — нейтральные.
+            _BigButton(
+              label: label,
+              colors: colors,
+              filled: !connected && !busy,
+              outlined: true,
+              onTap: onTap,
             ),
-          ),
-          const SizedBox(width: 12),
-          _PillButton(label: label, colors: colors, onTap: onTap),
-        ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              child: Row(
+                children: [
+                  _ConnectionStatusDot(state: _connectionState, colors: colors),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _connectionStateLabel,
+                          style: TextStyle(
+                            color: colors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          subtitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: colors.textTertiary,
+                            fontSize: 12,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -899,39 +973,53 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   // ── ACCOUNT ──
 
   Widget _buildAccountGroup(AppColors colors) {
-    return GroupedTiles(
-      colors: colors,
+    final connected = _connectionState == SoulseekConnectionState.connected;
+    final busy = _connecting ||
+        _connectionState == SoulseekConnectionState.connecting ||
+        _connectionState == SoulseekConnectionState.reconnecting;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _FieldRow(
+        GroupedTiles(
           colors: colors,
-          label: 'Username',
-          child: _InlineTextField(
-            controller: _usernameController,
-            colors: colors,
-            hint: 'Your Soulseek username',
-          ),
-        ),
-        _FieldRow(
-          colors: colors,
-          label: 'Password',
-          trailing: IconButton(
-            tooltip: _obscurePassword ? 'Show password' : 'Hide password',
-            icon: Icon(
-              _obscurePassword
-                  ? Icons.visibility_off_outlined
-                  : Icons.visibility_outlined,
-              color: colors.textTertiary,
-              size: 20,
+          children: [
+            _InlineTextField(
+              controller: _usernameController,
+              colors: colors,
+              hint: 'Username',
             ),
-            onPressed: () {
-              setState(() => _obscurePassword = !_obscurePassword);
-            },
-          ),
-          child: _InlineTextField(
-            controller: _passwordController,
-            colors: colors,
-            hint: 'Your Soulseek password',
-            obscure: _obscurePassword,
+            _InlineTextField(
+              controller: _passwordController,
+              colors: colors,
+              hint: 'Password',
+              obscure: _obscurePassword,
+              trailing: IconButton(
+                tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                icon: Icon(
+                  _obscurePassword
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
+                  color: colors.textTertiary,
+                  size: 20,
+                ),
+                onPressed: () {
+                  setState(() => _obscurePassword = !_obscurePassword);
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: _BigButton(
+              label: connected && _accountDirty ? 'Save and reconnect' : 'Save',
+              colors: colors,
+              filled: true,
+              onTap: _accountDirty && !busy ? _saveAccount : null,
+            ),
           ),
         ),
       ],
@@ -941,6 +1029,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   // ── SEARCH ──
 
   Widget _buildSearchGroup(AppColors colors) {
+    final sizeIndex = _nearestFileSizeIndex(_maxFileSizeMB);
     return GroupedTiles(
       colors: colors,
       children: [
@@ -952,40 +1041,34 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           onChanged: _togglePreferLossless,
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: _allFormats.map((fmt) {
-              final selected = _allowedFormats.contains(fmt);
-              return _FormatChip(
-                label: fmt.toUpperCase(),
-                selected: selected,
-                colors: colors,
-                onTap: () => _toggleFormat(fmt, !selected),
-              );
-            }).toList(),
-          ),
-        ),
-        _Row(
-          colors: colors,
-          title: 'Max file size',
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                _fileSizeLabel(_maxFileSizeMB),
-                style: TextStyle(color: colors.textSecondary, fontSize: 14),
+                'Formats',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-              const SizedBox(width: 4),
-              Icon(
-                Icons.chevron_right_rounded,
-                color: colors.textTertiary,
-                size: 20,
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: _allFormats.map((fmt) {
+                  final selected = _allowedFormats.contains(fmt);
+                  return _FormatChip(
+                    label: fmt.toUpperCase(),
+                    selected: selected,
+                    colors: colors,
+                    onTap: () => _toggleFormat(fmt, !selected),
+                  );
+                }).toList(),
               ),
             ],
           ),
-          onTap: () => _pickMaxFileSize(colors),
         ),
         _Row(
           colors: colors,
@@ -993,17 +1076,64 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _NumericField(
-                key: const Key('soulseek_search_timeout_field'),
-                initialValue: _searchTimeoutSec,
+              _WheelPicker(
+                key: const Key('soulseek_search_timeout_wheel'),
+                semanticLabel: 'Search timeout, seconds',
+                min: _minSearchTimeoutSec,
+                max: _maxSearchTimeoutSec,
+                value: _searchTimeoutSec,
                 colors: colors,
-                hint: '${SoulseekSettingsRepository.defaultSearchTimeoutSec}',
                 onChanged: _updateSearchTimeout,
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
               Text(
                 's',
-                style: TextStyle(color: colors.textTertiary, fontSize: 13),
+                style: TextStyle(color: colors.textSecondary, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    'Max file size',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _Badge(label: _fileSizeLabel(_maxFileSizeMB), colors: colors),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    _fileSizeLabel(_fileSizeSteps.first),
+                    style: TextStyle(color: colors.textTertiary, fontSize: 11),
+                  ),
+                  Text(
+                    _fileSizeLabel(_fileSizeSteps.last),
+                    style: TextStyle(color: colors.textTertiary, fontSize: 11),
+                  ),
+                ],
+              ),
+              _StepSlider(
+                key: const Key('soulseek_max_file_size_slider'),
+                semanticLabel: 'Max file size',
+                colors: colors,
+                count: _fileSizeSteps.length,
+                index: sizeIndex,
+                labelOf: (i) => _fileSizeLabel(_fileSizeSteps[i]),
+                onChanged: (i) => _updateMaxFileSize(_fileSizeSteps[i]),
               ),
             ],
           ),
@@ -1014,71 +1144,80 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   static String _fileSizeLabel(int mb) => mb <= 0 ? 'Unlimited' : '$mb MB';
 
-  Future<void> _pickMaxFileSize(AppColors colors) async {
-    final options = <int>{..._fileSizePresets, _maxFileSizeMB}.toList()..sort();
-    // 0 (без лимита) — в начало списка.
-    options
-      ..remove(0)
-      ..insert(0, 0);
-
-    final picked = await showDesktopModalSheet<int>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (sheetCtx) => _OptionSheet<int>(
-        colors: colors,
-        title: 'Max file size',
-        options: options,
-        selected: _maxFileSizeMB,
-        labelOf: _fileSizeLabel,
-      ),
-    );
-    if (picked == null || picked == _maxFileSizeMB || !mounted) return;
-    setState(() => _maxFileSizeMB = picked);
-    await _updateMaxFileSize('$picked');
+  /// Ступень слайдера для сохранённого значения: старые значения вне
+  /// ступеней (ввод вручную в прежних версиях) — ближайшая ступень.
+  static int _nearestFileSizeIndex(int mb) {
+    if (mb <= 0) return _fileSizeSteps.length - 1;
+    var best = 0;
+    for (var i = 0; i < _fileSizeSteps.length - 1; i++) {
+      if ((_fileSizeSteps[i] - mb).abs() < (_fileSizeSteps[best] - mb).abs()) {
+        best = i;
+      }
+    }
+    return best;
   }
 
   // ── DOWNLOADS ──
 
   Widget _buildDownloadsGroup(AppColors colors) {
-    final active = _activeTransferIds.length;
+    final active = _activeSpeeds.length;
+    final parallelIndex = _parallelSteps.indexOf(_maxParallelDownloads);
     return GroupedTiles(
       colors: colors,
       children: [
         _SwitchRow(
           colors: colors,
           title: 'Play while downloading',
-          subtitle: 'Start before the file is fully downloaded',
+          subtitle: 'Start before the download finishes',
           value: _streamingEnabled,
           onChanged: _toggleStreaming,
         ),
-        _Row(
-          colors: colors,
-          title: 'Parallel downloads',
-          trailing: _Segmented<int>(
-            colors: colors,
-            values: const [2, 3, 4, 5],
-            selected: _maxParallelDownloads,
-            labelOf: (v) => '$v',
-            onChanged: _updateMaxParallel,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Parallel downloads',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _StepLabels(
+                colors: colors,
+                labels: [for (final v in _parallelSteps) '$v'],
+                selected: parallelIndex,
+              ),
+              _StepSlider(
+                key: const Key('soulseek_parallel_slider'),
+                semanticLabel: 'Parallel downloads',
+                colors: colors,
+                count: _parallelSteps.length,
+                // Значение вне ступеней (правка БД вручную) — ближайшая.
+                index: parallelIndex >= 0
+                    ? parallelIndex
+                    : (_maxParallelDownloads < _parallelSteps.first
+                        ? 0
+                        : _parallelSteps.length - 1),
+                showTicks: true,
+                labelOf: (i) => '${_parallelSteps[i]}',
+                onChanged: (i) => _updateMaxParallel(_parallelSteps[i]),
+              ),
+            ],
           ),
         ),
         _Row(
           colors: colors,
-          icon: Icons.download_rounded,
           title: 'Downloads',
           trailing: _NavTrailing(
             colors: colors,
             value: active > 0 ? '$active active' : null,
           ),
-          onTap: () => showSoulseekTransferSheet(context),
-        ),
-        _Row(
-          colors: colors,
-          icon: Icons.storage_rounded,
-          title: 'Cached tracks',
-          trailing: _NavTrailing(colors: colors),
           onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const CachedTracksPage()),
+            MaterialPageRoute(builder: (_) => const DownloadsPage()),
           ),
         ),
       ],
@@ -1092,8 +1231,8 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         ? _sharingDirectory
         : 'Internal storage (default)';
 
-    // Одна группа: заголовок и раскрытые строки — общие скругления, как у
-    // остальных групп страницы.
+    // Одна группа: переключатель и раскрытые строки — общие скругления, как
+    // у остальных групп страницы.
     return AnimatedSize(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
@@ -1103,7 +1242,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         children: [
           _Row(
             colors: colors,
-            title: 'Advanced',
+            title: _advancedOpen ? 'Show less' : 'Show more',
             trailing: AnimatedRotation(
               turns: _advancedOpen ? 0.5 : 0,
               duration: const Duration(milliseconds: 200),
@@ -1118,14 +1257,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             _Row(
               colors: colors,
               title: 'Listener port',
-              trailing: _NumericField(
-                key: const Key('soulseek_listen_port_field'),
-                initialValue: _listenPort,
-                colors: colors,
-                hint: '24150',
-                width: 72,
-                onChanged: _updateListenPort,
-              ),
+              subtitle: '$_listenPort',
+              trailing: _NavTrailing(colors: colors),
+              onTap: _editListenPort,
             ),
             _Row(
               colors: colors,
@@ -1163,7 +1297,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             ),
             _Row(
               colors: colors,
-              title: 'Clear credentials',
+              title: 'Clear account data',
               titleColor: Colors.redAccent,
               onTap: _clearCredentials,
             ),
@@ -1174,19 +1308,67 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   }
 }
 
-/// Пресеты листа «Max file size» (МБ, 0 — без лимита).
-const List<int> _fileSizePresets = [0, 50, 100, 200, 500];
+/// Ступени слайдера «Max file size» (МБ, 0 — без лимита, всегда последняя).
+const List<int> _fileSizeSteps = [10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 0];
+
+/// Ступени слайдера «Parallel downloads».
+const List<int> _parallelSteps = [1, 2, 3, 4, 5];
+
+/// Диапазон колеса «Search timeout», секунды.
+const int _minSearchTimeoutSec = 3;
+const int _maxSearchTimeoutSec = 120;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SHARED WIDGETS
 // ═══════════════════════════════════════════════════════════════════════
+
+/// Заголовок группы настроек (sentence case, как в концепте).
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel({required this.title, required this.colors});
+
+  final String title;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 28, 22, 10),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: colors.textPrimary,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// Пояснение под группой.
+class _Caption extends StatelessWidget {
+  const _Caption({required this.text, required this.colors});
+
+  final String text;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 8, 22, 0),
+      child: Text(
+        text,
+        style: TextStyle(color: colors.textTertiary, fontSize: 12),
+      ),
+    );
+  }
+}
 
 class _Row extends StatelessWidget {
   const _Row({
     required this.colors,
     required this.title,
     this.subtitle,
-    this.icon,
     this.trailing,
     this.onTap,
     this.titleColor,
@@ -1195,7 +1377,6 @@ class _Row extends StatelessWidget {
   final AppColors colors;
   final String title;
   final String? subtitle;
-  final IconData? icon;
   final Widget? trailing;
   final VoidCallback? onTap;
   final Color? titleColor;
@@ -1205,15 +1386,11 @@ class _Row extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 52),
+        constraints: const BoxConstraints(minHeight: 56),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           child: Row(
             children: [
-              if (icon != null) ...[
-                Icon(icon, color: colors.textSecondary, size: 20),
-                const SizedBox(width: 14),
-              ],
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1280,81 +1457,61 @@ class _SwitchRow extends StatelessWidget {
       trailing: Switch.adaptive(
         value: value,
         onChanged: onChanged,
-        activeThumbColor: colors.accent,
-        activeTrackColor: colors.accent.withValues(alpha: 0.3),
+        activeThumbColor: colors.textPrimary,
+        activeTrackColor: colors.accent,
         inactiveThumbColor: colors.textSecondary,
         inactiveTrackColor: colors.background,
-      ),
-    );
-  }
-}
-
-/// Строка формы: метка фиксированной ширины + поле ввода.
-class _FieldRow extends StatelessWidget {
-  const _FieldRow({
-    required this.colors,
-    required this.label,
-    required this.child,
-    this.trailing,
-  });
-
-  final AppColors colors;
-  final String label;
-  final Widget child;
-  final Widget? trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 52),
-      child: Padding(
-        padding: EdgeInsets.only(left: 16, right: trailing == null ? 16 : 4),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 88,
-              child: Text(
-                label,
-                style: TextStyle(color: colors.textTertiary, fontSize: 13),
-              ),
-            ),
-            Expanded(child: child),
-            ?trailing,
-          ],
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.transparent
+              : colors.outline,
         ),
       ),
     );
   }
 }
 
+/// Поле аккаунта во всю плитку: подсказка вместо метки (как в концепте).
 class _InlineTextField extends StatelessWidget {
   const _InlineTextField({
     required this.controller,
     required this.colors,
     required this.hint,
     this.obscure = false,
+    this.trailing,
   });
 
   final TextEditingController controller;
   final AppColors colors;
   final String hint;
   final bool obscure;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      obscureText: obscure,
-      autocorrect: false,
-      enableSuggestions: !obscure,
-      style: TextStyle(color: colors.textPrimary, fontSize: 15),
-      cursorColor: colors.textPrimary,
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
-        border: InputBorder.none,
-        isDense: true,
-        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+    return Padding(
+      padding: EdgeInsets.only(left: 16, right: trailing == null ? 16 : 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              obscureText: obscure,
+              autocorrect: false,
+              enableSuggestions: !obscure,
+              style: TextStyle(color: colors.textPrimary, fontSize: 15),
+              cursorColor: colors.textPrimary,
+              decoration: InputDecoration(
+                hintText: hint,
+                hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 19),
+              ),
+            ),
+          ),
+          ?trailing,
+        ],
       ),
     );
   }
@@ -1383,197 +1540,507 @@ class _NavTrailing extends StatelessWidget {
           ),
           const SizedBox(width: 4),
         ],
-        Icon(Icons.chevron_right_rounded, color: colors.textTertiary, size: 20),
+        Icon(Icons.chevron_right_rounded, color: colors.textTertiary, size: 22),
       ],
     );
   }
 }
 
-class _Segmented<T> extends StatelessWidget {
-  const _Segmented({
-    required this.colors,
-    required this.values,
-    required this.selected,
-    required this.labelOf,
-    required this.onChanged,
-  });
-
-  final AppColors colors;
-  final List<T> values;
-  final T selected;
-  final String Function(T) labelOf;
-  final ValueChanged<T> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final v in values)
-            _SegmentOption(
-              label: labelOf(v),
-              selected: v == selected,
-              colors: colors,
-              onTap: () => onChanged(v),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SegmentOption extends StatelessWidget {
-  const _SegmentOption({
-    required this.label,
-    required this.selected,
-    required this.colors,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final AppColors colors;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected ? colors.elevatedVariant : Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          constraints: const BoxConstraints(minWidth: 34, minHeight: 30),
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? colors.textPrimary : colors.textTertiary,
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PillButton extends StatelessWidget {
-  const _PillButton({
+/// Крупная кнопка во всю ширину: акцентная заливка ([filled]) для главного
+/// действия, иначе нейтральная. [onTap] == null — неактивна.
+class _BigButton extends StatelessWidget {
+  const _BigButton({
     required this.label,
     required this.colors,
     required this.onTap,
+    this.filled = false,
+    this.outlined = false,
   });
 
   final String label;
   final AppColors colors;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final bool filled;
+  final bool outlined;
 
   @override
   Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    final background = filled ? colors.accent : colors.elevatedVariant;
     return Material(
-      color: colors.elevatedVariant,
-      shape: StadiumBorder(side: BorderSide(color: colors.outline)),
+      color: enabled ? background : background.withValues(alpha: 0.35),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: outlined && !filled
+            ? BorderSide(color: colors.outline)
+            : BorderSide.none,
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Лист выбора одного значения из списка (галочка у текущего).
-class _OptionSheet<T> extends StatelessWidget {
-  const _OptionSheet({
-    required this.colors,
-    required this.title,
-    required this.options,
-    required this.selected,
-    required this.labelOf,
-  });
-
-  final AppColors colors;
-  final String title;
-  final List<T> options;
-  final T selected;
-  final String Function(T) labelOf;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.background,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: EdgeInsets.only(
-        bottom: 16 + MediaQuery.of(context).padding.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(
-            child: Container(
-              margin: const EdgeInsets.only(top: 10),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: colors.textTertiary,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(22, 18, 22, 12),
+        child: SizedBox(
+          height: 56,
+          child: Center(
             child: Text(
-              title,
+              label,
               style: TextStyle(
-                color: colors.textPrimary,
-                fontSize: 20,
+                color: enabled ? colors.textPrimary : colors.textTertiary,
+                fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
             ),
           ),
-          GroupedTiles(
-            colors: colors,
-            children: [
-              for (final o in options)
-                _Row(
-                  colors: colors,
-                  title: labelOf(o),
-                  trailing: Icon(
-                    Icons.check_rounded,
-                    size: 20,
-                    color: o == selected
-                        ? colors.textPrimary
-                        : Colors.transparent,
+        ),
+      ),
+    );
+  }
+}
+
+/// Плашка текущего значения рядом с заголовком.
+class _Badge extends StatelessWidget {
+  const _Badge({required this.label, required this.colors});
+
+  final String label;
+  final AppColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: colors.accent,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: colors.textPrimary,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+}
+
+/// Размеры дорожки [_StepSlider]; от них же выравниваются [_StepLabels].
+const double _sliderTrackHeight = 18;
+const double _sliderThumbSize = 14;
+
+/// Слайдер с дискретными ступенями: толстая скруглённая дорожка, белый
+/// бегунок внутри неё, опционально точки ступеней. Тап или перетаскивание
+/// выбирает ближайшую ступень.
+class _StepSlider extends StatelessWidget {
+  const _StepSlider({
+    super.key,
+    required this.colors,
+    required this.count,
+    required this.index,
+    required this.onChanged,
+    required this.labelOf,
+    required this.semanticLabel,
+    this.showTicks = false,
+  });
+
+  final AppColors colors;
+  final String semanticLabel;
+  final int count;
+  final int index;
+  final ValueChanged<int> onChanged;
+
+  /// Подпись ступени для экранного диктора.
+  final String Function(int index) labelOf;
+  final bool showTicks;
+
+  @override
+  Widget build(BuildContext context) {
+    const h = _sliderTrackHeight;
+    const thumb = _sliderThumbSize;
+    final canIncrease = index < count - 1;
+    final canDecrease = index > 0;
+    return Semantics(
+      container: true,
+      slider: true,
+      label: semanticLabel,
+      value: labelOf(index),
+      increasedValue: canIncrease ? labelOf(index + 1) : null,
+      decreasedValue: canDecrease ? labelOf(index - 1) : null,
+      onIncrease: canIncrease ? () => onChanged(index + 1) : null,
+      onDecrease: canDecrease ? () => onChanged(index - 1) : null,
+      child: _KeyStepper(
+        colors: colors,
+        onStep: (delta) {
+          final i = (index + delta).clamp(0, count - 1);
+          if (i != index) onChanged(i);
+        },
+        child: LayoutBuilder(
+        builder: (context, c) {
+          final w = c.maxWidth;
+          double xOf(int i) => h / 2 + (w - h) * (count < 2 ? 0 : i / (count - 1));
+          void select(double dx) {
+            final i = ((dx - h / 2) / (w - h) * (count - 1))
+                .round()
+                .clamp(0, count - 1);
+            if (i != index) onChanged(i);
+          }
+
+          const duration = Duration(milliseconds: 160);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) => select(d.localPosition.dx),
+            onHorizontalDragStart: (d) => select(d.localPosition.dx),
+            onHorizontalDragUpdate: (d) => select(d.localPosition.dx),
+            // Высота с запасом под палец (48); дорожка по центру.
+            child: SizedBox(
+              height: 48,
+              child: Center(
+                child: SizedBox(
+                  height: h,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: colors.background,
+                            borderRadius: BorderRadius.circular(h / 2),
+                          ),
+                        ),
+                      ),
+                      AnimatedPositioned(
+                        duration: duration,
+                        curve: Curves.easeOutCubic,
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: xOf(index) + h / 2,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: colors.accent,
+                            borderRadius: BorderRadius.circular(h / 2),
+                          ),
+                        ),
+                      ),
+                      if (showTicks)
+                        for (var i = 0; i < count; i++)
+                          if (i != index)
+                            Positioned(
+                              left: xOf(i) - 3,
+                              top: h / 2 - 3,
+                              child: Container(
+                                width: 6,
+                                height: 6,
+                                decoration: BoxDecoration(
+                                  color: i < index
+                                      ? colors.background
+                                      : colors.textTertiary,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                            ),
+                      AnimatedPositioned(
+                        duration: duration,
+                        curve: Curves.easeOutCubic,
+                        left: xOf(index) - thumb / 2,
+                        top: (h - thumb) / 2,
+                        child: Container(
+                          width: thumb,
+                          height: thumb,
+                          decoration: BoxDecoration(
+                            color: colors.textPrimary,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  onTap: () => Navigator.of(context).pop(o),
                 ),
-            ],
+              ),
+            ),
+          );
+        },
+        ),
+      ),
+    );
+  }
+}
+
+/// Клавиатура для слайдера и колеса (Windows): стрелки и +/- меняют
+/// значение на шаг; Tab доводит фокус, контур показывает, что он здесь.
+class _KeyStepper extends StatefulWidget {
+  const _KeyStepper({
+    required this.colors,
+    required this.onStep,
+    required this.child,
+  });
+
+  final AppColors colors;
+  final ValueChanged<int> onStep;
+  final Widget child;
+
+  @override
+  State<_KeyStepper> createState() => _KeyStepperState();
+}
+
+class _KeyStepperState extends State<_KeyStepper> {
+  bool _focused = false;
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.add ||
+        key == LogicalKeyboardKey.numpadAdd) {
+      widget.onStep(1);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.minus ||
+        key == LogicalKeyboardKey.numpadSubtract) {
+      widget.onStep(-1);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      onKeyEvent: _onKey,
+      onFocusChange: (f) => setState(() => _focused = f),
+      child: DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: _focused ? widget.colors.elevatedHi : Colors.transparent,
           ),
+        ),
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+/// Подписи над ступенями [_StepSlider]: центр каждой — над её точкой,
+/// выбранная крупнее.
+class _StepLabels extends StatelessWidget {
+  const _StepLabels({
+    required this.colors,
+    required this.labels,
+    required this.selected,
+  });
+
+  final AppColors colors;
+  final List<String> labels;
+  final int selected;
+
+  @override
+  Widget build(BuildContext context) {
+    // Ячейки шириной в дорожку + spaceBetween дают те же центры, что и
+    // xOf() слайдера: h/2 + i·(w − h)/(n − 1).
+    // AnimatedDefaultTextStyle заменяет стиль целиком — берём базовый
+    // (шрифт темы) и меняем только нужное.
+    final base = DefaultTextStyle.of(context).style;
+    return SizedBox(
+      height: 22,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (final (i, label) in labels.indexed)
+            SizedBox(
+              width: _sliderTrackHeight,
+              child: OverflowBox(
+                maxWidth: 40,
+                alignment: Alignment.bottomCenter,
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 160),
+                  style: base.copyWith(
+                    color: i == selected
+                        ? colors.textPrimary
+                        : colors.textTertiary,
+                    fontSize: i == selected ? 17 : 12,
+                    fontWeight: i == selected ? FontWeight.w600 : FontWeight.w500,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                  child: Text(label, textAlign: TextAlign.center),
+                ),
+              ),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+/// Горизонтальное колесо выбора числа: текущее значение крупно, соседние —
+/// мелко и приглушённо. Листается свайпом или колесом мыши, тап по соседу —
+/// шаг на одно значение. [onChanged] — с debounce, отложенная правка
+/// коммитится и при закрытии страницы.
+class _WheelPicker extends StatefulWidget {
+  const _WheelPicker({
+    super.key,
+    required this.min,
+    required this.max,
+    required this.value,
+    required this.colors,
+    required this.onChanged,
+    required this.semanticLabel,
+  });
+
+  final int min;
+  final int max;
+  final int value;
+  final AppColors colors;
+  final ValueChanged<int> onChanged;
+  final String semanticLabel;
+
+  @override
+  State<_WheelPicker> createState() => _WheelPickerState();
+}
+
+class _WheelPickerState extends State<_WheelPicker> {
+  static const double _itemExtent = 30;
+  static const _debounceDelay = Duration(milliseconds: 500);
+
+  late final FixedExtentScrollController _controller;
+  late int _current;
+  Timer? _debounce;
+
+  int _clamp(int v) => v.clamp(widget.min, widget.max);
+
+  @override
+  void initState() {
+    super.initState();
+    _current = _clamp(widget.value);
+    _controller = FixedExtentScrollController(
+      initialItem: _current - widget.min,
+    );
+  }
+
+  /// Настройки из БД догружаются после первого кадра — колесо должно
+  /// переехать на сохранённое значение (регрессия «таймаут всегда 15»).
+  @override
+  void didUpdateWidget(covariant _WheelPicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value == oldWidget.value) return;
+    // Пока пользователь листает, внешнее значение не перетирает выбор.
+    if (_debounce != null) return;
+    final v = _clamp(widget.value);
+    if (v == _current) return;
+    _current = v;
+    if (_controller.hasClients) _controller.jumpToItem(v - widget.min);
+  }
+
+  @override
+  void dispose() {
+    // Страница закрылась раньше debounce — правка не должна потеряться.
+    if (_debounce != null) {
+      _debounce!.cancel();
+      _debounce = null;
+      widget.onChanged(_current);
+    }
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onSelected(int index) {
+    // jumpToItem из didUpdateWidget (значение из БД) тоже вызывает
+    // onSelectedItemChanged — это не правка пользователя, сохранять нечего.
+    final value = widget.min + index;
+    if (value == _current) return;
+    setState(() => _current = value);
+    _debounce?.cancel();
+    _debounce = Timer(_debounceDelay, () {
+      _debounce = null;
+      widget.onChanged(_current);
+    });
+  }
+
+  void _step(int delta) {
+    final target = _clamp(_current + delta);
+    if (target == _current) return;
+    _controller.animateToItem(
+      target - widget.min,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = widget.colors;
+    return Semantics(
+      container: true,
+      slider: true,
+      label: widget.semanticLabel,
+      value: '$_current',
+      increasedValue: _current < widget.max ? '${_current + 1}' : null,
+      decreasedValue: _current > widget.min ? '${_current - 1}' : null,
+      onIncrease: _current < widget.max ? () => _step(1) : null,
+      onDecrease: _current > widget.min ? () => _step(-1) : null,
+      child: _KeyStepper(
+        colors: colors,
+        onStep: _step,
+        // Числа колеса диктору не нужны: значение уже в Semantics.value.
+        child: ExcludeSemantics(
+        child: GestureDetector(
+        onTapUp: (d) {
+          if (d.localPosition.dx < _itemExtent) {
+            _step(-1);
+          } else if (d.localPosition.dx > _itemExtent * 2) {
+            _step(1);
+          }
+        },
+        child: SizedBox(
+          width: _itemExtent * 3,
+          height: 48,
+          // Вертикальное колесо, повёрнутое на 90° против часовой: значения
+          // растут слева направо, колесо мыши листает как обычно.
+          child: RotatedBox(
+            quarterTurns: 3,
+            child: ListWheelScrollView.useDelegate(
+              controller: _controller,
+              itemExtent: _itemExtent,
+              diameterRatio: 100,
+              physics: const FixedExtentScrollPhysics(),
+              onSelectedItemChanged: _onSelected,
+              childDelegate: ListWheelChildBuilderDelegate(
+                childCount: widget.max - widget.min + 1,
+                builder: (context, i) {
+                  final selected = widget.min + i == _current;
+                  return RotatedBox(
+                    quarterTurns: 1,
+                    child: Center(
+                      child: Text(
+                        '${widget.min + i}',
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.visible,
+                        style: TextStyle(
+                          color: selected
+                              ? colors.textPrimary
+                              : colors.textTertiary,
+                          fontSize: selected ? 17 : 12,
+                          fontWeight:
+                              selected ? FontWeight.w600 : FontWeight.w500,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+      ),
       ),
     );
   }
@@ -1603,143 +2070,6 @@ class _CircleButton extends StatelessWidget {
           height: 60,
           child: Icon(icon, color: colors.textPrimary, size: 28),
         ),
-      ),
-    );
-  }
-}
-
-/// Компактное числовое поле в строке (таймаут, порт).
-class _NumericField extends StatefulWidget {
-  const _NumericField({
-    super.key,
-    required this.initialValue,
-    required this.colors,
-    required this.hint,
-    required this.onChanged,
-    this.width = 56,
-  });
-
-  final int initialValue;
-  final AppColors colors;
-  final String hint;
-  final double width;
-
-  /// Вызывается, когда значение поля считается подтверждённым: по Enter
-  /// (onSubmitted), по потере фокуса или по debounce ~500 мс после
-  /// последнего изменения (Фаза A: сохранение не только onSubmitted).
-  final ValueChanged<String> onChanged;
-
-  @override
-  State<_NumericField> createState() => _NumericFieldState();
-}
-
-class _NumericFieldState extends State<_NumericField> {
-  late final TextEditingController _controller;
-  final FocusNode _focusNode = FocusNode();
-
-  /// Debounce-таймер: сохраняем не чаще, чем раз в 500 мс после
-  /// последнего нажатия клавиши.
-  Timer? _debounce;
-  static const _debounceDelay = Duration(milliseconds: 500);
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: widget.initialValue.toString());
-    _focusNode.addListener(_onFocusChanged);
-  }
-
-  /// Баг «таймаут всегда 15»: начальное значение поля ставится в
-  /// initState из дефолта (15), а настройки из БД догружаются
-  /// асинхронно уже после первого кадра (setState родителя). Без этого
-  /// хука контроллер навсегда оставался со значением первого кадра —
-  /// сохранённое в БД значение никогда не показывалось в поле.
-  @override
-  void didUpdateWidget(covariant _NumericField oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.initialValue == oldWidget.initialValue) return;
-    // Не перетираем ввод, пока пользователь редактирует поле.
-    if (_focusNode.hasFocus) return;
-    // Контроллер уже отражает новое значение — не трогаем (иначе
-    // сбросится выделение/курсор).
-    if (int.tryParse(_controller.text) == widget.initialValue) return;
-    _controller.text = widget.initialValue.toString();
-  }
-
-  @override
-  void dispose() {
-    // Баг «debounce теряется при закрытии»: если страница закрылась
-    // раньше 500-мс таймера, правка раньше просто отменялась. Коммитим
-    // незасейвленное значение ДО отмены таймера — колбэк родителя
-    // (напр. _updateSearchTimeout) не зовёт setState, поэтому вызов из
-    // dispose безопасен (дети демонтируются раньше родителя).
-    if (_debounce != null) {
-      _debounce!.cancel();
-      _debounce = null;
-      widget.onChanged(_controller.text);
-    }
-    _focusNode.dispose();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onFocusChanged() {
-    // Focus lost → немедленно коммитим незасейвленное значение
-    // (отменяя отложенный debounce-запуск).
-    if (!_focusNode.hasFocus) {
-      _commitNow();
-    }
-  }
-
-  /// Немедленно вызывает [widget.onChanged], отменяя отложенный запуск.
-  void _commitNow() {
-    _debounce?.cancel();
-    _debounce = null;
-    widget.onChanged(_controller.text);
-  }
-
-  void _onTextChanged() {
-    _debounce?.cancel();
-    _debounce = Timer(_debounceDelay, _commitNow);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = widget.colors;
-    final border = OutlineInputBorder(
-      borderRadius: BorderRadius.circular(10),
-      borderSide: BorderSide(color: colors.outline, width: 1),
-    );
-    return SizedBox(
-      width: widget.width,
-      child: TextField(
-        controller: _controller,
-        focusNode: _focusNode,
-        keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        textAlign: TextAlign.center,
-        cursorColor: colors.textPrimary,
-        style: TextStyle(
-          color: colors.textPrimary,
-          fontSize: 14,
-          fontFeatures: const [FontFeature.tabularFigures()],
-        ),
-        decoration: InputDecoration(
-          hintText: widget.hint,
-          hintStyle: TextStyle(color: colors.textTertiary, fontSize: 14),
-          filled: true,
-          fillColor: colors.background,
-          isDense: true,
-          border: border,
-          enabledBorder: border,
-          focusedBorder: border.copyWith(
-            borderSide: BorderSide(color: colors.elevatedHi, width: 1),
-          ),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-        ),
-        onChanged: (_) => _onTextChanged(),
-        onSubmitted: (_) => _commitNow(),
       ),
     );
   }
@@ -1814,8 +2144,8 @@ class _ConnectionStatusDot extends StatelessWidget {
       return _PulsingDot(color: color);
     }
     return Container(
-      width: 10,
-      height: 10,
+      width: 8,
+      height: 8,
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
@@ -1859,8 +2189,8 @@ class _PulsingDotState extends State<_PulsingDot>
         return Opacity(
           opacity: 0.4 + (_controller.value * 0.6),
           child: Container(
-            width: 10,
-            height: 10,
+            width: 8,
+            height: 8,
             decoration: BoxDecoration(
               color: widget.color,
               shape: BoxShape.circle,
