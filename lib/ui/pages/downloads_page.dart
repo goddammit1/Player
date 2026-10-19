@@ -263,7 +263,9 @@ class _DownloadsPageState extends ConsumerState<DownloadsPage> {
       a.message == b.message &&
       a.title == b.title &&
       a.artist == b.artist &&
-      a.remoteFilename == b.remoteFilename;
+      a.remoteFilename == b.remoteFilename &&
+      a.placeInQueue == b.placeInQueue &&
+      a.queueStatus == b.queueStatus;
 
   void _scheduleCacheRefresh() {
     for (final t in _cacheRefreshTimers) {

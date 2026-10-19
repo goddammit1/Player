@@ -213,7 +213,8 @@ namespace Soulseek.Wrapper
     {
         /// <summary>
         ///   Тип события: "clientStateChanged", "disconnected", "transferStateChanged",
-        ///   "transferProgress", "searchResponseReceived", "downloadComplete", "downloadFailed".
+        ///   "transferProgress", "transferQueueInfo", "searchResponseReceived",
+        ///   "downloadComplete", "downloadFailed".
         /// </summary>
         [JsonPropertyName("eventType")]
         public string EventType { get; set; }
@@ -258,6 +259,21 @@ namespace Soulseek.Wrapper
         /// <summary>searchProgress: новые результаты с прошлого события (дельта).</summary>
         [JsonPropertyName("results")]
         public List<SearchResultDto> Results { get; set; }
+
+        /// <summary>
+        ///   transferQueueInfo: место файла в очереди пира (1 — следующий);
+        ///   null — пир не ответил.
+        /// </summary>
+        [JsonPropertyName("placeInQueue")]
+        public int? PlaceInQueue { get; set; }
+
+        /// <summary>
+        ///   transferQueueInfo: итог опроса очереди пира — "ok", "offline"
+        ///   (сервер: пир не в сети), "noResponse" (пир молчит),
+        ///   "unreachable" (не удалось соединиться с пиром).
+        /// </summary>
+        [JsonPropertyName("queueStatus")]
+        public string QueueStatus { get; set; }
     }
 
     /// <summary>

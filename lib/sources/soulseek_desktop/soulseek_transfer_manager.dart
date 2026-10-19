@@ -525,10 +525,27 @@ class SoulseekTransferManager {
           } else if (mapped == SoulseekTransferState.downloading) {
             t.lease?.tryReacquire();
           }
+          // Сведения об очереди относятся к одному заходу в неё.
+          if (mapped != t.state) {
+            t.placeInQueue = null;
+            t.queueStatus = null;
+          }
           t.state = mapped;
           t.bytesReceived = _int(e['bytesReceived'], t.bytesReceived);
           _emit(t);
         }
+
+      case 'transferQueueInfo':
+        // Опоздавший ответ: файл уже вышел из очереди пира.
+        if (t.state != SoulseekTransferState.queuedRemotely ||
+            t.pauseRequested ||
+            t.cancelRequested) {
+          return;
+        }
+        final place = e['placeInQueue'];
+        t.placeInQueue = place is num ? place.toInt() : null;
+        t.queueStatus = SoulseekQueueStatus.tryParse(e['queueStatus']);
+        _emit(t);
 
       case 'downloadComplete':
         await _publish(t, e);
@@ -737,6 +754,11 @@ class _Transfer {
   int retryCount = 0;
   DateTime lastCheckpointAt = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// Очередь у пира ([SoulseekTransferState.queuedRemotely]): последний
+  /// опрос моста.
+  int? placeInQueue;
+  SoulseekQueueStatus? queueStatus;
+
   bool pauseRequested = false;
   bool cancelRequested = false;
 
@@ -811,6 +833,13 @@ class _Transfer {
         title: title,
         artist: artist,
         remoteFilename: remoteFilename,
+        // Только пока файл стоит в очереди пира.
+        placeInQueue: state == SoulseekTransferState.queuedRemotely
+            ? placeInQueue
+            : null,
+        queueStatus: state == SoulseekTransferState.queuedRemotely
+            ? queueStatus
+            : null,
       );
 }
 

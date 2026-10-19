@@ -50,7 +50,12 @@ data class SoulseekTransferEvent(
     /** Человекочитаемое имя для листа загрузок (файл в кэше назван хэшем). */
     val title: String? = null,
     val artist: String? = null,
-    val remoteFilename: String? = null
+    val remoteFilename: String? = null,
+    /** QUEUED_REMOTELY: место в очереди пира (null — неизвестно). */
+    val placeInQueue: Int? = null,
+    /** QUEUED_REMOTELY: итог последнего опроса очереди пира — "ok",
+     *  "offline", "noResponse", "unreachable" (null — опроса ещё не было). */
+    val queueStatus: String? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("eventType", SoulseekEvents.TYPE_TRANSFER)
@@ -66,6 +71,8 @@ data class SoulseekTransferEvent(
         put("title", title ?: JSONObject.NULL)
         put("artist", artist ?: JSONObject.NULL)
         put("remoteFilename", remoteFilename ?: JSONObject.NULL)
+        put("placeInQueue", placeInQueue ?: JSONObject.NULL)
+        put("queueStatus", queueStatus ?: JSONObject.NULL)
     }
 }
 
@@ -92,6 +99,7 @@ object SoulseekEvents {
     const val BRIDGE_DISCONNECTED = "disconnected"
     const val BRIDGE_TRANSFER_STATE_CHANGED = "transferStateChanged"
     const val BRIDGE_TRANSFER_PROGRESS = "transferProgress"
+    const val BRIDGE_TRANSFER_QUEUE_INFO = "transferQueueInfo"
     const val BRIDGE_DOWNLOAD_COMPLETE = "downloadComplete"
     const val BRIDGE_DOWNLOAD_FAILED = "downloadFailed"
     const val BRIDGE_SEARCH_PROGRESS = "searchProgress"

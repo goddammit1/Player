@@ -70,6 +70,14 @@ namespace Soulseek.Wrapper
         // Период проверки дедлайна / окна тишины в SearchAsync.
         private const int SearchWatchdogTickMs = 200;
 
+        // Опрос места в очереди пира, пока загрузка стоит в Queued|Remotely:
+        // первый — вскоре после постановки, затем раз в минуту. Ответ ждём
+        // дольше таймаута сообщений клиента (30 с), чтобы молчание пира
+        // пришло как его TimeoutException.
+        private const int QueueFirstCheckDelayMs = 5_000;
+        private const int QueueCheckIntervalMs = 60_000;
+        private const int QueueCheckTimeoutMs = 45_000;
+
         private static readonly JsonSerializerOptions JsonOpts = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -103,6 +111,9 @@ namespace Soulseek.Wrapper
 
         // (username, filename) → downloadId для маппинга глобальных transfer-событий.
         private readonly ConcurrentDictionary<string, string> _transferKeyToDownloadId = new();
+
+        // downloadId → опрос места в очереди пира (пока Queued|Remotely).
+        private readonly ConcurrentDictionary<string, QueueMonitor> _queueMonitors = new();
 
         /// <param name="emit">Получатель событий (JSON SoulseekEventDto); вызывается из любых потоков.</param>
         /// <param name="log">Диагностический лог.</param>
@@ -661,7 +672,7 @@ namespace Soulseek.Wrapper
 
                 // TransferOptions: stateChanged + progressUpdated с throttle 250ms.
                 var transferOptions = new TransferOptions(
-                    stateChanged: args => OnTransferStateChanged(dto.DownloadId, args.Transfer, args.PreviousState),
+                    stateChanged: args => OnTransferStateChanged(dto.DownloadId, cts, args.Transfer, args.PreviousState),
                     progressUpdated: args => OnTransferProgress(dto.DownloadId, args.Transfer),
                     disposeOutputStreamOnCompletion: true,
                     seekOutputStreamAutomatically: true);
@@ -740,6 +751,7 @@ namespace Soulseek.Wrapper
                 // возможный старый final, чтобы кэш не выдал повреждённый файл.
                 // Осмысленная ошибка уходит в downloadFailed (не retryable —
                 // повторная передача от того же пира даст тот же байт-поток).
+                _log($"transfer {dto.DownloadId} invalid file peer={dto.PeerUsername}: {vex.ErrorCode}: {vex.Message}");
                 TryDeleteFile(partPath);
                 if (_host.PublishOnComplete)
                 {
@@ -759,6 +771,7 @@ namespace Soulseek.Wrapper
             }
             catch (Exception ex)
             {
+                _log($"transfer {dto.DownloadId} failed peer={dto.PeerUsername}: {ex.GetType().Name}: {ex.Message}");
                 EmitEvent(new SoulseekEventDto
                 {
                     EventType = "downloadFailed",
@@ -963,14 +976,33 @@ namespace Soulseek.Wrapper
                 });
             };
 
+            // Отказ и сбой со стороны пира — для диагностики «почему не качается»
+            // (сама загрузка завершится исключением в DownloadToFileCoreAsync).
+            client.DownloadDenied += (sender, e) =>
+                _log($"peer {e.Username} denied {ShortName(e.Filename)}: {e.Message}");
+            client.DownloadFailed += (sender, e) =>
+                _log($"peer {e.Username} reported failure for {ShortName(e.Filename)}");
+
             // Потоковые результаты поиска (searchProgress) шлёт SearchCoreAsync —
             // там известны requestId и фильтры конкретного запроса.
         }
 
-        private void OnTransferStateChanged(string downloadId, Transfer transfer, TransferStates previousState)
+        private void OnTransferStateChanged(string downloadId, CancellationTokenSource owner, Transfer transfer, TransferStates previousState)
         {
             var state = transfer.State;
             string eventType;
+
+            _log($"transfer {downloadId} {previousState} -> {state} peer={transfer.Username} bytes={transfer.BytesTransferred}");
+
+            // Очередь у пира: опрашиваем место, пока файл в ней стоит.
+            if (state == (TransferStates.Queued | TransferStates.Remotely))
+            {
+                StartQueueMonitor(downloadId, owner, transfer.Username, transfer.Filename);
+            }
+            else
+            {
+                StopQueueMonitor(downloadId, owner);
+            }
 
             // Completed всегда сопровождается Succeeded/Cancelled/TimedOut/Errored/Rejected/Aborted.
             if (state.HasFlag(TransferStates.Completed))
@@ -1027,6 +1059,196 @@ namespace Soulseek.Wrapper
                 TotalBytes = transfer.Size,
                 BytesPerSecond = (long)transfer.AverageSpeed,
             });
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  Очередь у пира
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Опрос очереди пира, принадлежащий попытке загрузки [Owner].</summary>
+        private sealed class QueueMonitor
+        {
+            public QueueMonitor(CancellationTokenSource owner, CancellationTokenSource cts)
+            {
+                Owner = owner;
+                Cts = cts;
+            }
+
+            public CancellationTokenSource Owner { get; }
+
+            public CancellationTokenSource Cts { get; }
+        }
+
+        /// <summary>
+        ///   Запускает опрос места в очереди пира для попытки [owner]. Пока
+        ///   файл стоит в Queued|Remotely, пир сам не сообщает ничего, кроме
+        ///   (иногда) места — без опроса не отличить движущуюся очередь от
+        ///   зависшей или от ушедшего из сети пира.
+        /// </summary>
+        private void StartQueueMonitor(string downloadId, CancellationTokenSource owner, string username, string filename)
+        {
+            CancellationTokenSource cts;
+            try
+            {
+                cts = CancellationTokenSource.CreateLinkedTokenSource(owner.Token);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            var monitor = new QueueMonitor(owner, cts);
+            QueueMonitor previous = null;
+            var added = false;
+            _queueMonitors.AddOrUpdate(
+                downloadId,
+                _ =>
+                {
+                    added = true;
+                    return monitor;
+                },
+                (_, old) =>
+                {
+                    // Опрос этой попытки уже идёт — оставляем его.
+                    if (ReferenceEquals(old.Owner, owner))
+                    {
+                        added = false;
+                        return old;
+                    }
+
+                    previous = old;
+                    added = true;
+                    return monitor;
+                });
+
+            if (!added)
+            {
+                cts.Dispose();
+                return;
+            }
+
+            CancelMonitor(previous);
+            _ = Task.Run(() => MonitorQueueAsync(downloadId, monitor, username, filename));
+        }
+
+        /// <summary>Останавливает опрос очереди попытки [owner] (не чужой).</summary>
+        private void StopQueueMonitor(string downloadId, CancellationTokenSource owner)
+        {
+            if (_queueMonitors.TryGetValue(downloadId, out var monitor) &&
+                ReferenceEquals(monitor.Owner, owner) &&
+                _queueMonitors.TryRemove(new KeyValuePair<string, QueueMonitor>(downloadId, monitor)))
+            {
+                CancelMonitor(monitor);
+            }
+        }
+
+        private static void CancelMonitor(QueueMonitor monitor)
+        {
+            try
+            {
+                monitor?.Cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private async Task MonitorQueueAsync(string downloadId, QueueMonitor monitor, string username, string filename)
+        {
+            var ct = monitor.Cts.Token;
+            try
+            {
+                await Task.Delay(QueueFirstCheckDelayMs, ct).ConfigureAwait(false);
+                while (!ct.IsCancellationRequested)
+                {
+                    var client = _client;
+                    if (client == null)
+                    {
+                        return;
+                    }
+
+                    int? place = null;
+                    string status;
+                    string error = null;
+                    using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                    {
+                        timeout.CancelAfter(QueueCheckTimeoutMs);
+                        try
+                        {
+                            place = await client.GetDownloadPlaceInQueueAsync(username, filename, timeout.Token).ConfigureAwait(false);
+                            status = "ok";
+                        }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                        {
+                            return;
+                        }
+                        catch (TransferNotFoundException)
+                        {
+                            // Загрузка уже не в очереди (началась или закончилась).
+                            return;
+                        }
+                        catch (UserOfflineException ex)
+                        {
+                            status = "offline";
+                            error = ex.Message;
+                        }
+                        catch (Exception ex) when (ex is TimeoutException || ex is OperationCanceledException)
+                        {
+                            status = "noResponse";
+                            error = ex.Message;
+                        }
+                        catch (Exception ex)
+                        {
+                            status = "unreachable";
+                            error = ex.InnerException?.Message ?? ex.Message;
+                        }
+                    }
+
+                    if (ct.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    _log(place.HasValue
+                        ? $"queue {downloadId} peer={username} place={place.Value}"
+                        : $"queue {downloadId} peer={username} {status}: {error}");
+                    EmitEvent(new SoulseekEventDto
+                    {
+                        EventType = "transferQueueInfo",
+                        DownloadId = downloadId,
+                        State = (TransferStates.Queued | TransferStates.Remotely).ToString(),
+                        PlaceInQueue = place,
+                        QueueStatus = status,
+                        ExceptionMessage = error,
+                    });
+
+                    await Task.Delay(QueueCheckIntervalMs, ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _log($"queue {downloadId} monitor stopped: {ex.Message}");
+            }
+            finally
+            {
+                _queueMonitors.TryRemove(new KeyValuePair<string, QueueMonitor>(downloadId, monitor));
+                monitor.Cts.Dispose();
+            }
+        }
+
+        /// <summary>Имя файла из пути пира (разделитель — обычно '\').</summary>
+        private static string ShortName(string remoteFilename)
+        {
+            if (string.IsNullOrEmpty(remoteFilename))
+            {
+                return remoteFilename;
+            }
+
+            var i = remoteFilename.LastIndexOfAny(new[] { '\\', '/' });
+            return i >= 0 ? remoteFilename.Substring(i + 1) : remoteFilename;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1677,6 +1899,7 @@ namespace Soulseek.Wrapper
         {
             // Только свой CTS: запись мог уже занять новый запуск того же id.
             _downloadCts.TryRemove(new KeyValuePair<string, CancellationTokenSource>(downloadId, cts));
+            StopQueueMonitor(downloadId, cts);
             cts.Dispose();
 
             // Тот же пир/файл мог уже уйти в новую попытку (другой downloadId) —

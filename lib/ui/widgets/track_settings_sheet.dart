@@ -21,6 +21,7 @@ import '../pages/downloads_page.dart';
 import 'track_details_sheet.dart';
 import 'sleep_timer_sheet.dart'; // <--- НОВЫЙ ИМПОРТ
 import 'soulseek_folder_sheet.dart';
+import 'soulseek_transfer_tile.dart';
 
 // =============================================================================
 // PUBLIC API
@@ -702,6 +703,9 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
   // Soulseek: скорость и состояние трансфера для подписи под прогрессом.
   int _bytesPerSecond = 0;
   SoulseekTransferState? _transferState;
+
+  /// Последнее событие загрузки — место в очереди пира для подписи.
+  SoulseekTransferInfo? _transfer;
   StreamSubscription<SoulseekTransferEvent>? _transferSub;
   StreamSubscription<String>? _cacheChangesSub;
 
@@ -737,6 +741,7 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
         _progress = status.progress;
         _bytesPerSecond = status.transfer?.bytesPerSecond ?? 0;
         _transferState = status.transfer?.state;
+        _transfer = status.transfer;
       }
     });
     if (joinStreaming) {
@@ -779,6 +784,7 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
               _progress = event.transfer.progress;
               _bytesPerSecond = event.bytesPerSecond;
               _transferState = event.state;
+              _transfer = event.transfer;
             });
         }
       },
@@ -792,6 +798,7 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
   void _resetTransferInfo() {
     _bytesPerSecond = 0;
     _transferState = null;
+    _transfer = null;
   }
 
   /// Подпись под прогрессом Soulseek-загрузки: скорость, пока данные идут,
@@ -800,7 +807,9 @@ class _TrackActionsGroupState extends ConsumerState<TrackActionsGroup> {
     if (_bytesPerSecond > 0) return formatSpeed(_bytesPerSecond);
     return switch (_transferState) {
       SoulseekTransferState.queued => 'Queued',
-      SoulseekTransferState.queuedRemotely => 'Queued at peer',
+      SoulseekTransferState.queuedRemotely => _transfer == null
+          ? 'Queued at peer'
+          : soulseekQueueLabel(_transfer!),
       SoulseekTransferState.connecting => 'Connecting to peer…',
       SoulseekTransferState.paused => 'Paused',
       _ => null,

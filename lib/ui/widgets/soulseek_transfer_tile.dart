@@ -179,6 +179,8 @@ class SoulseekTransferTile extends StatelessWidget {
         add('Failed', color: Colors.redAccent);
         final message = t.message;
         if (message != null && message.isNotEmpty) add(message);
+      case SoulseekTransferState.queuedRemotely:
+        add(soulseekQueueLabel(t));
       default:
         add(_stateLabel(t.state));
     }
@@ -300,6 +302,20 @@ class SoulseekTransferTile extends StatelessWidget {
         return 'Cancelled';
     }
   }
+}
+
+/// Что известно об очереди у пира ([SoulseekTransferState.queuedRemotely]):
+/// место файла или почему его не узнать.
+String soulseekQueueLabel(SoulseekTransferInfo t) {
+  final place = t.placeInQueue;
+  return switch (t.queueStatus) {
+    SoulseekQueueStatus.ok when place != null && place > 0 =>
+      'Queued at peer · #$place',
+    SoulseekQueueStatus.offline => 'Peer offline',
+    SoulseekQueueStatus.unreachable => 'Peer unreachable',
+    SoulseekQueueStatus.noResponse => 'Queued at peer · no reply',
+    _ => 'Queued at peer',
+  };
 }
 
 /// Название загрузки: title, иначе имя файла у пира без расширения.

@@ -113,6 +113,31 @@ enum SoulseekTransferState {
   }
 }
 
+/// Итог опроса очереди пира, пока загрузка в
+/// [SoulseekTransferState.queuedRemotely] (мост спрашивает раз в минуту).
+enum SoulseekQueueStatus {
+  /// Пир ответил местом в очереди.
+  ok,
+
+  /// Сервер: пир не в сети — файл не отдаст, пока не вернётся.
+  offline,
+
+  /// Пир на связи, но на запрос места не ответил (часть клиентов не
+  /// отвечает никогда).
+  noResponse,
+
+  /// Соединиться с пиром не удалось.
+  unreachable;
+
+  static SoulseekQueueStatus? tryParse(Object? raw) {
+    if (raw is! String) return null;
+    for (final s in values) {
+      if (s.name.toLowerCase() == raw.toLowerCase()) return s;
+    }
+    return null;
+  }
+}
+
 /// Состояние соединения с сервером Soulseek.
 /// Маппируется из строк Kotlin [ConnectionState] или C# [SoulseekClientStates].
 enum SoulseekConnectionState {
@@ -358,6 +383,12 @@ class SoulseekTransferInfo {
   final String? artist;
   final String? remoteFilename;
 
+  /// Очередь у пира ([SoulseekTransferState.queuedRemotely]): место файла
+  /// (1 — следующий) и итог последнего опроса; null — неизвестно / опроса
+  /// ещё не было.
+  final int? placeInQueue;
+  final SoulseekQueueStatus? queueStatus;
+
   const SoulseekTransferInfo({
     required this.downloadId,
     required this.state,
@@ -371,6 +402,8 @@ class SoulseekTransferInfo {
     this.title,
     this.artist,
     this.remoteFilename,
+    this.placeInQueue,
+    this.queueStatus,
   });
 
   /// Парсит Map (transfer-событие или getTransfer-результат).
@@ -388,6 +421,8 @@ class SoulseekTransferInfo {
       title: m['title'] as String?,
       artist: m['artist'] as String?,
       remoteFilename: m['remoteFilename'] as String?,
+      placeInQueue: _asIntOrNull(m['placeInQueue']),
+      queueStatus: SoulseekQueueStatus.tryParse(m['queueStatus']),
     );
   }
 
@@ -413,6 +448,8 @@ class SoulseekTransferInfo {
         'title': title,
         'artist': artist,
         'remoteFilename': remoteFilename,
+        'placeInQueue': placeInQueue,
+        'queueStatus': queueStatus?.name,
       };
 }
 

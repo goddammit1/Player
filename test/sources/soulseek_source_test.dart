@@ -2078,6 +2078,258 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  //  manual download: уход от застрявшей очереди пира
+  // ═══════════════════════════════════════════════════════════════════
+  group('manual download peer switch', () {
+    late DateTime now;
+
+    Track withAlternate({bool alternate = true}) {
+      final base = _makeTrack();
+      return Track(
+        id: base.id,
+        sourceId: base.sourceId,
+        title: base.title,
+        artist: base.artist,
+        duration: null,
+        artworkUrl: null,
+        extra: {
+          ...base.extra,
+          'hasFreeUploadSlot': false,
+          if (alternate)
+            'alternates': [
+              {
+                'peerUsername': 'peer2',
+                'remoteFilename': r'B\Artist - Title.flac',
+                'sizeBytes': 50000000,
+                'hasFreeUploadSlot': true,
+                'queueLength': 0,
+              },
+            ],
+        },
+      );
+    }
+
+    SoulseekTransferInfo queued(
+      String id, {
+      SoulseekQueueStatus? status,
+      int? place,
+      SoulseekTransferState state = SoulseekTransferState.queuedRemotely,
+      int bytes = 0,
+      int speed = 0,
+      String? errorCode,
+    }) =>
+        SoulseekTransferInfo(
+          downloadId: id,
+          state: state,
+          bytesReceived: bytes,
+          bytesPerSecond: speed,
+          totalBytes: 50000000,
+          queueStatus: status,
+          placeInQueue: place,
+          errorCode: errorCode,
+        );
+
+    Future<void> emit(SoulseekTransferInfo info) async {
+      channel.emitTransfer(info);
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 20));
+
+    setUp(() {
+      now = DateTime(2026, 10, 19, 12);
+      source.queueClock = () => now;
+      source.abandonedCancelDelay = Duration.zero;
+      channel.cacheEntry = null;
+    });
+
+    test('peer offline twice → download moves to the alternate, the old one '
+        'is cancelled', () async {
+      final track = withAlternate();
+      await source.startManualDownload(track);
+      expect(channel.startDownloadCalls.single['peerUsername'], 'peer1');
+
+      await emit(queued('dl_ck_test'));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.offline));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+
+      now = now.add(const Duration(minutes: 1));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.offline));
+      await settle();
+
+      expect(channel.startDownloadCalls, hasLength(2));
+      final next = channel.startDownloadCalls.last;
+      expect(next['peerUsername'], 'peer2');
+      expect(channel.cancelledDownloads, ['dl_ck_test']);
+      expect(source.activeDownloadIdFor(track), next['downloadId']);
+      // Плеер начнёт с запасного: основной пир отказал.
+      expect(source.sourcePeersFor(track).first, 'peer2');
+    });
+
+    test('transferEventsFor follows the switch and hides the old cancel',
+        () async {
+      final track = withAlternate();
+      final seen = <SoulseekTransferInfo>[];
+      final sub = source.transferEventsFor(track).listen((e) => seen.add(e.transfer));
+      await source.startManualDownload(track);
+
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: 30));
+      await settle();
+      final nextId = channel.startDownloadCalls.last['downloadId'] as String;
+      expect(nextId, isNot('dl_ck_test'));
+
+      await emit(
+          queued('dl_ck_test', state: SoulseekTransferState.cancelled));
+      await emit(queued(nextId,
+          state: SoulseekTransferState.downloading, bytes: 4096, speed: 100));
+      await settle();
+      await sub.cancel();
+
+      expect(seen.map((t) => (t.downloadId, t.state)), [
+        ('dl_ck_test', SoulseekTransferState.queuedRemotely),
+        (nextId, SoulseekTransferState.downloading),
+      ]);
+    });
+
+    test('place unchanged past stalledAfter → switch', () async {
+      await source.startManualDownload(withAlternate());
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: 4));
+      now = now.add(const Duration(minutes: 9));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: 4));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+
+      now = now.add(const Duration(minutes: 2));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: 4));
+      await settle();
+      expect(channel.startDownloadCalls.last['peerUsername'], 'peer2');
+    });
+
+    test('a moving queue is kept', () async {
+      await source.startManualDownload(withAlternate());
+      for (var place = 12; place >= 2; place -= 2) {
+        await emit(
+            queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: place));
+        now = now.add(const Duration(minutes: 3));
+      }
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+      expect(channel.cancelledDownloads, isEmpty);
+    });
+
+    test('time rules are re-checked on the next queue poll', () async {
+      await source.startManualDownload(withAlternate());
+      await emit(queued('dl_ck_test'));
+      await emit(queued('dl_ck_test', status: SoulseekQueueStatus.noResponse));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+
+      // Пир так и не ответил местом в очереди.
+      now = now.add(const Duration(minutes: 6));
+      await emit(queued('dl_ck_test', status: SoulseekQueueStatus.noResponse));
+      await settle();
+      expect(channel.startDownloadCalls.last['peerUsername'], 'peer2');
+    });
+
+    test('a failed download moves on without cancelling', () async {
+      await source.startManualDownload(withAlternate());
+      await emit(queued('dl_ck_test',
+          state: SoulseekTransferState.failed,
+          errorCode: 'TransferRejectedException'));
+      await settle();
+      expect(channel.startDownloadCalls.last['peerUsername'], 'peer2');
+      expect(channel.cancelledDownloads, isEmpty);
+    });
+
+    test('a failure that is not the peer\'s does not switch', () async {
+      await source.startManualDownload(withAlternate());
+      await emit(queued('dl_ck_test',
+          state: SoulseekTransferState.failed, errorCode: 'NOT_CONNECTED'));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+    });
+
+    test('data flowing → no switch even when the queue looked stalled',
+        () async {
+      await source.startManualDownload(withAlternate());
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: 1));
+      await emit(queued('dl_ck_test',
+          state: SoulseekTransferState.downloading, bytes: 8192, speed: 500));
+      now = now.add(const Duration(hours: 1));
+      await emit(queued('dl_ck_test',
+          state: SoulseekTransferState.downloading, bytes: 9000, speed: 500));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+    });
+
+    test('Android "downloading" before the peer answers is not a start',
+        () async {
+      await source.startManualDownload(withAlternate());
+      // Слот занят, мост ещё не спросил пира.
+      await emit(
+          queued('dl_ck_test', state: SoulseekTransferState.downloading));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.offline));
+      now = now.add(const Duration(minutes: 1));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.offline));
+      await settle();
+      expect(channel.startDownloadCalls.last['peerUsername'], 'peer2');
+    });
+
+    test('paused by the user → no switch', () async {
+      await source.startManualDownload(withAlternate());
+      await emit(queued('dl_ck_test'));
+      await emit(
+          queued('dl_ck_test', state: SoulseekTransferState.paused));
+      now = now.add(const Duration(hours: 1));
+      await emit(
+          queued('dl_ck_test', state: SoulseekTransferState.paused));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+    });
+
+    test('no other source → keeps waiting at the peer', () async {
+      await source.startManualDownload(withAlternate(alternate: false));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.offline));
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.offline));
+      await settle();
+      expect(channel.startDownloadCalls, hasLength(1));
+      expect(channel.cancelledDownloads, isEmpty);
+      expect(source.activeDownloadIdFor(withAlternate(alternate: false)),
+          'dl_ck_test');
+    });
+
+    test('Download again after a switch continues at the alternate',
+        () async {
+      final track = withAlternate();
+      await source.startManualDownload(track);
+      await emit(
+          queued('dl_ck_test', status: SoulseekQueueStatus.ok, place: 50));
+      await settle();
+      final nextId = channel.startDownloadCalls.last['downloadId'];
+
+      // Наблюдение закончилось (загрузка у запасного упала с ошибкой не пира).
+      await emit(queued(nextId as String,
+          state: SoulseekTransferState.failed, errorCode: 'NOT_CONNECTED'));
+      await settle();
+      await source.startManualDownload(track);
+      expect(channel.startDownloadCalls.last['peerUsername'], 'peer2');
+      expect(channel.startDownloadCalls, hasLength(3));
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   //  cache key index
   // ═══════════════════════════════════════════════════════════════════
   group('cache key index', () {

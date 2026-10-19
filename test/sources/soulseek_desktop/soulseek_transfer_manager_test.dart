@@ -415,6 +415,44 @@ void main() {
         reason: 'лимит 1 соблюдается после возврата слотов');
   });
 
+  test('место в очереди пира доходит до события и сбрасывается, когда пир '
+      'начал отдавать', () async {
+    await start('k1');
+    await settle();
+    void emit(Map<String, dynamic> e) =>
+        bridge.emit({'downloadId': bridge.lastBridgeId('k1'), ...e});
+
+    // Ответ, пока файл ещё не в очереди пира, — опоздавший, не применяется.
+    emit({'eventType': 'transferQueueInfo', 'placeInQueue': 9, 'queueStatus': 'ok'});
+    await settle();
+    expect(manager.getTransfer('dl_k1')!.placeInQueue, isNull);
+
+    emit({'eventType': 'transferStateChanged', 'state': 'Queued, Remotely'});
+    emit({'eventType': 'transferQueueInfo', 'placeInQueue': 3, 'queueStatus': 'ok'});
+    await settle();
+    var info = manager.getTransfer('dl_k1')!;
+    expect(info.placeInQueue, 3);
+    expect(info.queueStatus, SoulseekQueueStatus.ok);
+    expect(events.last.placeInQueue, 3);
+
+    emit({'eventType': 'transferQueueInfo', 'queueStatus': 'offline'});
+    await settle();
+    info = manager.getTransfer('dl_k1')!;
+    expect(info.placeInQueue, isNull);
+    expect(info.queueStatus, SoulseekQueueStatus.offline);
+
+    emit({'eventType': 'transferStateChanged', 'state': 'InProgress'});
+    await settle();
+    info = manager.getTransfer('dl_k1')!;
+    expect(info.state, SoulseekTransferState.downloading);
+    expect(info.queueStatus, isNull);
+
+    // Снова в очереди (retry) — прошлые сведения не всплывают.
+    emit({'eventType': 'transferStateChanged', 'state': 'Queued, Remotely'});
+    await settle();
+    expect(manager.getTransfer('dl_k1')!.queueStatus, isNull);
+  });
+
   test('restore: незавершённые — PAUSED при наличии .part, иначе FAILED',
       () async {
     store.transfers['dl_a'] = const SoulseekTransferRow(

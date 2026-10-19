@@ -86,6 +86,9 @@ class SoulseekTransferManager(
         @Volatile var bytesPerSecond: Long = 0L,
         @Volatile var localPath: String? = null,
         @Volatile var retryCount: Int = 0,
+        /** Очередь у пира (QUEUED_REMOTELY): последний опрос моста. */
+        @Volatile var placeInQueue: Int? = null,
+        @Volatile var queueStatus: String? = null,
         @Volatile var lastCheckpointAt: Long = 0L,
         @Volatile var lastNotificationAt: Long = 0L,
         /** Слот параллельных загрузок текущей попытки (null — вне попытки). */
@@ -645,6 +648,11 @@ class SoulseekTransferManager(
                 val ctx = transfers[downloadId] ?: return
                 val mapped = BridgeStateMapper.mapTransferState(obj.optString("state", null))
                 if (!mapped.isTerminal) {
+                    // Сведения об очереди относятся к одному заходу в неё.
+                    if (mapped != ctx.state) {
+                        ctx.placeInQueue = null
+                        ctx.queueStatus = null
+                    }
                     // Очередь у пира слот не держит; пир начал отдавать —
                     // слот снова наш, если свободен.
                     if (mapped == TransferState.QUEUED_REMOTELY) {
@@ -659,6 +667,15 @@ class SoulseekTransferManager(
                 }
                 // Терминальные не-Failed состояния прилетят отдельным
                 // downloadComplete/downloadFailed событием.
+            }
+
+            SoulseekEvents.BRIDGE_TRANSFER_QUEUE_INFO -> {
+                val ctx = transfers[downloadId] ?: return
+                // Опоздавший ответ: файл уже вышел из очереди пира.
+                if (ctx.state != TransferState.QUEUED_REMOTELY) return
+                ctx.placeInQueue = if (obj.isNull("placeInQueue")) null else obj.optInt("placeInQueue")
+                ctx.queueStatus = obj.optString("queueStatus", null).takeUnless { it.isNullOrEmpty() }
+                emitTransferEvent(ctx)
             }
 
             SoulseekEvents.BRIDGE_DOWNLOAD_COMPLETE -> {
@@ -890,7 +907,9 @@ class SoulseekTransferManager(
                 message = message,
                 title = title ?: ctx?.title,
                 artist = artist ?: ctx?.artist,
-                remoteFilename = remoteFilename ?: ctx?.remoteFilename
+                remoteFilename = remoteFilename ?: ctx?.remoteFilename,
+                placeInQueue = ctx?.queueInfoFor(state)?.first,
+                queueStatus = ctx?.queueInfoFor(state)?.second
             ).toJson().toString()
         )
     }
@@ -915,8 +934,16 @@ class SoulseekTransferManager(
         localPath = localPath,
         title = title,
         artist = artist,
-        remoteFilename = remoteFilename
+        remoteFilename = remoteFilename,
+        placeInQueue = queueInfoFor(state)?.first,
+        queueStatus = queueInfoFor(state)?.second
     )
+
+    /** Сведения об очереди пира — только пока трансфер в ней стоит. */
+    private fun TransferContext.queueInfoFor(eventState: TransferState): Pair<Int?, String?>? =
+        if (eventState == TransferState.QUEUED_REMOTELY && state == TransferState.QUEUED_REMOTELY) {
+            placeInQueue to queueStatus
+        } else null
 
     private fun notFound(downloadId: String) = SoulseekServiceException(
         "TRANSFER_NOT_FOUND",

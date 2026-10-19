@@ -78,11 +78,10 @@ abstract final class TrackActions {
   static String? soulseekCacheKey(Track track) =>
       soulseekSource(track)?.cacheKeyFor(track);
 
-  /// downloadId нативной загрузки Soulseek (null — трек не Soulseek).
-  static String? soulseekDownloadId(Track track) {
-    final key = soulseekCacheKey(track);
-    return key == null ? null : 'dl_$key';
-  }
+  /// downloadId нативной загрузки Soulseek (null — трек не Soulseek). После
+  /// перехода ручной загрузки к запасному пиру — его загрузка.
+  static String? soulseekDownloadId(Track track) =>
+      soulseekSource(track)?.activeDownloadIdFor(track);
 
   /// Soulseek-трек с известным пиром и каталогом — папку можно открыть.
   static bool soulseekFolderAvailable(Track track) {
@@ -98,11 +97,12 @@ abstract final class TrackActions {
   static Future<TrackCacheStatus> cacheStatus(Track track) async {
     try {
       final source = soulseekSource(track);
-      final cacheKey = soulseekCacheKey(track);
-      if (source != null && cacheKey != null) {
-        final entry = await source.getCacheEntry(cacheKey);
-        if (entry != null && entry.complete) return TrackCacheStatus.cached;
-        final info = await source.getTransfer('dl_$cacheKey');
+      final downloadId = soulseekDownloadId(track);
+      if (source != null && downloadId != null) {
+        if ((await source.cachedKeysFor(track)).isNotEmpty) {
+          return TrackCacheStatus.cached;
+        }
+        final info = await source.getTransfer(downloadId);
         // Пауза — тоже живая загрузка: её возобновляют, а не начинают
         // заново. Конец — только completed / cancelled / failed.
         if (info != null && !info.state.isTerminal) {
@@ -134,9 +134,8 @@ abstract final class TrackActions {
   /// Soulseek).
   static Stream<SoulseekTransferEvent> soulseekTransfers(Track track) {
     final source = soulseekSource(track);
-    final downloadId = soulseekDownloadId(track);
-    if (source == null || downloadId == null) return const Stream.empty();
-    return source.transferEvents.where((e) => e.downloadId == downloadId);
+    if (source == null) return const Stream.empty();
+    return source.transferEventsFor(track);
   }
 
   /// Скачивает трек для офлайна.
@@ -228,8 +227,11 @@ abstract final class TrackActions {
     final cacheKey = soulseekCacheKey(track);
     if (soulseek != null && cacheKey != null) {
       try {
-        await SoulseekPlatformChannel.instance.removeCache(cacheKey);
-        soulseek.forgetCacheKey(cacheKey);
+        // Копии у всех источников трека: файл мог прийти от запасного пира.
+        for (final key in {cacheKey, ...await soulseek.cachedKeysFor(track)}) {
+          await SoulseekPlatformChannel.instance.removeCache(key);
+          soulseek.forgetCacheKey(key);
+        }
       } on UnsupportedError {
         // Soulseek недоступен на платформе — native-кэша нет.
       }

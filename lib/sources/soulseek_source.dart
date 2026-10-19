@@ -36,6 +36,7 @@ import 'soulseek_artwork_query.dart';
 import 'offline_audio_source.dart' as offline;
 import 'soulseek_models.dart';
 import 'soulseek_platform_channel.dart';
+import 'soulseek_queue_watch.dart';
 import 'playback_source.dart';
 import 'track_source.dart';
 
@@ -319,6 +320,18 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// «уже в кэше» тайлом Download). null — файла нет.
   Future<SoulseekCacheEntry?> getCacheEntry(String cacheKey) =>
       _channel.getCacheEntry(cacheKey);
+
+  /// cacheKey готовых файлов трека у любого из его источников: файл могли
+  /// скачать у запасного пира (переход ручной загрузки, воспроизведение).
+  Future<List<String>> cachedKeysFor(Track track) async {
+    if (cacheKeyFor(track) == null) return const [];
+    final keys = <String>[];
+    for (final p in _sourcesFor(track)) {
+      final entry = await _channel.getCacheEntry(p.cacheKey);
+      if (entry != null && entry.complete) keys.add(p.cacheKey);
+    }
+    return keys;
+  }
 
   /// Информация о трансфере по [downloadId] (PLAYER-DL-01: снимок состояния
   /// загрузки при открытии sheet'а — покрывает «лист открыли во время
@@ -1054,6 +1067,202 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   }
 
   // ═══════════════════════════════════════════════════════════════════
+  //  Ручная загрузка: уход от застрявшей очереди пира
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Пороги ухода к другому пиру ([SoulseekQueueWatch]).
+  @visibleForTesting
+  SoulseekQueueLimits queueLimits = const SoulseekQueueLimits();
+
+  /// Часы наблюдения за очередью (подменяются в тестах).
+  @visibleForTesting
+  DateTime Function() queueClock = DateTime.now;
+
+  /// Ручные загрузки под наблюдением: downloadId → наблюдение.
+  final Map<String, _ManualWatch> _manualWatches = {};
+
+  /// cacheKey основного источника трека → downloadId его ручной загрузки,
+  /// перешедшей к запасному пиру.
+  final Map<String, String> _manualRedirects = {};
+
+  /// Одна подписка на transfer-события — для наблюдения и для
+  /// [transferEventsFor]; живёт, пока кому-то нужна. Своего таймера у
+  /// наблюдения нет: пока файл в очереди пира, мост раз в минуту присылает
+  /// ответ об очереди — на нём пересматриваются и правила по времени.
+  StreamSubscription<SoulseekTransferEvent>? _eventSub;
+  final Set<_TrackListener> _trackListeners = {};
+
+  /// downloadId загрузки трека: основной источник или запасной, к которому
+  /// перешла ручная загрузка. null — данных пира нет.
+  String? activeDownloadIdFor(Track track) {
+    final key = cacheKeyFor(track);
+    if (key == null) return null;
+    return _manualRedirects[key] ?? 'dl_$key';
+  }
+
+  /// События загрузки трека, в том числе после перехода к другому пиру
+  /// ([activeDownloadIdFor]); отмена брошенной загрузки сюда не попадает.
+  Stream<SoulseekTransferEvent> transferEventsFor(Track track) {
+    if (cacheKeyFor(track) == null) return const Stream.empty();
+    final listener = _TrackListener(track, StreamController());
+    listener.controller
+      ..onListen = () {
+        _trackListeners.add(listener);
+        _syncEventSub();
+      }
+      ..onCancel = () {
+        _trackListeners.remove(listener);
+        _syncEventSub();
+      };
+    return listener.controller.stream;
+  }
+
+  void _syncEventSub() {
+    final needed = _manualWatches.isNotEmpty || _trackListeners.isNotEmpty;
+    if (needed && _eventSub == null) {
+      _eventSub = _channel.transferEvents.listen(
+        _onTransferEvent,
+        onError: (Object e) {
+          for (final l in List.of(_trackListeners)) {
+            if (!l.controller.isClosed) l.controller.addError(e);
+          }
+        },
+      );
+    } else if (!needed && _eventSub != null) {
+      unawaited(_eventSub!.cancel());
+      _eventSub = null;
+    }
+  }
+
+  void _onTransferEvent(SoulseekTransferEvent e) {
+    final listeners = List.of(_trackListeners);
+    // Загрузка трека до события: событие, из-за которого ушли к другому
+    // пиру, подписчик ещё видит.
+    final before = [for (final l in listeners) activeDownloadIdFor(l.track)];
+    final watch = _manualWatches[e.downloadId];
+    if (watch != null) {
+      watch.watch.observe(e.transfer);
+      _reviewManualWatch(watch, e.transfer);
+    }
+    for (var i = 0; i < listeners.length; i++) {
+      final l = listeners[i];
+      final after = activeDownloadIdFor(l.track);
+      // Конец брошенной загрузки (отмена, отказ, после которого ушли к
+      // другому пиру) подписчику не нужен: загрузка трека продолжается.
+      final pass = e.downloadId == after ||
+          (e.downloadId == before[i] && !e.state.isTerminal);
+      if (pass && !l.controller.isClosed) l.controller.add(e);
+    }
+  }
+
+  void _watchManual(
+    Track track,
+    _PeerFile peer,
+    String primaryKey,
+    Set<String> tried,
+  ) {
+    _manualWatches[peer.downloadId] = _ManualWatch(
+      track: track,
+      peer: peer,
+      primaryKey: primaryKey,
+      tried: tried,
+      watch: SoulseekQueueWatch(limits: queueLimits, clock: queueClock),
+    );
+    if (peer.cacheKey == primaryKey) {
+      _manualRedirects.remove(primaryKey);
+    } else {
+      _manualRedirects[primaryKey] = peer.downloadId;
+    }
+    _syncEventSub();
+  }
+
+  void _endWatch(_ManualWatch w) {
+    if (identical(_manualWatches[w.peer.downloadId], w)) {
+      _manualWatches.remove(w.peer.downloadId);
+    }
+    _syncEventSub();
+  }
+
+  /// Решение по ручной загрузке [w]: ждать, закончить наблюдение или уйти
+  /// к следующему источнику по событию [info].
+  void _reviewManualWatch(_ManualWatch w, SoulseekTransferInfo info) {
+    final state = info.state;
+    if (state == SoulseekTransferState.completed ||
+        state == SoulseekTransferState.cancelled) {
+      _endWatch(w);
+      return;
+    }
+    final reason = w.watch.verdict();
+    if (reason == null) return;
+    // Ошибка не пира (нет сети, сервис остановлен) — другой пир не поможет.
+    if (reason == SoulseekSwitchReason.failed &&
+        _notPeerFailureCodes.contains(info.errorCode)) {
+      _endWatch(w);
+      return;
+    }
+    final next = _nextManualSource(w.track, w.tried);
+    _endWatch(w);
+    if (next == null) {
+      if (kDebugMode) {
+        debugPrint('[Soulseek] ${w.peer.peerUsername}: ${reason.name}, '
+            'no other source for "${w.track.title}"');
+      }
+      return;
+    }
+    if (kDebugMode) {
+      debugPrint('[Soulseek] ${w.peer.peerUsername}: ${reason.name} '
+          '(place ${w.watch.place}), switching manual download of '
+          '"${w.track.title}" to ${next.peerUsername}');
+    }
+    _failedSources[w.peer.cacheKey] = DateTime.now();
+    _manualDownloads.remove(w.peer.downloadId);
+    _manualRedirects[w.primaryKey] = next.downloadId;
+    if (reason != SoulseekSwitchReason.failed) {
+      _cancelIfUnused(w.peer.downloadId);
+    }
+    unawaited(_startManualFrom(w, next));
+  }
+
+  /// Следующий непробованный источник с данными пира.
+  _PeerFile? _nextManualSource(Track track, Set<String> tried) {
+    for (final p in _sourcesFor(track)) {
+      if (tried.contains(p.cacheKey)) continue;
+      if (p.peerUsername == null || p.remoteFilename == null) continue;
+      if (p.sizeBytes <= 0) continue;
+      return p;
+    }
+    return null;
+  }
+
+  /// Запуск ручной загрузки у [next] (и дальше по списку, если пир сразу
+  /// отказал).
+  Future<void> _startManualFrom(_ManualWatch from, _PeerFile next) async {
+    final tried = {...from.tried};
+    _PeerFile? peer = next;
+    while (peer != null) {
+      tried.add(peer.cacheKey);
+      _manualRedirects[from.primaryKey] = peer.downloadId;
+      _manualDownloads.add(peer.downloadId);
+      try {
+        final result = await _startDownload(from.track, peer);
+        if (!result.cacheHit) {
+          _watchManual(from.track, peer, from.primaryKey, tried);
+        }
+        return;
+      } on SoulseekException catch (e) {
+        _manualDownloads.remove(peer.downloadId);
+        if (_notPeerFailureCodes.contains(e.code)) return;
+        _failedSources[peer.cacheKey] = DateTime.now();
+        peer = _nextManualSource(from.track, tried);
+      } catch (e) {
+        _manualDownloads.remove(peer.downloadId);
+        if (kDebugMode) debugPrint('[Soulseek] manual switch failed: $e');
+        return;
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
   //  Брошенные загрузки
   // ═══════════════════════════════════════════════════════════════════
 
@@ -1434,8 +1643,17 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     // createPlaybackSource присоединится к этой загрузке. Прогрев — только
     // у пира со свободным слотом: из очереди пира файл может не выйти
     // долго, а прогрев не стоит ожидания.
+    final primaryKey = _getOrCreateCacheKey(track);
+    // Ручная загрузка этого трека уже идёт (возможно, у запасного пира) —
+    // вторую не начинаем.
+    if (manual && _manualWatches.values.any((w) => w.primaryKey == primaryKey)) {
+      return;
+    }
+    // Ручная загрузка уже уходила к запасному пиру — продолжаем у него.
+    final redirected = _manualRedirects[primaryKey];
     final peer = manual
-        ? sources.first
+        ? sources.where((p) => p.downloadId == redirected).firstOrNull ??
+            sources.first
         : sources.where((p) => p.hasFreeUploadSlot).firstOrNull;
     if (peer == null) {
       if (kDebugMode) {
@@ -1455,7 +1673,7 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
 
     if (manual) _manualDownloads.add(peer.downloadId);
     try {
-      await _channel.startDownload(
+      final result = await _channel.startDownload(
         downloadId: peer.downloadId,
         peerUsername: peerUsername,
         remoteFilename: remoteFilename,
@@ -1469,7 +1687,11 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
         durationSeconds: track.duration?.inSeconds,
       );
       // Не ждём завершения — загрузка идёт в фоне через foreground service.
-      if (!manual) _trackQueuePrefetch(peer.downloadId);
+      if (!manual) {
+        _trackQueuePrefetch(peer.downloadId);
+      } else if (!result.cacheHit) {
+        _watchManual(track, peer, primaryKey, {peer.cacheKey});
+      }
     } on SoulseekException catch (e) {
       if (kDebugMode) debugPrint('[Soulseek] prefetch failed: $e');
     } on UnsupportedError {
@@ -1715,6 +1937,13 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     // НЕ останавливаем foreground service — он может использоваться
     // другими компонентами (активные загрузки из UI).
     _queuePrefetchTimer?.cancel();
+    _manualWatches.clear();
+    await _eventSub?.cancel();
+    _eventSub = null;
+    for (final l in List.of(_trackListeners)) {
+      await l.controller.close();
+    }
+    _trackListeners.clear();
     final subs = _activeSubscriptions.toList();
     _activeSubscriptions.clear();
     for (final sub in subs) {
@@ -2021,6 +2250,35 @@ class _PlaybackRequest {
   void supersede() {
     if (!_superseded.isCompleted) _superseded.complete();
   }
+}
+
+/// Подписчик [SoulseekSource.transferEventsFor].
+class _TrackListener {
+  _TrackListener(this.track, this.controller);
+
+  final Track track;
+  final StreamController<SoulseekTransferEvent> controller;
+}
+
+/// Ручная загрузка трека у одного пира под наблюдением очереди.
+class _ManualWatch {
+  _ManualWatch({
+    required this.track,
+    required this.peer,
+    required this.primaryKey,
+    required this.tried,
+    required this.watch,
+  });
+
+  final Track track;
+  final _PeerFile peer;
+
+  /// cacheKey основного источника трека.
+  final String primaryKey;
+
+  /// cacheKey уже пробованных источников (включая [peer]).
+  final Set<String> tried;
+  final SoulseekQueueWatch watch;
 }
 
 class _PeerFile {
