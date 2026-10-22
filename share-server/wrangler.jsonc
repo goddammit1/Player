@@ -4,9 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "kv_namespaces": [
-    // Локально (wrangler dev / тесты) id не важен: KV эмулирует Miniflare.
-    // Перед деплоем заменить на id из `wrangler kv namespace create PLAYLISTS`.
-    { "binding": "PLAYLISTS", "id": "local-playlists" }
+    // Боевой namespace (`wrangler kv namespace create PLAYLISTS`). Локально
+    // (wrangler dev / тесты) Miniflare эмулирует KV и этот id не трогает.
+    { "binding": "PLAYLISTS", "id": "5497ba7a4b254760b848e657b641479a" }
   ],
   "ratelimits": [
     {

@@ -157,15 +157,17 @@ cd share-server
 npm install
 npm run dev    # http://0.0.0.0:8787, KV эмулируется локально
 npm test
+npx wrangler deploy   # выкладка в Cloudflare (нужен `npx wrangler login --device`)
 ```
 
-`SHARE_BASE_URL` в `env.json` для локальной разработки:
+`SHARE_BASE_URL` в `env.json`:
 
 | Где запущено приложение | Адрес |
 |---|---|
 | Windows на той же машине | `http://localhost:8787` |
 | Android-эмулятор | `http://10.0.2.2:8787` |
 | Телефон в той же сети | `http://<LAN-IP компьютера>:8787` |
+| Боевой сервер (Cloudflare) | `https://player-share-server.player-share-server.workers.dev` |
 
 Формат снимка — `player_playlist_share` v1 (`lib/core/share/playlist_share_codec.dart`
 и `share-server/src/validate.ts`, держать в синхроне). Снимки неизменяемы:
