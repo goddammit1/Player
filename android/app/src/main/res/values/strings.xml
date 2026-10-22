@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Плитка распознавания песен в шторке (SongRecognitionTileService). -->
+    <string name="song_recognition_tile">Recognize song</string>
+</resources>

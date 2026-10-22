@@ -29,6 +29,7 @@ import 'ui/desktop/desktop_frame.dart' show DesktopFrame;
 import 'ui/desktop/desktop_shell.dart';
 import 'ui/pages/home_page.dart';
 import 'ui/widgets/share_link_listener.dart';
+import 'ui/widgets/song_recognition_listener.dart';
 import 'ui/desktop/desktop_layout.dart' show isDesktop;
 
 
@@ -429,7 +430,11 @@ class PlayerApp extends ConsumerWidget {
           : null,
       home: isDesktop
           ? const _SessionAutoSave(child: ShareLinkListener(child: DesktopShell()))
-          : const _SessionAutoSave(child: ShareLinkListener(child: HomePage())),
+          : const _SessionAutoSave(
+              child: ShareLinkListener(
+                child: SongRecognitionListener(child: HomePage()),
+              ),
+            ),
     );
   }
 }

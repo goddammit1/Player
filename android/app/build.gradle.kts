@@ -31,6 +31,14 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    // libvibra.so — аудиоотпечатки для распознавания песен (плитка в шторке,
+    // SongRecognitionService.kt; JNI-мост в src/main/cpp/player_vibra.cpp).
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.player.player"

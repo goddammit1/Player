@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Debug стоит рядом с релизом: без пометки в шторке две одинаковые плитки. -->
+    <string name="song_recognition_tile">Recognize (Debug)</string>
+</resources>

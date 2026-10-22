@@ -1,5 +1,6 @@
 package com.player.player
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -29,8 +30,31 @@ import java.io.File
  * никаких эксепшенов.
  */
 class MainActivity : AudioServiceActivity() {
+    companion object {
+        private const val ACTION_SEARCH = "com.player.player.SEARCH"
+        private const val EXTRA_QUERY = "query"
+
+        /** Открыть приложение с поиском [query] (уведомление о распознанной песне). */
+        fun searchIntent(context: Context, query: String): Intent =
+            Intent(context, MainActivity::class.java)
+                .setAction(ACTION_SEARCH)
+                .putExtra(EXTRA_QUERY, query)
+                // Уже открытый экземпляр получает onNewIntent, а не дубль поверх.
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+    }
+
     private var updateChannel: MethodChannel? = null
     private var diagnosticsChannel: MethodChannel? = null
+
+    /** Поиск из уведомления (lib/ui/widgets/song_recognition_listener.dart). */
+    private var recognitionChannel: MethodChannel? = null
+
+    /** Запрос холодного старта: Dart забирает его, когда готов UI. */
+    private var pendingSearch: String? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -45,6 +69,20 @@ class MainActivity : AudioServiceActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             this
         )
+
+        recognitionChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "player/song_recognition"
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                if (call.method == "takePendingSearch") {
+                    result.success(pendingSearch)
+                    pendingSearch = null
+                } else {
+                    result.notImplemented()
+                }
+            }
+        }
 
         updateChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -73,8 +111,28 @@ class MainActivity : AudioServiceActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Пересоздание activity (поворот, смерть процесса) — запрос уже обработан.
+        if (savedInstanceState == null) pendingSearch = searchQueryOf(intent)
         super.onCreate(savedInstanceState)
         applyHighRefreshRate()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val query = searchQueryOf(intent) ?: return
+        val channel = recognitionChannel
+        if (channel != null) {
+            channel.invokeMethod("search", query)
+        } else {
+            pendingSearch = query
+        }
+    }
+
+    private fun searchQueryOf(intent: Intent?): String? {
+        if (intent?.action != ACTION_SEARCH) return null
+        // Запуск из «Недавних» повторяет исходный intent — не ищем заново.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return null
+        return intent.getStringExtra(EXTRA_QUERY)?.takeIf { it.isNotBlank() }
     }
 
     /**
