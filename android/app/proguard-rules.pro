@@ -59,6 +59,17 @@
 # --- Soulseek wrapper ACW stub (JNI-referenced from Kotlin, but keep for safety) ---
 -keep class soulseek.wrapper.** { *; }
 
+# --- Остальные Java-классы AAR, известные рантайму .NET по имени ---
+# Все они записаны в таблицу типов libxamarin-app.so, но без Java/Kotlin-
+# ссылок R8 их вырезал (проверено по mapping.txt release-сборки). Самый
+# опасный — JavaProxyThrowable: через него исключение из C# пробрасывается в
+# Java; без класса вместо исключения был бы NoClassDefFoundError (Error —
+# `catch (e: Exception)` в SoulseekPlugin его не ловит).
+-keep class android.runtime.** { *; }
+-keep class android.app.ActivityTracker { *; }
+-keep class android.security.KeyChain_KeyChainAliasCallback { *; }
+-keep class xamarin.android.net.** { *; }
+
 # ──────────────────────────────────────────────────────────────────────────────
 # flutter_secure_storage (com.it_nomads.fluttersecurestorage) 9.2.4 does not
 # ship consumer ProGuard rules.  These keep rules were added in 3.0.1 on the
