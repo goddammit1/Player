@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/backup/playlist_backup.dart';
+import '../../core/share/playlist_share_service.dart';
 import '../../core/playlist_cache_controller.dart';
 import '../../core/playlist_cache_service.dart';
 import '../../core/providers.dart';
@@ -19,6 +20,7 @@ import '../desktop/desktop_layout.dart';
 import '../desktop/track_context_menu.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/playlist_cache_progress_sheet.dart';
+import '../widgets/playlist_share_link.dart';
 import '../widgets/snack.dart';
 import '../widgets/track_settings_sheet.dart';
 import 'settings_page.dart';
@@ -320,6 +322,22 @@ class _PlaylistPageState extends ConsumerState<PlaylistPage> {
                   await _exportPlaylist(context, p);
                 },
               ),
+              if (PlaylistShareService.instance.isEnabled)
+                ListTile(
+                  leading: Icon(
+                    Icons.link_rounded,
+                    color: colors.textPrimary,
+                  ),
+                  title: Text(
+                    'Share link',
+                    style: TextStyle(color: colors.textPrimary),
+                  ),
+                  onTap: () async {
+                    HapticHelper.light(ref: ref);
+                    Navigator.of(sheetCtx).pop();
+                    await sharePlaylistLink(context, ref, p);
+                  },
+                ),
               ListTile(
                 leading: Icon(
                   Icons.download_rounded,

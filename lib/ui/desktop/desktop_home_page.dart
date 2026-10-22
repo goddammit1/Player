@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../core/share/playlist_share_service.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../widgets/playlist_import.dart';
@@ -150,6 +151,24 @@ class DesktopHomePage extends ConsumerWidget {
             ],
           ),
         ),
+        if (PlaylistShareService.instance.isEnabled)
+          PopupMenuItem(
+            value: 'import_link',
+            child: Row(
+              children: [
+                Icon(
+                  Icons.add_link_rounded,
+                  size: 18,
+                  color: colors.textPrimary,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Import from link',
+                  style: TextStyle(color: colors.textPrimary),
+                ),
+              ],
+            ),
+          ),
       ],
     );
     if (v == null || !context.mounted) return;
@@ -157,6 +176,8 @@ class DesktopHomePage extends ConsumerWidget {
       await _showCreateDialog(context, ref, colors);
     } else if (v == 'import') {
       await importPlaylistFromFile(context, ref);
+    } else if (v == 'import_link') {
+      await importPlaylistFromLink(context, ref);
     }
   }
 

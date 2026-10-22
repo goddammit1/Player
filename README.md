@@ -94,6 +94,9 @@ Visual Studio Build Tools 2022 с Windows 10/11 SDK.
    <https://genius.com/api-clients>, не Client Secret. Без токена Genius
    пропускается и работает только iTunes.
 
+   `SHARE_BASE_URL` — адрес [сервера ссылок на плейлисты](#ссылки-на-плейлисты-share-server).
+   Пустое значение выключает «Share link» и «Import from link».
+
 2. Установить зависимости:
 
    ```bash
@@ -138,6 +141,35 @@ soulseek-wrapper\build_aar.ps1 -Abis arm64-v8a,x64 # с эмулятором x86
 
 Kotlin-слой (плагин, foreground service, загрузки, кэш) находится в
 `android/app/src/main/kotlin/com/player/player/Soulseek*.kt`, Dart-API в `lib/sources/soulseek_*.dart`.
+
+## Ссылки на плейлисты (share-server)
+
+«Share link» в меню плейлиста загружает его снимок на собственный сервер и
+возвращает короткую ссылку `<SHARE_BASE_URL>/p/<id>`. Ссылку открывают через
+«Import from link» (меню «+» / карточка «new playlist») или по deep link
+`playerapp://p/<id>` (Android). В браузере `/p/<id>` показывает страницу с
+треками и OG-превью для мессенджеров.
+
+Сервер — Cloudflare Worker + KV в [`share-server/`](share-server), нужен Node.js:
+
+```bash
+cd share-server
+npm install
+npm run dev    # http://0.0.0.0:8787, KV эмулируется локально
+npm test
+```
+
+`SHARE_BASE_URL` в `env.json` для локальной разработки:
+
+| Где запущено приложение | Адрес |
+|---|---|
+| Windows на той же машине | `http://localhost:8787` |
+| Android-эмулятор | `http://10.0.2.2:8787` |
+| Телефон в той же сети | `http://<LAN-IP компьютера>:8787` |
+
+Формат снимка — `player_playlist_share` v1 (`lib/core/share/playlist_share_codec.dart`
+и `share-server/src/validate.ts`, держать в синхроне). Снимки неизменяемы:
+тот же плейлист даёт ту же ссылку.
 
 ## Подпись Android
 
@@ -191,7 +223,8 @@ lib/
 │   ├── repositories/  плейлисты и история
 │   ├── providers/     тема и цветовая схема
 │   ├── platform/      десктопный плеер, фабрика, хаптика
-│   └── backup/        импорт и экспорт плейлистов
+│   ├── backup/        импорт и экспорт плейлистов
+│   └── share/         короткие ссылки на плейлисты (клиент share-server)
 ├── models/            Track, Playlist
 ├── search/            контроллер поиска по источникам
 ├── sources/           источники, реестр, ArtworkProvider, Soulseek-канал
@@ -202,6 +235,7 @@ lib/
 test/                  тесты (зеркалят структуру lib/)
 tools/                 скрипты запуска, сборки и установки
 soulseek-wrapper/      .NET-обёртка Soulseek для Android
+share-server/          Cloudflare Worker для ссылок на плейлисты
 plans/, docs/          планы и заметки по отдельным задачам
 ```
 

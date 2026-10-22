@@ -35,9 +35,21 @@
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme"/>
+            <!-- Ссылки обрабатывает app_links (ShareLinkListener), а не
+                 встроенный роутинг Flutter: иначе он пытается открыть путь
+                 ссылки как маршрут Navigator. -->
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- Короткие ссылки на плейлисты: playerapp://p/<id> (share-server/).
+                 https-фильтр с autoVerify добавится вместе с доменом. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="playerapp" android:host="p"/>
             </intent-filter>
         </activity>
 

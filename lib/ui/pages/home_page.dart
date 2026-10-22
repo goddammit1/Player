@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers.dart';
+import '../../core/share/playlist_share_service.dart';
 import '../../models/playlist.dart';
 import '../widgets/artwork.dart';
 import '../desktop/desktop_layout.dart';
@@ -600,6 +601,21 @@ class _AddNewCard extends ConsumerWidget {
                   await importPlaylistFromFile(context, ref);
                 },
               ),
+              if (PlaylistShareService.instance.isEnabled)
+                ListTile(
+                  leading: Icon(
+                    Icons.add_link_rounded,
+                    color: colors.textPrimary,
+                  ),
+                  title: Text(
+                    'Import from link',
+                    style: TextStyle(color: colors.textPrimary),
+                  ),
+                  onTap: () async {
+                    Navigator.of(sheetCtx).pop();
+                    await importPlaylistFromLink(context, ref);
+                  },
+                ),
             ],
           ),
         );

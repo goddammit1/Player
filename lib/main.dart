@@ -28,6 +28,7 @@ import 'core/notifications/playlist_cache_notifier.dart';
 import 'ui/desktop/desktop_frame.dart' show DesktopFrame;
 import 'ui/desktop/desktop_shell.dart';
 import 'ui/pages/home_page.dart';
+import 'ui/widgets/share_link_listener.dart';
 import 'ui/desktop/desktop_layout.dart' show isDesktop;
 
 
@@ -427,8 +428,8 @@ class PlayerApp extends ConsumerWidget {
           ? (context, child) => DesktopFrame(child: child)
           : null,
       home: isDesktop
-          ? const _SessionAutoSave(child: DesktopShell())
-          : const _SessionAutoSave(child: HomePage()),
+          ? const _SessionAutoSave(child: ShareLinkListener(child: DesktopShell()))
+          : const _SessionAutoSave(child: ShareLinkListener(child: HomePage())),
     );
   }
 }
