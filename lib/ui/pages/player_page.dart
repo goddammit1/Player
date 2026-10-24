@@ -2,7 +2,7 @@
 
 import 'dart:math' as math;
 
-import 'package:audio_service/audio_service.dart' show MediaItem;
+import 'package:audio_service/audio_service.dart' show MediaItem, PlaybackState;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,13 +32,11 @@ class PlayerPage extends StatelessWidget {
   }
 }
 
-/// Страница плеера. Фон рисуется под системными панелями, контент — внутри
-/// SafeArea.
+/// Содержимое плеера.
 class PlayerContent extends ConsumerStatefulWidget {
   const PlayerContent({super.key, this.onClose, this.active = true});
-  final VoidCallback? onClose;
 
-  /// `false`, пока плеер свёрнут в мини-плеер: анимация фона не тикает.
+  final VoidCallback? onClose;
   final bool active;
 
   @override
@@ -47,9 +45,56 @@ class PlayerContent extends ConsumerStatefulWidget {
 
 class _PlayerContentState extends ConsumerState<PlayerContent>
     with TickerProviderStateMixin {
-  late final QueueSheetController _queueCtrl = QueueSheetController(
-    vsync: this,
-  );
+  late final QueueSheetController _queueCtrl;
+
+  String? _cachedArtworkId;
+  ImageProvider? _cachedArtwork;
+
+  // --- Константы раскладки ---
+  static const double _wideBreakpoint = 1000;
+  static const double _desktopMaxWidth = 600;
+  static const double _mobileArtMaxSize = 420;
+  static const double _artHeightFactor = 0.85;
+  static const double _artPreferredMax = 480;
+  static const double _artMinSize = 280;
+  static const double _artMaxSize = 520;
+  static const EdgeInsets _contentPadding = EdgeInsets.fromLTRB(24, 8, 24, 28);
+
+   // --- Радиусы и тень обложки ---
+  /// Базовый радиус обложки при воспроизведении (исходный размер).
+  /// ⚠️ Подгоните под значение, которое реально используется внутри
+  /// PlayerInteractiveArtwork / Artwork, чтобы вид совпадал.
+  static const double _artworkRadiusPlaying = 15;
+  /// Радиус в уменьшенной версии (на паузе) — углы скруглены сильнее.
+  static const double _artworkRadiusPaused = 30;
+
+  static const double _artworkShadowBlur = 10;
+  static const double _artworkShadowSpread = 0;
+  static const double _artworkShadowOffsetY = 0;
+  static const double _artworkShadowOpacity = 0.15;
+
+  static const double _vSpaceLarge = 30;
+  static const double _vSpaceMedium = 20;
+  static const double _vSpaceSmall = 15;
+
+  static const double _hArtToControls = 56;
+  static const double _hTitleToArtist = 4;
+  static const double _hArtistToControls = 32;
+  static const double _hControlsToProgress = 20;
+  static const double _hProgressToActions = 24;
+
+  // --- Анимация обложки ---
+  /// Масштаб обложки на паузе (уменьшена на 7%).
+  static const double _artworkPausedScale = 0.93;
+  /// Масштаб при воспроизведении (исходный размер).
+  static const double _artworkPlayingScale = 1.0;
+  static const Duration _artworkScaleDuration = Duration(milliseconds: 400);
+
+  @override
+  void initState() {
+    super.initState();
+    _queueCtrl = QueueSheetController(vsync: this);
+  }
 
   @override
   void dispose() {
@@ -60,76 +105,159 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
   @override
   Widget build(BuildContext context) {
     final player = ref.watch(playerServiceProvider);
-    final colors = ref.watch(animatedPaletteProvider);
-    final background = ref.watch(
-      appThemeModeProvider.select((mode) => mode.playerBackground),
-    );
 
     return StreamBuilder<MediaItem?>(
       stream: player.mediaItem,
       builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snap.hasError) {
+          return Center(
+            child: Text(
+              'Ошибка загрузки: ${snap.error}',
+              style: const TextStyle(color: Colors.white),
+            ),
+          );
+        }
+
         final item = snap.data;
 
-        return PlayerBackground(
-          style: background,
-          colors: colors,
-          artwork: background == PlayerBackgroundStyle.blur
-              ? _artworkFor(item?.artUri?.toString())
-              : null,
-          animate: widget.active,
-          child: SafeArea(
-            child: item == null
-                ? Center(
-                    child: Text(
-                      'No track',
-                      style: TextStyle(color: colors.textSecondary),
-                    ),
-                  )
-                : Stack(
-                    children: [
-                      LayoutBuilder(
-                        builder: (context, c) {
-                          final wide =
-                              isDesktop && c.maxWidth >= _wideBreakpoint;
-                          return Padding(
-                            padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-                            child: wide
-                                ? _buildHorizontalLayout(c, item, player, colors)
-                                : _buildVerticalLayout(item, player, colors),
-                          );
-                        },
+        return Consumer(
+          builder: (context, ref, _) {
+            final colors = ref.watch(animatedPaletteProvider);
+            final background = ref.watch(
+              appThemeModeProvider.select((mode) => mode.playerBackground),
+            );
+
+            return PlayerBackground(
+              style: background,
+              colors: colors,
+              artwork: background == PlayerBackgroundStyle.blur
+                  ? _artworkFor(item)
+                  : null,
+              animate: widget.active,
+              child: SafeArea(
+                child: item == null
+                    ? Center(
+                        child: Text(
+                          'No track',
+                          style: TextStyle(color: colors.textSecondary),
+                        ),
+                      )
+                    : Stack(
+                        children: [
+                          LayoutBuilder(
+                            builder: (context, c) {
+                              final wide =
+                                  isDesktop && c.maxWidth >= _wideBreakpoint;
+                              return Padding(
+                                padding: _contentPadding,
+                                child: wide
+                                    ? _buildHorizontalLayout(
+                                        c, item, player, colors)
+                                    : _buildVerticalLayout(
+                                        item, player, colors),
+                              );
+                            },
+                          ),
+                          QueueSheet(controller: _queueCtrl, player: player),
+                        ],
                       ),
-                      QueueSheet(controller: _queueCtrl, player: player),
-                    ],
-                  ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Обложка для фона с кэшированием по id трека.
+  ImageProvider? _artworkFor(MediaItem? item) {
+    final url = item?.artUri?.toString();
+    if (url == null || url.isEmpty) return null;
+
+    if (item?.id == _cachedArtworkId) {
+      return _cachedArtwork;
+    }
+    _cachedArtworkId = item?.id;
+    _cachedArtwork = artworkImageProvider(url);
+    return _cachedArtwork;
+  }
+
+    /// Обложка с анимацией масштаба, скругления и тенью.
+  ///
+  /// • На паузе: scale = 0.9, радиус углов = [_artworkRadiusPaused] (30).
+  /// • При воспроизведении: scale = 1.0, радиус = [_artworkRadiusPlaying].
+  /// • Тень рисуется внешним контейнером (без clipBehavior, чтобы не обрезалась),
+  ///   а внутренний контейнер обрезает саму картинку по радиусу.
+  Widget _buildArtwork({
+    required MediaItem item,
+    required double size,
+    required PlayerServiceInterface player,
+  }) {
+    return StreamBuilder<PlaybackState>(
+      stream: player.playbackState,
+      builder: (context, snap) {
+        final playing = snap.data?.playing ?? false;
+        final radius =
+            playing ? _artworkRadiusPlaying : _artworkRadiusPaused;
+
+        return AnimatedScale(
+          scale: playing ? _artworkPlayingScale : _artworkPausedScale,
+          duration: _artworkScaleDuration,
+          curve: Curves.easeOutCubic,
+          child: AnimatedContainer(
+            duration: _artworkScaleDuration,
+            curve: Curves.easeOutCubic,
+            // Тень (рисуется снаружи, поэтому clipBehavior здесь НЕ задаём).
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(radius),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(_artworkShadowOpacity),
+                  blurRadius: _artworkShadowBlur,
+                  spreadRadius: _artworkShadowSpread,
+                  offset: const Offset(0, _artworkShadowOffsetY),
+                ),
+              ],
+            ),
+            child: AnimatedContainer(
+              duration: _artworkScaleDuration,
+              curve: Curves.easeOutCubic,
+              // Обрезка самой обложки по радиусу (плавно анимируется).
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(radius),
+              ),
+              child: PlayerInteractiveArtwork(
+                item: item,
+                size: size,
+                aspectRatio: artAspectRatio(item),
+                player: player,
+              ),
+            ),
           ),
         );
       },
     );
   }
 
-  String? _artworkUrl;
-  ImageProvider? _artwork;
-
-  /// Источник обложки для фона. Кэшируется по URL: build идёт на каждом
-  /// кадре перехода палитры, а разбор URL проверяет файл на диске. Ненайденный
-  /// файл не кэшируется: обложка может докачаться позже.
-  ImageProvider? _artworkFor(String? url) {
-    if (url == null || url.isEmpty) return null;
-    if (url != _artworkUrl || _artwork == null) {
-      _artworkUrl = url;
-      _artwork = artworkImageProvider(url);
-    }
-    return _artwork;
+  Widget _artistText(String? artist, AppColors colors,
+      {bool centered = false}) {
+    return Text(
+      artist ?? '',
+      textAlign: centered ? TextAlign.center : null,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: colors.textSecondary,
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+      ),
+    );
   }
 
-  /// Ширина окна (на десктопе), при которой включается горизонтальная
-  /// раскладка плеера. Мобильные платформы всегда используют вертикальную.
-  static const double _wideBreakpoint = 1000;
-
-  /// Вертикальная раскладка (как на мобильных) — используется по умолчанию
-  /// и на десктопе в узких окнах. На десктопе контент центрируется
-  /// по горизонтали и ограничивается по ширине (Android/iOS не затронуты).
   Widget _buildVerticalLayout(
     MediaItem item,
     PlayerServiceInterface player,
@@ -139,45 +267,29 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
       alignment: Alignment.center,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: isDesktop ? 600 : double.infinity,
+          maxWidth: isDesktop ? _desktopMaxWidth : double.infinity,
         ),
         child: Column(
           children: [
-            const Expanded(child: SizedBox.shrink()),
+            const Spacer(),
             LayoutBuilder(
               builder: (_, c) {
-                final size = c.maxWidth.clamp(0, 420.0).toDouble();
-                return PlayerInteractiveArtwork(
-                  item: item,
-                  size: size,
-                  aspectRatio: artAspectRatio(item),
-                  player: player,
-                );
+                final size = c.maxWidth.clamp(0, _mobileArtMaxSize).toDouble();
+                return _buildArtwork(item: item, size: size, player: player);
               },
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: _vSpaceLarge),
             PlayerTitleScroller(text: item.title, colors: colors),
-            const SizedBox(height: 0),
-            Text(
-              item.artist ?? '',
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: colors.textSecondary,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 30),
+            _artistText(item.artist, colors, centered: true),
+            const SizedBox(height: _vSpaceLarge),
             PlayerControls(player: player, colors: colors),
-            const SizedBox(height: 15),
+            const SizedBox(height: _vSpaceSmall),
             PlayerProgressBar(
               player: player,
               colors: colors,
               fallbackDuration: item.duration,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: _vSpaceMedium),
             PlayerBottomActions(
               player: player,
               item: item,
@@ -190,53 +302,39 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
     );
   }
 
-  /// Горизонтальная раскладка для широких десктопных окон:
-  /// обложка слева, управление/прогресс справа.
   Widget _buildHorizontalLayout(
     BoxConstraints c,
     MediaItem item,
     PlayerServiceInterface player,
     AppColors colors,
   ) {
-    final artworkSize = math.min(c.maxHeight * 0.85, 480.0).clamp(280.0, 520.0);
+    final artworkSize = math
+        .min(c.maxHeight * _artHeightFactor, _artPreferredMax)
+        .clamp(_artMinSize, _artMaxSize)
+        .toDouble();
 
     return Row(
       children: [
-        PlayerInteractiveArtwork(
-          item: item,
-          size: artworkSize,
-          aspectRatio: artAspectRatio(item),
-          player: player,
-        ),
-        const SizedBox(width: 56),
+        // Анимированная обложка (увеличение при воспроизведении).
+        _buildArtwork(item: item, size: artworkSize, player: player),
+        const SizedBox(width: _hArtToControls),
         Expanded(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               PlayerTitleScroller(text: item.title, colors: colors),
-              const SizedBox(height: 4),
-              Text(
-                item.artist ?? '',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 32),
-              Center(
-                child: PlayerControls(player: player, colors: colors),
-              ),
-              const SizedBox(height: 20),
+              const SizedBox(height: _hTitleToArtist),
+              _artistText(item.artist, colors),
+              const SizedBox(height: _hArtistToControls),
+              Center(child: PlayerControls(player: player, colors: colors)),
+              const SizedBox(height: _hControlsToProgress),
               PlayerProgressBar(
                 player: player,
                 colors: colors,
                 fallbackDuration: item.duration,
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: _hProgressToActions),
               PlayerBottomActions(
                 player: player,
                 item: item,

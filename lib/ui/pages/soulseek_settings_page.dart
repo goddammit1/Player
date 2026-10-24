@@ -1,33 +1,13 @@
 // lib/ui/pages/soulseek_settings_page.dart
-//
-// Фаза 4 — экран настроек Soulseek.
-//
-// Компоновка (редизайн по plans/soulseek_pages_redesign_plan.md и
-// концепту пользователя):
-//  - AppBar с круглой кнопкой «Назад» и заголовком 32px
-//  - Сверху карточка статуса: крупная кнопка Connect / Cancel / Disconnect,
-//    под ней состояние, логин и суммарная скорость загрузок
-//  - Группы Account (поля + Save), Search, Downloads и свёрнутый Advanced;
-//    плитки групп скруглены как список треков (GroupedTiles)
-//  - Числовые настройки — слайдеры со ступенями и колесо таймаута
-//  - Только цвета AppColors; красный — лишь сбой и удаление
-//  - Анимация появления через _AppearingPageAnimator
-//
-// Android и Windows (мост внутри процесса); на других платформах и в
-// Windows-сборке без моста показывается заглушка.
-// Пароль хранится в secure storage (SoulseekCredentials) и НЕ показывается
-// в plain text по умолчанию.
-//
-// Фаза A (SQLite-миграция): все настройки читаются/пишутся через
-// SoulseekSettingsRepository (таблица `settings` в player_data.db).
-// SharedPreferences больше не используется для настроек Soulseek.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:vibration/vibration.dart';
 
 import '../../core/providers.dart';
 import '../../core/secure_storage_diagnostics.dart';
@@ -45,18 +25,209 @@ import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
 import 'downloads_page.dart';
 
-/// Репозиторий настроек Soulseek (SQLite). Дефолты и ключи — там же
-/// (раньше здесь был класс SoulseekPrefs с SharedPreferences-ключами).
+// ============================================================
+//  HapticHelper
+// ============================================================
+
+class HapticHelper {
+  static bool _hasVibrator = false;
+  static bool _hasAmplitude = false;
+  static bool _checked = false;
+
+  static Future<void> initialize() async {
+    if (_checked) return;
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      _hasVibrator = false;
+      _hasAmplitude = false;
+      _checked = true;
+      return;
+    }
+    try {
+      _hasVibrator = await Vibration.hasVibrator();
+      if (_hasVibrator) {
+        _hasAmplitude = await Vibration.hasAmplitudeControl();
+      }
+    } catch (_) {
+      _hasVibrator = false;
+      _hasAmplitude = false;
+    }
+    _checked = true;
+  }
+
+  static Future<void> _ensureChecked() async {
+    if (_checked) return;
+    await initialize();
+  }
+
+  static bool _isEnabled(WidgetRef? ref) {
+    if (ref == null) return true;
+    try {
+      return ref.read(vibrationEnabledProvider);
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<void> microTick({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.selectionClick();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 5, amplitude: 40);
+    } else {
+      await Vibration.vibrate(duration: 5);
+    }
+  }
+
+  static Future<void> light({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 10, amplitude: 80);
+    } else {
+      await Vibration.vibrate(duration: 10);
+    }
+  }
+
+  static Future<void> medium({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 20, amplitude: 140);
+    } else {
+      await Vibration.vibrate(duration: 20);
+    }
+  }
+
+  static Future<void> strong({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.heavyImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 30, amplitude: 220);
+    } else {
+      await Vibration.vibrate(duration: 40);
+    }
+  }
+
+  static Future<void> weak({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(duration: 10, amplitude: 50);
+    } else {
+      await Vibration.vibrate(duration: 10);
+    }
+  }
+
+  static Future<void> confirmDelete({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(
+        pattern: [0, 30, 50, 20],
+        intensities: [0, 255, 0, 100],
+      );
+    } else {
+      await Vibration.vibrate(duration: 35);
+    }
+  }
+
+  static Future<void> error({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.vibrate();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(
+        pattern: [0, 50, 30, 50],
+        intensities: [0, 200, 0, 200],
+      );
+    } else {
+      await Vibration.vibrate(pattern: [0, 50, 30, 50]);
+    }
+  }
+
+  static Future<void> success({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.mediumImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(
+        pattern: [0, 20, 30, 40],
+        intensities: [0, 100, 0, 255],
+      );
+    } else {
+      await Vibration.vibrate(pattern: [0, 20, 30, 40]);
+    }
+  }
+
+  static Future<void> tripleTick({WidgetRef? ref}) async {
+    if (!_isEnabled(ref)) return;
+    await _ensureChecked();
+    if (!_hasVibrator) {
+      await HapticFeedback.lightImpact();
+      await Future.delayed(const Duration(milliseconds: 60));
+      await HapticFeedback.lightImpact();
+      await Future.delayed(const Duration(milliseconds: 60));
+      await HapticFeedback.lightImpact();
+      return;
+    }
+    if (_hasAmplitude) {
+      await Vibration.vibrate(
+        pattern: [0, 15, 40, 15, 40, 15],
+        intensities: [0, 120, 0, 120, 0, 120],
+      );
+    } else {
+      await Vibration.vibrate(pattern: [0, 15, 40, 15, 40, 15]);
+    }
+  }
+
+  static void reset() {
+    _checked = false;
+    _hasVibrator = false;
+    _hasAmplitude = false;
+  }
+}
+
+// ============================================================
+//  Soulseek Settings Page
+// ============================================================
+
 final SoulseekSettingsRepository _repo = SoulseekSettingsRepository.instance;
 
-/// Раздел страницы, к которому прокрутить при открытии.
 enum SoulseekSettingsSection { connection }
 
 class SoulseekSettingsPage extends ConsumerStatefulWidget {
   const SoulseekSettingsPage({super.key, this.initialSection});
 
-  /// Раздел, к которому страница прокручивается после первого кадра
-  /// (тап по недоступному фильтру Soulseek в поиске → Connection).
   final SoulseekSettingsSection? initialSection;
 
   @override
@@ -70,17 +241,12 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
 
-  // Сохранённые учётные данные: Save активна, только пока поля от них
-  // отличаются.
   String _savedUsername = '';
   String _savedPassword = '';
   bool _accountDirty = false;
-
-  // Логин последнего входа — подзаголовок статуса не меняется, пока
-  // пользователь правит поле Username.
   String _accountName = '';
 
-  // ── Параметры (дефолты — из SoulseekSettingsRepository) ──
+  // ── Параметры ──
   int _listenPort = SoulseekSettingsRepository.defaultListenPort;
   int _maxParallelDownloads =
       SoulseekSettingsRepository.defaultMaxParallelDownloads;
@@ -97,38 +263,18 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   String? _connectionMessage;
   ProviderSubscription<AsyncValue<SoulseekConnectionEvent?>>? _connectionSub;
   bool _connecting = false;
+  bool _showConnectionStatus = false;
 
-  // Дефект №5: поколение статуса соединения. Инкрементируется перед каждой
-  // командой (connect/disconnect) и каждым push-событием; ответ команды
-  // применяется только если поколение не изменилось — поздний устаревший
-  // ответ не может перезаписать более свежее событие.
   int _connectionGeneration = 0;
-
-  // Команда connect (включая retry-цикл) ещё выполняется. Пока она в полёте,
-  // push-событие DISCONNECTED не терминально: при первом bind'е натив шлёт
-  // snapshot DISCONNECTED (клиента ещё нет), а между retry-попытками bridge
-  // пересоздаёт клиент. Итог определяет ответ команды.
   bool _connectInFlight = false;
-
-  // Номер текущей команды connect. Cancel увеличивает его — retry-цикл
-  // прежней команды видит, что устарел, прерывается и итог не применяет.
-  // Счётчик, а не флаг: Cancel → Connect подряд не «воскрешает» отменённую
-  // команду (новая получает свой номер).
   int _connectCommand = 0;
-
-  // Отменённые команды, чей нативный connect ещё не вернулся. Пока они
-  // доигрывают, а новой команды нет, их push-события (CONNECTING /
-  // CONNECTED) не должны менять статус после Cancel.
   int _cancelledInFlight = 0;
 
-  // ── Активные загрузки: id → скорость (счётчик у строки Downloads и
-  // суммарная скорость в статусе) ──
   final Map<String, int> _activeSpeeds = {};
   StreamSubscription<SoulseekTransferEvent>? _transferSub;
 
   bool _advancedOpen = false;
 
-  // ── Доступные форматы для multi-select ──
   static const List<String> _allFormats = [
     'flac', 'wav', 'alac', 'mp3', 'aac', 'ogg',
   ];
@@ -151,9 +297,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  /// ListView строит секции лениво: если Connection ещё за пределами
-  /// cacheExtent (маленький экран, крупный шрифт), листаем на экран вниз
-  /// и пробуем снова в следующем кадре.
   void _scrollToConnection([int attempt = 0]) {
     if (!mounted) return;
     final ctx = _connectionSectionKey.currentContext;
@@ -187,12 +330,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     super.dispose();
   }
 
-  /// Загрузка идёт или ждёт очереди (prebuffered — трек уже играет, но
-  /// данные ещё качаются).
   static bool _isActiveTransfer(SoulseekTransferState s) =>
       s.isActive || s == SoulseekTransferState.prebuffered;
 
-  /// Перестраиваем страницу, только когда меняется доступность Save.
   void _onAccountEdited() {
     final dirty = _usernameController.text.trim() != _savedUsername ||
         _passwordController.text != _savedPassword;
@@ -200,13 +340,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     setState(() => _accountDirty = dirty);
   }
 
-  /// Счётчик активных загрузок: снимок при открытии + transfer-события
-  /// (паттерн SoulseekDownloadsIndicator).
   Future<void> _subscribeTransfers() async {
     if (!_isAvailable) return;
     final platform = SoulseekPlatformChannel.instance;
-    // Трансферы, о которых уже пришло событие, пока снимок в пути: снимок
-    // старше события и не должен вернуть уже завершённую загрузку.
     Set<String>? seenBeforeSnapshot = {};
     _transferSub = platform.transferEvents.listen((e) {
       final info = e.transfer;
@@ -231,24 +367,19 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         }
       });
     } catch (_) {
-      // Сервис ещё не поднят — счётчик появится с первым событием.
+      // Сервис не поднят
     } finally {
       seenBeforeSnapshot = null;
     }
   }
 
   Future<void> _loadSettings() async {
-    // Учётные данные: пароль из secure storage, username — быстрый путь
-    // из БД (soulseek_username).
     final creds = await SoulseekCredentials.load();
     final usernameQuick = await SoulseekCredentials.loadUsernameQuick();
-
-    // Настройки — из SQLite через репозиторий.
     final settings = await _repo.loadAll();
 
     if (mounted) {
       setState(() {
-        // username: из secure storage (с паролем) или из БД (быстрый путь).
         _usernameController.text = creds?.username ?? usernameQuick ?? '';
         _passwordController.text = creds?.password ?? '';
         _savedUsername = _usernameController.text.trim();
@@ -270,9 +401,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     _applyFiltersToSource(settings: settings);
   }
 
-  /// Применяет настройки фильтров к зарегистрированному [SoulseekSource]
-  /// через репозиторий (SQLite). Если [settings] не переданы — читаются
-  /// из БД. Вызывается при загрузке страницы и после смены фильтров.
   Future<void> _applyFiltersToSource({SoulseekSettings? settings}) async {
     final source = SourceRegistry.instance.get('soulseek');
     if (source is! SoulseekSource) return;
@@ -288,12 +416,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     await _repo.applyToSource(source, settings: s);
   }
 
-  /// Статус соединения — из общего [soulseekConnectionProvider] (тот же,
-  /// что у фильтра поиска). fireImmediately отдаёт последнее известное
-  /// значение: провайдер живёт всё время работы приложения и не пропускает
-  /// изменений, поэтому повторный вход на страницу видит актуальный статус
-  /// (P2). Неизвестное состояние (UNKNOWN) провайдер не выдаёт — локальный
-  /// статус не перезаписывается ложным Disconnected (дефект №3).
   void _subscribeConnection() {
     if (!_isAvailable) return;
     _connectionSub?.close();
@@ -312,33 +434,24 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         _connectionState = SoulseekConnectionState.failed;
         _connectionMessage = next.error.toString();
         _connecting = false;
+        _showConnectionStatus = true;
       });
       return;
     }
     final event = next.valueOrNull;
     if (event == null) return;
-    // Отменённый connect ещё доигрывает в нативе, а новой команды нет —
-    // его события не должны вернуть «Connecting…» / «Connected» после
-    // Cancel (итог разорвёт сама отменённая команда).
     if (!_connectInFlight && _cancelledInFlight > 0) return;
-    // Snapshot при bind'е / промежуточный дисконнект между попытками
-    // не должен сбрасывать «Connecting…» и разблокировать кнопку —
-    // иначе первое нажатие выглядит так, будто ничего не произошло.
     if (_connectInFlight &&
         event.state == SoulseekConnectionState.disconnected) {
       return;
     }
-    // Push-событие — самый свежий источник: делает устаревшими все
-    // ответы команд, отправленные до него (дефект №5).
     _connectionGeneration++;
     setState(() {
       _connectionState = event.state;
       _connectionMessage = event.message;
-      // Дефект №6: CONNECTED теперь означает завершённый логин
-      // (Connected+LoggedIn), CONNECTING — промежуточное состояние.
-      // _connecting сбрасываем только на терминальных для команды
-      // состояниях: CONNECTED / DISCONNECTED / FAILED (и RECONNECTING —
-      // исходная команда connect уже не «в процессе»).
+      if (event.state != SoulseekConnectionState.disconnected) {
+        _showConnectionStatus = true;
+      }
       switch (event.state) {
         case SoulseekConnectionState.connected:
         case SoulseekConnectionState.disconnected:
@@ -360,28 +473,24 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     final password = _passwordController.text;
 
     if (username.isEmpty || password.isEmpty) {
+      HapticHelper.error(ref: ref);
       if (mounted) showSnack(context, 'Enter username and password');
       return;
     }
 
-    // Дефект №5: фиксируем поколение — результат команды применяем, только
-    // если после её старта не приходило более свежих push-событий.
     final generation = ++_connectionGeneration;
     final command = ++_connectCommand;
     bool cancelled() => command != _connectCommand;
 
     _connectInFlight = true;
     setState(() {
+      _showConnectionStatus = true;
       _accountName = username;
       _connecting = true;
       _connectionState = SoulseekConnectionState.connecting;
       _connectionMessage = null;
     });
 
-    // P3: первый коннект после старта сервиса иногда падает по
-    // SocketException (DNS proxy errno=111) — C# bridge классифицирует
-    // его как retryable. Пробуем подключиться до 3 раз с паузой 2 с,
-    // ретраим только retryable-ошибки.
     const maxAttempts = 3;
     const retryDelay = Duration(seconds: 2);
 
@@ -395,60 +504,36 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         break;
       } on SoulseekException catch (e) {
         lastError = e;
-        // P3: «Service not bound» / таймаут bind'а — гонка старта сервиса,
-        // не ошибка кредов. Классифицируем как retryable, чтобы существующий
-        // retry-цикл 3×2с подхватил даже если нативный флаг не дошёл.
         final effectiveRetryable = e.retryable || e.isServiceBindRace;
         final canRetry = effectiveRetryable && attempt < maxAttempts;
-        if (kDebugMode) {
-          debugPrint(
-            '[Soulseek] connect attempt $attempt/$maxAttempts failed: '
-            '${e.code} (retryable: $effectiveRetryable)',
-          );
-        }
         if (!canRetry || cancelled()) break;
         if (mounted) {
           setState(() => _connectionMessage = 'Retrying ($attempt/$maxAttempts)…');
         }
         await Future<void>.delayed(retryDelay);
       } catch (e) {
-        // Непредвиденная ошибка платформы — не ретраим.
         lastError = SoulseekException('CONNECT_FAILED', e.toString());
         break;
       }
     }
 
     if (cancelled()) {
-      // Cancel уже показал «Disconnected» и снял _connectInFlight (или его
-      // заняла новая команда) — итог этой попытки не применяем. Попытка
-      // успела войти после Cancel — разрываем её, если новой команды нет
-      // (иначе disconnect оборвал бы новое подключение).
       if (info != null && !_connectInFlight) await _disconnectQuietly();
       _cancelledInFlight--;
       return;
     }
 
-    // Креды сохраняем только после успешного входа: опечатка в пароле
-    // («Save and reconnect») не должна затереть рабочие данные. Сбой
-    // secure storage не мешает соединению — креды уходят в натив только в
-    // памяти, а запасного хранилища нет намеренно (пароль живёт только в
-    // Keystore); пользователь лишь узнаёт, что данные не запомнятся.
-    // Сохраняем и при закрытой странице — вход уже состоялся.
     final saved = info == null || await _trySaveCredentials(username, password);
 
     _connectInFlight = false;
     if (!mounted) return;
 
-    // Дефект №5: если после старта команды пришло push-событие, его статус
-    // новее — ответ команды статус не перезаписывает.
     final stale = generation != _connectionGeneration;
 
-    // Команда завершилась — кнопка разблокируется в любом случае (иначе
-    // при stale-ответе и последнем событии CONNECTING она залипала бы).
     if (info != null) {
+      HapticHelper.success(ref: ref);
       final connected = info;
       setState(() {
-        // Промежуточный CONNECTING от push-события успешный ответ уточняет.
         if (!stale ||
             _connectionState == SoulseekConnectionState.connecting) {
           _connectionState = connected.state;
@@ -464,11 +549,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         );
       }
     } else {
+      HapticHelper.error(ref: ref);
       final e = lastError ?? const SoulseekException('CONNECT_FAILED', 'Connect failed');
       setState(() {
-        // DISCONNECTED-события во время команды игнорировались, поэтому
-        // провал показываем сами — если только более свежее событие не
-        // сообщило о реальном соединении (дефект №5).
         if (_connectionState != SoulseekConnectionState.connected) {
           _connectionState = SoulseekConnectionState.failed;
           _connectionMessage = e.message;
@@ -479,12 +562,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  /// Сохраняет учётные данные для connect. Возвращает false, если secure
-  /// storage недоступен — подключение при этом продолжается.
   Future<bool> _trySaveCredentials(String username, String password) async {
     try {
       await SoulseekCredentials.save(username: username, password: password);
-      // Фаза B: проталкиваем username в нативную soulseek.db.
       unawaited(_repo.syncToNative(username: username));
       _savedUsername = username;
       _savedPassword = password;
@@ -496,12 +576,11 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  /// Save в группе Account. Подключённый клиент переподключается с новыми
-  /// данными (connect сам их сохранит); без соединения — только сохранение.
   Future<void> _saveAccount() async {
     final username = _usernameController.text.trim();
     final password = _passwordController.text;
     if (username.isEmpty || password.isEmpty) {
+      HapticHelper.error(ref: ref);
       showSnack(context, 'Enter username and password');
       return;
     }
@@ -514,8 +593,10 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     final saved = await _trySaveCredentials(username, password);
     if (!mounted) return;
     if (saved) {
+      HapticHelper.success(ref: ref);
       showSnack(context, 'Saved');
     } else {
+      HapticHelper.error(ref: ref);
       showErrorSnack(
         context,
         "Credentials couldn't be saved on this device. "
@@ -524,11 +605,8 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     }
   }
 
-  /// Cancel во время connect: прерывает retry-цикл и сразу показывает
-  /// «Disconnected»; натив получает disconnect, чтобы бросить попытку.
-  /// Без команды в полёте (CONNECTING / RECONNECTING пришли из натива —
-  /// автопереподключение) это обычный disconnect.
   Future<void> _cancelConnect() async {
+    HapticHelper.weak(ref: ref);
     if (!_connectInFlight) {
       await _disconnect();
       return;
@@ -541,6 +619,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       _connectionState = SoulseekConnectionState.disconnected;
       _connectionMessage = null;
       _connecting = false;
+      _showConnectionStatus = false;
     });
     await _disconnectQuietly();
   }
@@ -548,19 +627,14 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   Future<void> _disconnectQuietly() async {
     try {
       await SoulseekPlatformChannel.instance.disconnect();
-    } catch (_) {
-      // Клиента ещё нет — разрывать нечего.
-    }
+    } catch (_) {}
   }
 
-  /// Одна попытка подключения: стартовать сервис, вызвать connect.
-  /// Бросает SoulseekException при неудаче.
   Future<SoulseekConnectionInfo> _connectOnce(
     String username,
     String password,
   ) async {
     await SoulseekPlatformChannel.instance.startService();
-
     return SoulseekPlatformChannel.instance.connect(
       username: username,
       password: password,
@@ -570,7 +644,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   Future<void> _disconnect() async {
     if (!_isAvailable) return;
-    // Дефект №5: ответ disconnect не перезаписывает более свежие события.
+    HapticHelper.weak(ref: ref);
     final generation = ++_connectionGeneration;
     try {
       await SoulseekPlatformChannel.instance.disconnect();
@@ -579,6 +653,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           setState(() {
             _connectionState = SoulseekConnectionState.disconnected;
             _connectionMessage = null;
+            _showConnectionStatus = false;
           });
         }
         showSnack(context, 'Disconnected');
@@ -589,6 +664,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   }
 
   Future<void> _clearCredentials() async {
+    HapticHelper.medium(ref: ref);
     final confirmed = await showAppConfirmDialog(
       context: context,
       title: 'Clear credentials?',
@@ -599,11 +675,15 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
       confirmLabel: 'Clear',
       isDestructive: true,
     );
-    if (confirmed != true) return;
+    if (confirmed != true) {
+      HapticHelper.weak(ref: ref);
+      return;
+    }
 
     try {
       await SoulseekCredentials.clear();
       if (mounted) {
+        HapticHelper.confirmDelete(ref: ref);
         _savedUsername = '';
         _savedPassword = '';
         setState(() {
@@ -613,13 +693,17 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         showSnack(context, 'Credentials cleared');
       }
     } catch (_) {
-      if (mounted) showSnack(context, 'Failed to clear credentials');
+      if (mounted) {
+        HapticHelper.error(ref: ref);
+        showSnack(context, 'Failed to clear credentials');
+      }
     }
   }
 
-  // ── Персист (SQLite через репозиторий) ──
+  // ── Персист (SQLite) ──
 
   Future<void> _editListenPort() async {
+    HapticHelper.light(ref: ref);
     final text = await showAppInputDialog(
       context: context,
       title: 'Listener port',
@@ -632,10 +716,12 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     if (text == null || !mounted) return;
     final port = int.tryParse(text);
     if (port == null || port < 1 || port > 65535) {
+      HapticHelper.error(ref: ref);
       showErrorSnack(context, 'Port must be between 1 and 65535');
       return;
     }
     if (port == _listenPort) return;
+    HapticHelper.success(ref: ref);
     setState(() => _listenPort = port);
     await _repo.setListenPort(port);
   }
@@ -646,18 +732,21 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   }
 
   Future<void> _toggleStreaming(bool value) async {
+    HapticHelper.light(ref: ref);
     setState(() => _streamingEnabled = value);
     await _repo.setStreamingEnabled(value);
     await _applyFiltersToSource();
   }
 
   Future<void> _togglePreferLossless(bool value) async {
+    HapticHelper.light(ref: ref);
     setState(() => _preferLossless = value);
     await _repo.setPreferLossless(value);
     await _applyFiltersToSource();
   }
 
   Future<void> _toggleFormat(String fmt, bool selected) async {
+    HapticHelper.light(ref: ref);
     setState(() {
       if (selected) {
         _allowedFormats = {..._allowedFormats, fmt};
@@ -676,16 +765,10 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     await _applyFiltersToSource();
   }
 
-  /// Без setState: колесо уже показывает значение, а вызов возможен из
-  /// dispose колеса (коммит отложенной правки при закрытии страницы).
   Future<void> _updateSearchTimeout(int sec) async {
     if (sec < 1) return;
     _searchTimeoutSec = sec;
     await _repo.setSearchTimeoutSec(sec);
-    // Разрыв №3: применяем новый таймаут к SoulseekSource сразу (как у
-    // фильтров в _updateMaxFileSize). Ленивая загрузка в источнике
-    // одноразовая (_searchTimeoutLoaded), без этого новый таймаут
-    // дожидался бы переоткрытия страницы или рестарта приложения.
     await _applyFiltersToSource();
   }
 
@@ -708,7 +791,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
               automaticallyImplyLeading: false,
               titleSpacing: 0,
               title: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 64, 16, 8),
+                padding: const EdgeInsets.fromLTRB(16, 56, 16, 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
@@ -716,7 +799,10 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
                     if (Navigator.of(context).canPop())
                       _CircleButton(
                         icon: Icons.chevron_left_rounded,
-                        onTap: () => Navigator.of(context).maybePop(),
+                        onTap: () {
+                          HapticHelper.light(ref: ref);
+                          Navigator.of(context).maybePop();
+                        },
                         colors: colors,
                       ),
                     const SizedBox(height: 16),
@@ -808,18 +894,15 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             MediaQuery.of(context).padding.bottom,
       ),
       children: [
-        // === STATUS ===
         KeyedSubtree(
           key: _connectionSectionKey,
           child: _buildStatusCard(colors),
         ),
         _buildP2PNote(colors),
 
-        // === ACCOUNT ===
         _SectionLabel(title: 'Account', colors: colors),
         _buildAccountGroup(colors),
 
-        // === SEARCH ===
         _SectionLabel(title: 'Search', colors: colors),
         _buildSearchGroup(colors),
         _Caption(
@@ -827,12 +910,9 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           colors: colors,
         ),
 
-        // === DOWNLOADS ===
-        // Лимит размера кэша — на общей странице Cache.
         _SectionLabel(title: 'Downloads', colors: colors),
         _buildDownloadsGroup(colors),
 
-        // === ADVANCED ===
         _SectionLabel(title: 'Advanced', colors: colors),
         _buildAdvanced(colors),
       ],
@@ -863,7 +943,16 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         ? ('Disconnect', _disconnect)
         : busy
             ? ('Cancel', _cancelConnect)
-            : ('Connect', _connect);
+            : ('Connect', () {
+                HapticHelper.medium(ref: ref);
+                _connect();
+              });
+
+    final showStatus = _showConnectionStatus &&
+        (busy ||
+            connected ||
+            _connectionState == SoulseekConnectionState.failed ||
+            (_connectionMessage != null && _connectionMessage!.isNotEmpty));
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -874,8 +963,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Connect — главное действие страницы (заливка акцентом);
-            // Cancel / Disconnect — нейтральные.
             _BigButton(
               label: label,
               colors: colors,
@@ -883,40 +970,52 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
               outlined: true,
               onTap: onTap,
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-              child: Row(
-                children: [
-                  _ConnectionStatusDot(state: _connectionState, colors: colors),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _connectionStateLabel,
-                          style: TextStyle(
-                            color: colors.textPrimary,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
+            AnimatedSize(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: showStatus
+                  ? Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                      child: Row(
+                        children: [
+                          _ConnectionStatusDot(
+                            state: _connectionState,
+                            colors: colors,
                           ),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(
-                          subtitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: colors.textTertiary,
-                            fontSize: 12,
-                            fontFeatures: const [FontFeature.tabularFigures()],
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _connectionStateLabel,
+                                  style: TextStyle(
+                                    color: colors.textPrimary,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 1),
+                                Text(
+                                  subtitle,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: colors.textTertiary,
+                                    fontSize: 12,
+                                    fontFeatures: const [
+                                      FontFeature.tabularFigures()
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                        ],
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity, height: 0),
             ),
           ],
         ),
@@ -977,52 +1076,66 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
     final busy = _connecting ||
         _connectionState == SoulseekConnectionState.connecting ||
         _connectionState == SoulseekConnectionState.reconnecting;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        GroupedTiles(
-          colors: colors,
-          children: [
-            _InlineTextField(
-              controller: _usernameController,
-              colors: colors,
-              hint: 'Username',
-            ),
-            _InlineTextField(
-              controller: _passwordController,
-              colors: colors,
-              hint: 'Password',
-              obscure: _obscurePassword,
-              trailing: IconButton(
-                tooltip: _obscurePassword ? 'Show password' : 'Hide password',
-                icon: Icon(
-                  _obscurePassword
-                      ? Icons.visibility_off_outlined
-                      : Icons.visibility_outlined,
-                  color: colors.textTertiary,
-                  size: 20,
-                ),
-                onPressed: () {
-                  setState(() => _obscurePassword = !_obscurePassword);
-                },
+
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+      alignment: Alignment.topCenter,
+      child: GroupedTiles(
+        colors: colors,
+        children: [
+          _InlineTextField(
+            controller: _usernameController,
+            colors: colors,
+            hint: 'Username',
+          ),
+          _InlineTextField(
+            controller: _passwordController,
+            colors: colors,
+            hint: 'Password',
+            obscure: _obscurePassword,
+            trailing: IconButton(
+              tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+              icon: Icon(
+                _obscurePassword
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined,
+                color: colors.textTertiary,
+                size: 20,
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(18),
-            child: _BigButton(
-              label: connected && _accountDirty ? 'Save and reconnect' : 'Save',
-              colors: colors,
-              filled: true,
-              onTap: _accountDirty && !busy ? _saveAccount : null,
+              onPressed: () {
+                HapticHelper.light(ref: ref);
+                setState(() => _obscurePassword = !_obscurePassword);
+              },
             ),
           ),
-        ),
-      ],
+          if (_accountDirty)
+            Material(
+              color: colors.accent,
+              child: InkWell(
+                onTap: busy
+                    ? null
+                    : () {
+                        HapticHelper.medium(ref: ref);
+                        _saveAccount();
+                      },
+                child: SizedBox(
+                  height: 56,
+                  child: Center(
+                    child: Text(
+                      connected ? 'Save and reconnect' : 'Save',
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1040,34 +1153,47 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           value: _preferLossless,
           onChanged: _togglePreferLossless,
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Formats',
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w500,
+        // Форматы — одинаковая высота 56px, центрирование и горизонтальный скролл чипов
+        SizedBox(
+          height: 56,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Text(
+                  'Formats',
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: _allFormats.map((fmt) {
-                  final selected = _allowedFormats.contains(fmt);
-                  return _FormatChip(
-                    label: fmt.toUpperCase(),
-                    selected: selected,
-                    colors: colors,
-                    onTap: () => _toggleFormat(fmt, !selected),
-                  );
-                }).toList(),
-              ),
-            ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: _allFormats.map((fmt) {
+                          final selected = _allowedFormats.contains(fmt);
+                          return Padding(
+                            padding: const EdgeInsets.only(left: 6),
+                            child: _FormatChip(
+                              label: fmt.toUpperCase(),
+                              selected: selected,
+                              colors: colors,
+                              onTap: () => _toggleFormat(fmt, !selected),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
         _Row(
@@ -1085,14 +1211,15 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
                 colors: colors,
                 onChanged: _updateSearchTimeout,
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 2),
               Text(
                 's',
-                style: TextStyle(color: colors.textSecondary, fontSize: 14),
+                style: TextStyle(color: colors.textPrimary, fontSize: 16),
               ),
             ],
           ),
         ),
+        // Исключение: Max file size со слайдером
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
           child: Column(
@@ -1144,8 +1271,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
 
   static String _fileSizeLabel(int mb) => mb <= 0 ? 'Unlimited' : '$mb MB';
 
-  /// Ступень слайдера для сохранённого значения: старые значения вне
-  /// ступеней (ввод вручную в прежних версиях) — ближайшая ступень.
   static int _nearestFileSizeIndex(int mb) {
     if (mb <= 0) return _fileSizeSteps.length - 1;
     var best = 0;
@@ -1172,6 +1297,7 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
           value: _streamingEnabled,
           onChanged: _toggleStreaming,
         ),
+        // Исключение: Parallel downloads со слайдером
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
           child: Column(
@@ -1196,7 +1322,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
                 semanticLabel: 'Parallel downloads',
                 colors: colors,
                 count: _parallelSteps.length,
-                // Значение вне ступеней (правка БД вручную) — ближайшая.
                 index: parallelIndex >= 0
                     ? parallelIndex
                     : (_maxParallelDownloads < _parallelSteps.first
@@ -1216,9 +1341,12 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
             colors: colors,
             value: active > 0 ? '$active active' : null,
           ),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const DownloadsPage()),
-          ),
+          onTap: () {
+            HapticHelper.light(ref: ref);
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const DownloadsPage()),
+            );
+          },
         ),
       ],
     );
@@ -1231,8 +1359,6 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
         ? _sharingDirectory
         : 'Internal storage (default)';
 
-    // Одна группа: переключатель и раскрытые строки — общие скругления, как
-    // у остальных групп страницы.
     return AnimatedSize(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
@@ -1251,7 +1377,10 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
                 color: colors.textTertiary,
               ),
             ),
-            onTap: () => setState(() => _advancedOpen = !_advancedOpen),
+            onTap: () {
+              HapticHelper.light(ref: ref);
+              setState(() => _advancedOpen = !_advancedOpen);
+            },
           ),
           if (_advancedOpen) ...[
             _Row(
@@ -1270,16 +1399,19 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
                 color: colors.textTertiary,
                 size: 20,
               ),
-              onTap: () => showAppInfoDialog(
-                context: context,
-                title: 'Shared folder',
-                subtitle: 'Soulseek shares files from the internal '
-                    'storage directory of the app. On Android, '
-                    "this is the app's private storage area. "
-                    'Downloaded files are cached here and '
-                    'available for sharing with other Soulseek '
-                    'users.',
-              ),
+              onTap: () {
+                HapticHelper.light(ref: ref);
+                showAppInfoDialog(
+                  context: context,
+                  title: 'Shared folder',
+                  subtitle: 'Soulseek shares files from the internal '
+                      'storage directory of the app. On Android, '
+                      "this is the app's private storage area. "
+                      'Downloaded files are cached here and '
+                      'available for sharing with other Soulseek '
+                      'users.',
+                );
+              },
             ),
             _Row(
               colors: colors,
@@ -1287,13 +1419,16 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
               subtitle: 'Report for the developer if credentials '
                   'fail to save. Contains no passwords.',
               trailing: _NavTrailing(colors: colors),
-              onTap: () => showAppReportDialog(
-                context: context,
-                title: 'Diagnostics',
-                subtitle: 'Send this report to the developer',
-                report: SecureStorageDiagnostics.buildReport(),
-                shareSubject: 'Player: secure storage diagnostics',
-              ),
+              onTap: () {
+                HapticHelper.light(ref: ref);
+                showAppReportDialog(
+                  context: context,
+                  title: 'Diagnostics',
+                  subtitle: 'Send this report to the developer',
+                  report: SecureStorageDiagnostics.buildReport(),
+                  shareSubject: 'Player: secure storage diagnostics',
+                );
+              },
             ),
             _Row(
               colors: colors,
@@ -1308,13 +1443,8 @@ class _SoulseekSettingsPageState extends ConsumerState<SoulseekSettingsPage> {
   }
 }
 
-/// Ступени слайдера «Max file size» (МБ, 0 — без лимита, всегда последняя).
 const List<int> _fileSizeSteps = [10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 0];
-
-/// Ступени слайдера «Parallel downloads».
 const List<int> _parallelSteps = [1, 2, 3, 4, 5];
-
-/// Диапазон колеса «Search timeout», секунды.
 const int _minSearchTimeoutSec = 3;
 const int _maxSearchTimeoutSec = 120;
 
@@ -1322,7 +1452,6 @@ const int _maxSearchTimeoutSec = 120;
 //  SHARED WIDGETS
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Заголовок группы настроек (sentence case, как в концепте).
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel({required this.title, required this.colors});
 
@@ -1345,7 +1474,6 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
-/// Пояснение под группой.
 class _Caption extends StatelessWidget {
   const _Caption({required this.text, required this.colors});
 
@@ -1364,6 +1492,7 @@ class _Caption extends StatelessWidget {
   }
 }
 
+/// Стандартная плитка настроек высотой ровно 56px
 class _Row extends StatelessWidget {
   const _Row({
     required this.colors,
@@ -1385,19 +1514,21 @@ class _Row extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 56),
+      child: SizedBox(
+        height: 56,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
                       title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: titleColor ?? colors.textPrimary,
                         fontSize: 15,
@@ -1408,12 +1539,12 @@ class _Row extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         subtitle!,
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: colors.textTertiary,
                           fontSize: 12,
-                          height: 1.3,
+                          height: 1.2,
                         ),
                       ),
                     ],
@@ -1471,7 +1602,7 @@ class _SwitchRow extends StatelessWidget {
   }
 }
 
-/// Поле аккаунта во всю плитку: подсказка вместо метки (как в концепте).
+/// Поле ввода высотой ровно 56px
 class _InlineTextField extends StatelessWidget {
   const _InlineTextField({
     required this.controller,
@@ -1489,35 +1620,37 @@ class _InlineTextField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(left: 16, right: trailing == null ? 16 : 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: controller,
-              obscureText: obscure,
-              autocorrect: false,
-              enableSuggestions: !obscure,
-              style: TextStyle(color: colors.textPrimary, fontSize: 15),
-              cursorColor: colors.textPrimary,
-              decoration: InputDecoration(
-                hintText: hint,
-                hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
-                border: InputBorder.none,
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 19),
+    return SizedBox(
+      height: 56,
+      child: Padding(
+        padding: EdgeInsets.only(left: 16, right: trailing == null ? 16 : 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: controller,
+                obscureText: obscure,
+                autocorrect: false,
+                enableSuggestions: !obscure,
+                style: TextStyle(color: colors.textPrimary, fontSize: 15),
+                cursorColor: colors.textPrimary,
+                decoration: InputDecoration(
+                  hintText: hint,
+                  hintStyle: TextStyle(color: colors.textTertiary, fontSize: 15),
+                  border: InputBorder.none,
+                  isDense: true,
+                  contentPadding: EdgeInsets.zero,
+                ),
               ),
             ),
-          ),
-          ?trailing,
-        ],
+            if (trailing != null) trailing!,
+          ],
+        ),
       ),
     );
   }
 }
 
-/// Значение справа у навигационной строки + шеврон.
 class _NavTrailing extends StatelessWidget {
   const _NavTrailing({required this.colors, this.value});
 
@@ -1546,8 +1679,6 @@ class _NavTrailing extends StatelessWidget {
   }
 }
 
-/// Крупная кнопка во всю ширину: акцентная заливка ([filled]) для главного
-/// действия, иначе нейтральная. [onTap] == null — неактивна.
 class _BigButton extends StatelessWidget {
   const _BigButton({
     required this.label,
@@ -1596,7 +1727,6 @@ class _BigButton extends StatelessWidget {
   }
 }
 
-/// Плашка текущего значения рядом с заголовком.
 class _Badge extends StatelessWidget {
   const _Badge({required this.label, required this.colors});
 
@@ -1624,13 +1754,9 @@ class _Badge extends StatelessWidget {
   }
 }
 
-/// Размеры дорожки [_StepSlider]; от них же выравниваются [_StepLabels].
 const double _sliderTrackHeight = 18;
 const double _sliderThumbSize = 14;
 
-/// Слайдер с дискретными ступенями: толстая скруглённая дорожка, белый
-/// бегунок внутри неё, опционально точки ступеней. Тап или перетаскивание
-/// выбирает ближайшую ступень.
 class _StepSlider extends StatelessWidget {
   const _StepSlider({
     super.key,
@@ -1648,8 +1774,6 @@ class _StepSlider extends StatelessWidget {
   final int count;
   final int index;
   final ValueChanged<int> onChanged;
-
-  /// Подпись ступени для экранного диктора.
   final String Function(int index) labelOf;
   final bool showTicks;
 
@@ -1672,101 +1796,104 @@ class _StepSlider extends StatelessWidget {
         colors: colors,
         onStep: (delta) {
           final i = (index + delta).clamp(0, count - 1);
-          if (i != index) onChanged(i);
+          if (i != index) {
+            HapticHelper.microTick();
+            onChanged(i);
+          }
         },
         child: LayoutBuilder(
-        builder: (context, c) {
-          final w = c.maxWidth;
-          double xOf(int i) => h / 2 + (w - h) * (count < 2 ? 0 : i / (count - 1));
-          void select(double dx) {
-            final i = ((dx - h / 2) / (w - h) * (count - 1))
-                .round()
-                .clamp(0, count - 1);
-            if (i != index) onChanged(i);
-          }
+          builder: (context, c) {
+            final w = c.maxWidth;
+            double xOf(int i) => h / 2 + (w - h) * (count < 2 ? 0 : i / (count - 1));
+            void select(double dx) {
+              final i = ((dx - h / 2) / (w - h) * (count - 1))
+                  .round()
+                  .clamp(0, count - 1);
+              if (i != index) {
+                HapticHelper.microTick();
+                onChanged(i);
+              }
+            }
 
-          const duration = Duration(milliseconds: 160);
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapDown: (d) => select(d.localPosition.dx),
-            onHorizontalDragStart: (d) => select(d.localPosition.dx),
-            onHorizontalDragUpdate: (d) => select(d.localPosition.dx),
-            // Высота с запасом под палец (48); дорожка по центру.
-            child: SizedBox(
-              height: 48,
-              child: Center(
-                child: SizedBox(
-                  height: h,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: colors.background,
-                            borderRadius: BorderRadius.circular(h / 2),
+            const duration = Duration(milliseconds: 160);
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (d) => select(d.localPosition.dx),
+              onHorizontalDragStart: (d) => select(d.localPosition.dx),
+              onHorizontalDragUpdate: (d) => select(d.localPosition.dx),
+              child: SizedBox(
+                height: 48,
+                child: Center(
+                  child: SizedBox(
+                    height: h,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: colors.background,
+                              borderRadius: BorderRadius.circular(h / 2),
+                            ),
                           ),
                         ),
-                      ),
-                      AnimatedPositioned(
-                        duration: duration,
-                        curve: Curves.easeOutCubic,
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: xOf(index) + h / 2,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: colors.accent,
-                            borderRadius: BorderRadius.circular(h / 2),
+                        AnimatedPositioned(
+                          duration: duration,
+                          curve: Curves.easeOutCubic,
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: xOf(index) + h / 2,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: colors.accent,
+                              borderRadius: BorderRadius.circular(h / 2),
+                            ),
                           ),
                         ),
-                      ),
-                      if (showTicks)
-                        for (var i = 0; i < count; i++)
-                          if (i != index)
-                            Positioned(
-                              left: xOf(i) - 3,
-                              top: h / 2 - 3,
-                              child: Container(
-                                width: 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  color: i < index
-                                      ? colors.background
-                                      : colors.textTertiary,
-                                  shape: BoxShape.circle,
+                        if (showTicks)
+                          for (var i = 0; i < count; i++)
+                            if (i != index)
+                              Positioned(
+                                left: xOf(i) - 3,
+                                top: h / 2 - 3,
+                                child: Container(
+                                  width: 6,
+                                  height: 6,
+                                  decoration: BoxDecoration(
+                                    color: i < index
+                                        ? colors.background
+                                        : colors.textTertiary,
+                                    shape: BoxShape.circle,
+                                  ),
                                 ),
                               ),
+                        AnimatedPositioned(
+                          duration: duration,
+                          curve: Curves.easeOutCubic,
+                          left: xOf(index) - thumb / 2,
+                          top: (h - thumb) / 2,
+                          child: Container(
+                            width: thumb,
+                            height: thumb,
+                            decoration: BoxDecoration(
+                              color: colors.textPrimary,
+                              shape: BoxShape.circle,
                             ),
-                      AnimatedPositioned(
-                        duration: duration,
-                        curve: Curves.easeOutCubic,
-                        left: xOf(index) - thumb / 2,
-                        top: (h - thumb) / 2,
-                        child: Container(
-                          width: thumb,
-                          height: thumb,
-                          decoration: BoxDecoration(
-                            color: colors.textPrimary,
-                            shape: BoxShape.circle,
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-          );
-        },
+            );
+          },
         ),
       ),
     );
   }
 }
 
-/// Клавиатура для слайдера и колеса (Windows): стрелки и +/- меняют
-/// значение на шаг; Tab доводит фокус, контур показывает, что он здесь.
 class _KeyStepper extends StatefulWidget {
   const _KeyStepper({
     required this.colors,
@@ -1826,8 +1953,6 @@ class _KeyStepperState extends State<_KeyStepper> {
   }
 }
 
-/// Подписи над ступенями [_StepSlider]: центр каждой — над её точкой,
-/// выбранная крупнее.
 class _StepLabels extends StatelessWidget {
   const _StepLabels({
     required this.colors,
@@ -1841,10 +1966,6 @@ class _StepLabels extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Ячейки шириной в дорожку + spaceBetween дают те же центры, что и
-    // xOf() слайдера: h/2 + i·(w − h)/(n − 1).
-    // AnimatedDefaultTextStyle заменяет стиль целиком — берём базовый
-    // (шрифт темы) и меняем только нужное.
     final base = DefaultTextStyle.of(context).style;
     return SizedBox(
       height: 22,
@@ -1878,10 +1999,6 @@ class _StepLabels extends StatelessWidget {
   }
 }
 
-/// Горизонтальное колесо выбора числа: текущее значение крупно, соседние —
-/// мелко и приглушённо. Листается свайпом или колесом мыши, тап по соседу —
-/// шаг на одно значение. [onChanged] — с debounce, отложенная правка
-/// коммитится и при закрытии страницы.
 class _WheelPicker extends StatefulWidget {
   const _WheelPicker({
     super.key,
@@ -1923,13 +2040,10 @@ class _WheelPickerState extends State<_WheelPicker> {
     );
   }
 
-  /// Настройки из БД догружаются после первого кадра — колесо должно
-  /// переехать на сохранённое значение (регрессия «таймаут всегда 15»).
   @override
   void didUpdateWidget(covariant _WheelPicker oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.value == oldWidget.value) return;
-    // Пока пользователь листает, внешнее значение не перетирает выбор.
     if (_debounce != null) return;
     final v = _clamp(widget.value);
     if (v == _current) return;
@@ -1939,7 +2053,6 @@ class _WheelPickerState extends State<_WheelPicker> {
 
   @override
   void dispose() {
-    // Страница закрылась раньше debounce — правка не должна потеряться.
     if (_debounce != null) {
       _debounce!.cancel();
       _debounce = null;
@@ -1950,10 +2063,9 @@ class _WheelPickerState extends State<_WheelPicker> {
   }
 
   void _onSelected(int index) {
-    // jumpToItem из didUpdateWidget (значение из БД) тоже вызывает
-    // onSelectedItemChanged — это не правка пользователя, сохранять нечего.
     final value = widget.min + index;
     if (value == _current) return;
+    HapticHelper.microTick();
     setState(() => _current = value);
     _debounce?.cancel();
     _debounce = Timer(_debounceDelay, () {
@@ -1965,6 +2077,7 @@ class _WheelPickerState extends State<_WheelPicker> {
   void _step(int delta) {
     final target = _clamp(_current + delta);
     if (target == _current) return;
+    HapticHelper.microTick();
     _controller.animateToItem(
       target - widget.min,
       duration: const Duration(milliseconds: 200),
@@ -1987,60 +2100,57 @@ class _WheelPickerState extends State<_WheelPicker> {
       child: _KeyStepper(
         colors: colors,
         onStep: _step,
-        // Числа колеса диктору не нужны: значение уже в Semantics.value.
         child: ExcludeSemantics(
-        child: GestureDetector(
-        onTapUp: (d) {
-          if (d.localPosition.dx < _itemExtent) {
-            _step(-1);
-          } else if (d.localPosition.dx > _itemExtent * 2) {
-            _step(1);
-          }
-        },
-        child: SizedBox(
-          width: _itemExtent * 3,
-          height: 48,
-          // Вертикальное колесо, повёрнутое на 90° против часовой: значения
-          // растут слева направо, колесо мыши листает как обычно.
-          child: RotatedBox(
-            quarterTurns: 3,
-            child: ListWheelScrollView.useDelegate(
-              controller: _controller,
-              itemExtent: _itemExtent,
-              diameterRatio: 100,
-              physics: const FixedExtentScrollPhysics(),
-              onSelectedItemChanged: _onSelected,
-              childDelegate: ListWheelChildBuilderDelegate(
-                childCount: widget.max - widget.min + 1,
-                builder: (context, i) {
-                  final selected = widget.min + i == _current;
-                  return RotatedBox(
-                    quarterTurns: 1,
-                    child: Center(
-                      child: Text(
-                        '${widget.min + i}',
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.visible,
-                        style: TextStyle(
-                          color: selected
-                              ? colors.textPrimary
-                              : colors.textTertiary,
-                          fontSize: selected ? 17 : 12,
-                          fontWeight:
-                              selected ? FontWeight.w600 : FontWeight.w500,
-                          fontFeatures: const [FontFeature.tabularFigures()],
+          child: GestureDetector(
+            onTapUp: (d) {
+              if (d.localPosition.dx < _itemExtent) {
+                _step(-1);
+              } else if (d.localPosition.dx > _itemExtent * 2) {
+                _step(1);
+              }
+            },
+            child: SizedBox(
+              width: _itemExtent * 3,
+              height: 48,
+              child: RotatedBox(
+                quarterTurns: 3,
+                child: ListWheelScrollView.useDelegate(
+                  controller: _controller,
+                  itemExtent: _itemExtent,
+                  diameterRatio: 100,
+                  physics: const FixedExtentScrollPhysics(),
+                  onSelectedItemChanged: _onSelected,
+                  childDelegate: ListWheelChildBuilderDelegate(
+                    childCount: widget.max - widget.min + 1,
+                    builder: (context, i) {
+                      final selected = widget.min + i == _current;
+                      return RotatedBox(
+                        quarterTurns: 1,
+                        child: Center(
+                          child: Text(
+                            '${widget.min + i}',
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.visible,
+                            style: TextStyle(
+                              color: selected
+                                  ? colors.textPrimary
+                                  : colors.textTertiary,
+                              fontSize: selected ? 17 : 12,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w500,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  );
-                },
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
           ),
         ),
-      ),
-      ),
       ),
     );
   }
@@ -2131,7 +2241,6 @@ class _ConnectionStatusDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Монохромно в цветах палитры; цветной — только сбой.
     final (color, pulsing) = switch (state) {
       SoulseekConnectionState.connected => (colors.textPrimary, false),
       SoulseekConnectionState.connecting => (colors.textSecondary, true),

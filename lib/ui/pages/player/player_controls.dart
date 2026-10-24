@@ -1,9 +1,10 @@
 // lib/ui/pages/player/player_controls.dart
 //
 // Кнопки управления воспроизведением: prev / play-pause / next
-// с анимированным нажатием. Вынесены из player_page.dart (план §1.3).
+// с анимированным нажатием.
 
-import 'package:audio_service/audio_service.dart' show PlaybackState, AudioProcessingState;
+import 'package:audio_service/audio_service.dart'
+    show PlaybackState, AudioProcessingState;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -22,21 +23,39 @@ class PlayerControls extends ConsumerStatefulWidget {
 
 class _PlayerControlsState extends ConsumerState<PlayerControls>
     with TickerProviderStateMixin {
+  // --- Размеры (вместо магических чисел) ---
+  static const double _sideButtonBaseWidth = 56;
+  static const double _sideButtonExpanded = 24;
+  static const double _sideButtonCompressed = 20;
+  static const double _playButtonBaseWidth = 170;
+  static const double _playButtonExpanded = 40;
+  static const double _playWidthSideReduction = 30;
+  static const double _buttonHeight = 64;
+  static const double _gapSmall = 5;
+  static const double _gapMedium = 10;
+  static const double _iconSizeSide = 28;
+  static const double _iconSizePlay = 36;
+  static const double _progressIndicatorSize = 24;
+
+  // --- Длительности анимаций ---
+  static const Duration _animDurationLong = Duration(milliseconds: 500);
+  static const Duration _animDurationShort = Duration(milliseconds: 200);
+  static const Duration _pressDuration = Duration(milliseconds: 100);
+  static const Duration _releaseDuration = Duration(milliseconds: 450);
+
   late final AnimationController _playAnim = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 500),
+    duration: _animDurationLong,
     value: 0,
   );
-
   late final AnimationController _prevAnim = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 200),
+    duration: _animDurationShort,
     value: 0,
   );
-
   late final AnimationController _nextAnim = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 200),
+    duration: _animDurationShort,
     value: 0,
   );
 
@@ -52,79 +71,81 @@ class _PlayerControlsState extends ConsumerState<PlayerControls>
     super.dispose();
   }
 
-  void _onPlayPointerDown(PointerDownEvent event) {
-    if (!_isPlayPressed) {
-      _isPlayPressed = true;
-      _playAnim.animateTo(
-        1,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeInOutQuart,
-      );
+  // --- Унифицированные обработчики нажатий ---
+
+  void _onPointerDown(
+    bool isPressed,
+    VoidCallback setPressed,
+    AnimationController anim,
+  ) {
+    if (!isPressed) {
+      setPressed();
+      anim.animateTo(1, duration: _pressDuration, curve: Curves.easeInOutQuart);
     }
   }
 
-  void _onPlayPointerUp(PointerUpEvent event) => _onPlayRelease();
-  void _onPlayPointerCancel(PointerCancelEvent event) => _onPlayRelease();
-
-  void _onPlayRelease() {
-    if (_isPlayPressed) {
-      _isPlayPressed = false;
-      _playAnim.animateTo(
-        0,
-        duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutBack,
-      );
+  void _onRelease(
+    bool isPressed,
+    VoidCallback setUnpressed,
+    AnimationController anim,
+  ) {
+    if (isPressed) {
+      setUnpressed();
+      anim.animateTo(0, duration: _releaseDuration, curve: Curves.easeOutBack);
     }
   }
 
-  void _onPrevPointerDown(PointerDownEvent event) {
-    if (!_isPrevPressed) {
-      _isPrevPressed = true;
-      _prevAnim.animateTo(
-        1,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeInOutQuart,
-      );
-    }
-  }
+  void _onPlayPointerDown(PointerDownEvent event) =>
+      _onPointerDown(_isPlayPressed, () => _isPlayPressed = true, _playAnim);
+  void _onPlayPointerUp(PointerUpEvent event) =>
+      _onRelease(_isPlayPressed, () => _isPlayPressed = false, _playAnim);
+  void _onPlayPointerCancel(PointerCancelEvent event) =>
+      _onRelease(_isPlayPressed, () => _isPlayPressed = false, _playAnim);
 
-  void _onPrevPointerUp(PointerUpEvent event) => _onPrevRelease();
-  void _onPrevPointerCancel(PointerCancelEvent event) => _onPrevRelease();
+  void _onPrevPointerDown(PointerDownEvent event) =>
+      _onPointerDown(_isPrevPressed, () => _isPrevPressed = true, _prevAnim);
+  void _onPrevPointerUp(PointerUpEvent event) =>
+      _onRelease(_isPrevPressed, () => _isPrevPressed = false, _prevAnim);
+  void _onPrevPointerCancel(PointerCancelEvent event) =>
+      _onRelease(_isPrevPressed, () => _isPrevPressed = false, _prevAnim);
 
-  void _onPrevRelease() {
-    if (_isPrevPressed) {
-      _isPrevPressed = false;
-      _prevAnim.animateTo(
-        0,
-        duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutBack,
-      );
-    }
-  }
+  void _onNextPointerDown(PointerDownEvent event) =>
+      _onPointerDown(_isNextPressed, () => _isNextPressed = true, _nextAnim);
+  void _onNextPointerUp(PointerUpEvent event) =>
+      _onRelease(_isNextPressed, () => _isNextPressed = false, _nextAnim);
+  void _onNextPointerCancel(PointerCancelEvent event) =>
+      _onRelease(_isNextPressed, () => _isNextPressed = false, _nextAnim);
 
-  void _onNextPointerDown(PointerDownEvent event) {
-    if (!_isNextPressed) {
-      _isNextPressed = true;
-      _nextAnim.animateTo(
-        1,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeInOutQuart,
-      );
-    }
-  }
-
-  void _onNextPointerUp(PointerUpEvent event) => _onNextRelease();
-  void _onNextPointerCancel(PointerCancelEvent event) => _onNextRelease();
-
-  void _onNextRelease() {
-    if (_isNextPressed) {
-      _isNextPressed = false;
-      _nextAnim.animateTo(
-        0,
-        duration: const Duration(milliseconds: 450),
-        curve: Curves.easeOutBack,
-      );
-    }
+  /// Универсальный построитель боковых кнопок (prev / next).
+  Widget _buildSideButton({
+    required double width,
+    required IconData icon,
+    required VoidCallback onTap,
+    required PointerDownEventListener onPointerDown,
+    required PointerUpEventListener onPointerUp,
+    required PointerCancelEventListener onPointerCancel,
+  }) {
+    return Listener(
+      onPointerDown: onPointerDown,
+      onPointerUp: onPointerUp,
+      onPointerCancel: onPointerCancel,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Material(
+          color: widget.colors.elevated,
+          borderRadius: BorderRadius.circular(32), // всегда 32
+          child: SizedBox(
+            width: width,
+            height: _buttonHeight,
+            child: Icon(
+              icon,
+              color: widget.colors.textPrimary,
+              size: _iconSizeSide,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -146,45 +167,38 @@ class _PlayerControlsState extends ConsumerState<PlayerControls>
             final prevExpanded = _prevAnim.value;
             final nextExpanded = _nextAnim.value;
 
-            final prevWidth = 56 - 20 * playExpanded + 24 * prevExpanded;
-            final nextWidth = 56 - 20 * playExpanded + 24 * nextExpanded;
-            final playWidth =
-                170 + 40 * playExpanded - 30 * (prevExpanded + nextExpanded);
-
-            final isPlayPressed = _playAnim.value > 0 || _isPlayPressed;
-            final isPrevPressed = _prevAnim.value > 0 || _isPrevPressed;
-            final isNextPressed = _nextAnim.value > 0 || _isNextPressed;
+            final prevWidth = _sideButtonBaseWidth -
+                _sideButtonCompressed * playExpanded +
+                _sideButtonExpanded * prevExpanded;
+            final nextWidth = _sideButtonBaseWidth -
+                _sideButtonCompressed * playExpanded +
+                _sideButtonExpanded * nextExpanded;
+            final playWidth = _playButtonBaseWidth +
+                _playButtonExpanded * playExpanded -
+                _playWidthSideReduction * (prevExpanded + nextExpanded);
 
             return Row(
+              // <<< ИСПРАВЛЕНИЕ БАГА:
+              // mainAxisSize.min сжимает Row до содержимого, и родитель
+              // центрует его. Без этого Row растягивался на всю ширину
+              // и прижимал кнопки влево (mainAxisAlignment по умолчанию
+              // = start), из-за чего на экранах шире 360 px блок был
+              // смещён влево.
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const SizedBox(width: 5),
-                Listener(
+                const SizedBox(width: _gapSmall),
+                _buildSideButton(
+                  width: prevWidth,
+                  icon: Icons.skip_previous_rounded,
+                  onTap: () {
+                    widget.player.skipToPrevious();
+                    HapticHelper.light(ref: ref);
+                  },
                   onPointerDown: _onPrevPointerDown,
                   onPointerUp: _onPrevPointerUp,
                   onPointerCancel: _onPrevPointerCancel,
-                  child: GestureDetector(
-                    onTap: () {
-                      widget.player.skipToPrevious();
-                      HapticHelper.light(ref: ref);
-                    },
-                    child: Material(
-                      color: widget.colors.elevated,
-                      borderRadius: BorderRadius.circular(
-                        isPrevPressed ? 32 : 32,
-                      ),
-                      child: SizedBox(
-                        width: prevWidth,
-                        height: 64,
-                        child: Icon(
-                          Icons.skip_previous_rounded,
-                          color: widget.colors.textPrimary,
-                          size: 28,
-                        ),
-                      ),
-                    ),
-                  ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: _gapMedium),
                 Listener(
                   onPointerDown: _onPlayPointerDown,
                   onPointerUp: _onPlayPointerUp,
@@ -196,19 +210,15 @@ class _PlayerControlsState extends ConsumerState<PlayerControls>
                     },
                     child: Material(
                       color: widget.colors.elevatedHi,
-                      borderRadius: BorderRadius.circular(
-                        playing
-                            ? (isPlayPressed ? 20 : 20)
-                            : (isPlayPressed ? 32 : 32),
-                      ),
+                      borderRadius: BorderRadius.circular(playing ? 20 : 32),
                       child: SizedBox(
                         width: playWidth,
-                        height: 64,
+                        height: _buttonHeight,
                         child: Center(
                           child: loading
                               ? SizedBox(
-                                  width: 24,
-                                  height: 24,
+                                  width: _progressIndicatorSize,
+                                  height: _progressIndicatorSize,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2.4,
                                     color: widget.colors.textPrimary,
@@ -219,41 +229,26 @@ class _PlayerControlsState extends ConsumerState<PlayerControls>
                                       ? Icons.pause_rounded
                                       : Icons.play_arrow_rounded,
                                   color: widget.colors.textPrimary,
-                                  size: 36,
+                                  size: _iconSizePlay,
                                 ),
                         ),
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Listener(
+                const SizedBox(width: _gapMedium),
+                _buildSideButton(
+                  width: nextWidth,
+                  icon: Icons.skip_next_rounded,
+                  onTap: () {
+                    HapticHelper.light(ref: ref);
+                    widget.player.skipToNext();
+                  },
                   onPointerDown: _onNextPointerDown,
                   onPointerUp: _onNextPointerUp,
                   onPointerCancel: _onNextPointerCancel,
-                  child: GestureDetector(
-                    onTap: () {
-                      HapticHelper.light(ref: ref);
-                      widget.player.skipToNext();
-                    },
-                    child: Material(
-                      color: widget.colors.elevated,
-                      borderRadius: BorderRadius.circular(
-                        isNextPressed ? 32 : 32,
-                      ),
-                      child: SizedBox(
-                        width: nextWidth,
-                        height: 64,
-                        child: Icon(
-                          Icons.skip_next_rounded,
-                          color: widget.colors.textPrimary,
-                          size: 28,
-                        ),
-                      ),
-                    ),
-                  ),
                 ),
-                const SizedBox(width: 5),
+                const SizedBox(width: _gapSmall),
               ],
             );
           },

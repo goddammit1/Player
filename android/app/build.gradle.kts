@@ -82,7 +82,11 @@ android {
                 throw GradleException(
                     "android/key.properties не найден. Release-сборка требует постоянный release-keystore."
                 )
+                
+            getByName("debug") {
+                applicationIdSuffix = ".dev"
             }
+
             signingConfig = signingConfigs.getByName("release")
         }
     }
