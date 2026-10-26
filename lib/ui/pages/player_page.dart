@@ -47,7 +47,7 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
     with TickerProviderStateMixin {
   late final QueueSheetController _queueCtrl;
 
-  String? _cachedArtworkId;
+  String? _cachedArtworkUrl;
   ImageProvider? _cachedArtwork;
 
   // --- Константы раскладки ---
@@ -172,22 +172,22 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
     );
   }
 
-  /// Обложка для фона с кэшированием по id трека.
+  /// Источник обложки для фона. Кэшируется по URL, а не по id трека: у того
+  /// же трека artUri меняется, когда обложка докачалась или её заменили.
+  /// Ненайденный файл не кэшируется: обложка может докачаться позже.
   ImageProvider? _artworkFor(MediaItem? item) {
     final url = item?.artUri?.toString();
     if (url == null || url.isEmpty) return null;
-
-    if (item?.id == _cachedArtworkId) {
-      return _cachedArtwork;
+    if (url != _cachedArtworkUrl || _cachedArtwork == null) {
+      _cachedArtworkUrl = url;
+      _cachedArtwork = artworkImageProvider(url);
     }
-    _cachedArtworkId = item?.id;
-    _cachedArtwork = artworkImageProvider(url);
     return _cachedArtwork;
   }
 
-    /// Обложка с анимацией масштаба, скругления и тенью.
+  /// Обложка с анимацией масштаба, скругления и тенью.
   ///
-  /// • На паузе: scale = 0.9, радиус углов = [_artworkRadiusPaused] (30).
+  /// • На паузе: scale = [_artworkPausedScale], радиус углов = [_artworkRadiusPaused] (30).
   /// • При воспроизведении: scale = 1.0, радиус = [_artworkRadiusPlaying].
   /// • Тень рисуется внешним контейнером (без clipBehavior, чтобы не обрезалась),
   ///   а внутренний контейнер обрезает саму картинку по радиусу.
@@ -215,7 +215,7 @@ class _PlayerContentState extends ConsumerState<PlayerContent>
               borderRadius: BorderRadius.circular(radius),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(_artworkShadowOpacity),
+                  color: Colors.black.withValues(alpha: _artworkShadowOpacity),
                   blurRadius: _artworkShadowBlur,
                   spreadRadius: _artworkShadowSpread,
                   offset: const Offset(0, _artworkShadowOffsetY),
