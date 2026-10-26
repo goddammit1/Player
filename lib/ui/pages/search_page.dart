@@ -299,7 +299,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                 if (e.isFolder) {
                   return SearchFolderTileGrid(
                     tracks: e.tracks,
-                    focus: e.focusTrack,
+                    targets: e.targetTracks,
                     isPlaying: playing(e, currentId),
                     colors: colors,
                   );
@@ -329,7 +329,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
               if (e.isFolder) {
                 return SearchFolderTileList(
                   tracks: e.tracks,
-                  focus: e.focusTrack,
+                  targets: e.targetTracks,
                   isPlaying: playing(e, currentId),
                   onPlay: () => _playFolder(e.tracks, e.focus ?? 0),
                   colors: colors,

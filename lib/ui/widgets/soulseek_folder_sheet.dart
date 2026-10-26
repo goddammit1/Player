@@ -5,7 +5,8 @@
 // Открывается с карточки папки в выдаче или из меню одиночного трека.
 // Сразу показывает известные треки (совпавшие с поиском), параллельно
 // запрашивает у пира всю папку (SoulseekSource.loadFolder) и, когда она
-// пришла, показывает полный список. Тап по треку — очередь из треков папки.
+// пришла, показывает полный список. Искомые треки — отдельным разделом
+// сверху, остальная папка ниже. Тап по треку — очередь из треков папки.
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
@@ -80,17 +81,17 @@ class SoulseekFolderInfo {
 }
 
 /// Показывает шторку папки, в которой лежат [tracks] (треки одного пира и
-/// одного каталога). [focus] — искомый трек: выделен, список прокручен к нему.
+/// одного каталога). [targets] — искомые треки: разделом над остальной папкой.
 Future<void> showSoulseekFolderSheet(
   BuildContext context,
   List<Track> tracks, {
-  Track? focus,
+  List<Track> targets = const [],
 }) {
   if (tracks.isEmpty) return Future.value();
   if (isDesktop) {
     return showDesktopModalSheet(
       context: context,
-      builder: (_) => SoulseekFolderSheet(tracks: tracks, focus: focus),
+      builder: (_) => SoulseekFolderSheet(tracks: tracks, targets: targets),
     );
   }
   return showModalBottomSheet<void>(
@@ -98,18 +99,22 @@ Future<void> showSoulseekFolderSheet(
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.black.withValues(alpha: 0.5),
-    builder: (_) => SoulseekFolderSheet(tracks: tracks, focus: focus),
+    builder: (_) => SoulseekFolderSheet(tracks: tracks, targets: targets),
   );
 }
 
 class SoulseekFolderSheet extends ConsumerStatefulWidget {
-  const SoulseekFolderSheet({super.key, required this.tracks, this.focus});
+  const SoulseekFolderSheet({
+    super.key,
+    required this.tracks,
+    this.targets = const [],
+  });
 
   /// Известные треки папки (из выдачи поиска).
   final List<Track> tracks;
 
-  /// Искомый трек папки (см. `folderFocusIndex`).
-  final Track? focus;
+  /// Искомые треки папки, лучший первым (см. `folderTargetIndexes`).
+  final List<Track> targets;
 
   @override
   ConsumerState<SoulseekFolderSheet> createState() =>
@@ -121,24 +126,10 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
   bool _loading = false;
   bool _failed = false;
 
-  /// Строка искомого трека — для прокрутки к нему.
-  final _focusKey = GlobalKey();
-
   @override
   void initState() {
     super.initState();
-    _scrollToFocus();
     _loadFolder();
-  }
-
-  /// Прокручивает список к [SoulseekFolderSheet.focus] после кадра.
-  void _scrollToFocus() {
-    if (widget.focus == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _focusKey.currentContext;
-      if (ctx == null || !ctx.mounted) return;
-      Scrollable.ensureVisible(ctx, alignment: 0.3);
-    });
   }
 
   Future<void> _loadFolder() async {
@@ -152,8 +143,6 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
         _tracks = full;
         _loading = false;
       });
-      // В полной папке искомый трек мог сместиться.
-      _scrollToFocus();
     } catch (_) {
       // Пир офлайн / не принял соединение — остаются совпавшие файлы.
       if (!mounted) return;
@@ -326,22 +315,59 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
       stream: player.mediaItem,
       builder: (context, snap) {
         final currentId = snap.data?.id;
-        final focusId = widget.focus?.globalId;
-        // Не ленивый список: строка искомого трека должна быть построена,
-        // чтобы к ней прокрутить (в папке десятки треков).
+        final (targets, rest) = _sections();
+        Widget row(int i, {bool target = false}) => _buildRow(
+              i,
+              colors,
+              playing: currentId != null && currentId == _tracks[i].globalId,
+              target: target,
+            );
         return ListView(
           padding: EdgeInsets.fromLTRB(8, 6, 8, bottomInset + 12),
           children: [
-            for (var i = 0; i < _tracks.length; i++)
-              _buildRow(
-                i,
-                colors,
-                playing: currentId != null && currentId == _tracks[i].globalId,
-                focused: focusId != null && focusId == _tracks[i].globalId,
-              ),
+            if (targets.isNotEmpty) ...[
+              _buildSectionLabel('Matches', colors),
+              for (final i in targets) row(i, target: true),
+              if (rest.isNotEmpty) _buildSectionLabel('Rest of folder', colors),
+            ],
+            for (final i in rest) row(i),
           ],
         );
       },
+    );
+  }
+
+  /// Индексы [_tracks]: искомые (в порядке [SoulseekFolderSheet.targets]) и
+  /// остальные (в порядке папки). Искомые узнаются по globalId — в полной
+  /// папке это те же объекты (см. `SoulseekSource.loadFolder`).
+  (List<int>, List<int>) _sections() {
+    final index = {
+      for (var i = 0; i < _tracks.length; i++) _tracks[i].globalId: i,
+    };
+    final picked = <int>{
+      for (final t in widget.targets) ?index[t.globalId],
+    };
+    return (
+      picked.toList(),
+      [
+        for (var i = 0; i < _tracks.length; i++)
+          if (!picked.contains(i)) i,
+      ],
+    );
+  }
+
+  Widget _buildSectionLabel(String text, dynamic colors) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          color: colors.textTertiary,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+        ),
+      ),
     );
   }
 
@@ -349,17 +375,16 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
     int i,
     dynamic colors, {
     required bool playing,
-    required bool focused,
+    required bool target,
   }) {
     final t = _tracks[i];
     final duration = t.duration;
     return Material(
-      key: focused ? _focusKey : null,
       // Искомый трек — фоном: акцент палитры обложки бывает неотличим от
       // фона строки.
       color: playing
           ? colors.elevatedHi
-          : focused
+          : target
               ? colors.elevated
               : Colors.transparent,
       borderRadius: BorderRadius.circular(12),
@@ -397,7 +422,7 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
                       style: TextStyle(
                         color: colors.textPrimary,
                         fontSize: 15,
-                        fontWeight: focused ? FontWeight.w700 : FontWeight.w600,
+                        fontWeight: target ? FontWeight.w700 : FontWeight.w600,
                       ),
                     ),
                     if (t.qualityLabel != null &&

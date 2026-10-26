@@ -11,23 +11,28 @@ class SearchEntry {
   SearchEntry.track(Track track)
       : tracks = [track],
         isFolder = false,
-        focus = null;
+        targets = const [];
 
-  SearchEntry.folder(this.tracks, {this.focus}) : isFolder = true;
+  SearchEntry.folder(this.tracks, {this.targets = const []}) : isFolder = true;
 
   final List<Track> tracks;
   final bool isFolder;
 
-  /// Трек папки, который искали ([folderFocusIndex]); null — искали саму
-  /// папку (альбом) или совпадение неочевидно.
-  final int? focus;
+  /// Индексы искомых треков папки, лучший первым ([folderTargetIndexes]);
+  /// пусто — искали саму папку (альбом) или совпадение неочевидно.
+  final List<int> targets;
+
+  /// Лучший из искомых треков: его показывает и играет карточка.
+  int? get focus => targets.firstOrNull;
 
   Track? get focusTrack => focus == null ? null : tracks[focus!];
+
+  List<Track> get targetTracks => [for (final i in targets) tracks[i]];
 }
 
 /// Сворачивает треки папок в [SearchEntry.folder] на месте первого трека
 /// папки; остальные треки — по одному. [query] — запрос поиска: по нему в
-/// папке находится искомый трек ([SearchEntry.focus]).
+/// папке находятся искомые треки ([SearchEntry.targets]).
 List<SearchEntry> groupSearchEntries(List<Track> tracks, {String query = ''}) {
   final entries = <SearchEntry>[];
   final folders = <String, List<Track>>{};
@@ -50,37 +55,38 @@ List<SearchEntry> groupSearchEntries(List<Track> tracks, {String query = ''}) {
     for (final e in entries)
       e.isFolder
           ? SearchEntry.folder(e.tracks,
-              focus: folderFocusIndex(e.tracks, query))
+              targets: folderTargetIndexes(e.tracks, query))
           : e,
   ];
 }
 
-/// Индекс трека [tracks], который искали запросом [query], или null.
+/// Индексы треков [tracks], которые искали запросом [query], лучший первым.
 ///
 /// Пир отвечает файлами, у которых слова запроса есть где-то в пути, — если
 /// слова названия трека входят и в название папки (заглавный трек альбома),
 /// совпадает весь альбом, и без этого карточка играла бы первый трек.
-/// Кандидат — трек, все слова названия которого (без скобок «(Live)»,
-/// «[Remastered]» и номера) есть в запросе; из нескольких выигрывает более
-/// длинное название, затем меньше лишних слов в полном названии.
-int? folderFocusIndex(List<Track> tracks, String query) {
+/// Искомый — трек, все слова названия которого (без скобок «(Live)»,
+/// «[Remastered]» и номера) есть в запросе; выше более длинное название,
+/// затем меньше лишних слов в полном названии, затем порядок в папке.
+List<int> folderTargetIndexes(List<Track> tracks, String query) {
   final q = _words(query).toSet();
-  if (q.isEmpty) return null;
-  int? best;
-  var bestScore = 0;
+  if (q.isEmpty) return const [];
+  final scored = <(int, int)>[];
   for (var i = 0; i < tracks.length; i++) {
     final title = tracks[i].title;
     final core = _titleWords(title.replaceAll(_brackets, ' '));
     if (core.isEmpty || !core.every(q.contains)) continue;
     final extra = _titleWords(title).where((w) => !q.contains(w)).length;
-    final score = core.length * 100 - extra;
-    if (best == null || score > bestScore) {
-      best = i;
-      bestScore = score;
-    }
+    scored.add((i, core.length * 100 - extra));
   }
-  return best;
+  scored.sort((a, b) =>
+      a.$2 != b.$2 ? b.$2.compareTo(a.$2) : a.$1.compareTo(b.$1));
+  return [for (final (i, _) in scored) i];
 }
+
+/// Лучший из [folderTargetIndexes] или null.
+int? folderFocusIndex(List<Track> tracks, String query) =>
+    folderTargetIndexes(tracks, query).firstOrNull;
 
 final _brackets = RegExp(r'\([^)]*\)|\[[^\]]*\]|\{[^}]*\}');
 final _nonWord = RegExp(r'[^\p{L}\p{N}]+', unicode: true);
@@ -119,7 +125,7 @@ class SearchFolderTileList extends StatelessWidget {
   const SearchFolderTileList({
     super.key,
     required this.tracks,
-    this.focus,
+    this.targets = const [],
     required this.isPlaying,
     required this.onPlay,
     required this.colors,
@@ -127,8 +133,8 @@ class SearchFolderTileList extends StatelessWidget {
 
   final List<Track> tracks;
 
-  /// Искомый трек папки ([SearchEntry.focusTrack]).
-  final Track? focus;
+  /// Искомые треки папки, лучший первым ([SearchEntry.targetTracks]).
+  final List<Track> targets;
 
   /// Играет один из треков папки.
   final bool isPlaying;
@@ -140,6 +146,7 @@ class SearchFolderTileList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final info = SoulseekFolderInfo.of(tracks);
+    final focus = targets.firstOrNull;
     final first = focus ?? tracks.first;
     final (title, subtitle) = _folderTitles(info, focus);
     return Container(
@@ -151,7 +158,7 @@ class SearchFolderTileList extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => showSoulseekFolderSheet(context, tracks, focus: focus),
+          onTap: () => showSoulseekFolderSheet(context, tracks, targets: targets),
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -264,26 +271,27 @@ class SearchFolderTileGrid extends StatelessWidget {
   const SearchFolderTileGrid({
     super.key,
     required this.tracks,
-    this.focus,
+    this.targets = const [],
     required this.isPlaying,
     required this.colors,
   });
 
   final List<Track> tracks;
 
-  /// Искомый трек папки ([SearchEntry.focusTrack]).
-  final Track? focus;
+  /// Искомые треки папки, лучший первым ([SearchEntry.targetTracks]).
+  final List<Track> targets;
   final bool isPlaying;
   final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     final info = SoulseekFolderInfo.of(tracks);
+    final focus = targets.firstOrNull;
     final first = focus ?? tracks.first;
     final (title, subtitle) = _folderTitles(info, focus);
     final radius = SmoothBorderRadius(cornerRadius: 40, cornerSmoothing: 1.0);
     return GestureDetector(
-      onTap: () => showSoulseekFolderSheet(context, tracks, focus: focus),
+      onTap: () => showSoulseekFolderSheet(context, tracks, targets: targets),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final side = constraints.maxWidth;

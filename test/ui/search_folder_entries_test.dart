@@ -90,6 +90,24 @@ void main() {
       expect(
           folderFocusIndex(tracks, 'Гражданская оборона все идет по плану'), 0);
     });
+
+    test('folderTargetIndexes: every matched track, best first', () {
+      final tracks = album([
+        '01 Intro',
+        'Paranoid (Live)',
+        'War Pigs',
+        'Paranoid',
+      ]);
+      expect(folderTargetIndexes(tracks, 'black sabbath paranoid'), [3, 1]);
+      expect(folderTargetIndexes(tracks, 'black sabbath paranoid live'), [1, 3]);
+      expect(folderTargetIndexes(tracks, 'black sabbath'), isEmpty);
+      expect(folderTargetIndexes(tracks, ''), isEmpty);
+    });
+
+    test('folderTargetIndexes: equal scores keep folder order', () {
+      final tracks = album(['Iron Man', 'War Pigs', 'Planet Caravan']);
+      expect(folderTargetIndexes(tracks, 'war pigs iron man'), [0, 1]);
+    });
   });
 
   test('groupSearchEntries sets focus of folders from the query', () {
@@ -103,6 +121,8 @@ void main() {
     );
     expect(entries[0].focus, 1);
     expect(entries[0].focusTrack!.id, 'b');
+    expect(entries[0].targetTracks.map((t) => t.id), ['b']);
     expect(entries[1].focus, isNull);
+    expect(entries[1].targetTracks, isEmpty);
   });
 }
