@@ -399,8 +399,10 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
               SizedBox(
                 width: 28,
                 child: playing
+                    // Не акцентом: у серых обложек он сливается с фоном
+                    // играющей строки.
                     ? Icon(Icons.equalizer_rounded,
-                        size: 18, color: colors.accent)
+                        size: 18, color: colors.textPrimary)
                     : Text(
                         '${i + 1}',
                         style: TextStyle(
