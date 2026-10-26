@@ -1,14 +1,13 @@
 // lib/ui/pages/soulseek_settings_page.dart
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:vibration/vibration.dart';
 
+import '../../core/platform/haptic_helper.dart';
 import '../../core/providers.dart';
 import '../../core/secure_storage_diagnostics.dart';
 import '../../core/soulseek_credentials.dart';
@@ -24,202 +23,6 @@ import '../widgets/grouped_tiles.dart';
 import '../widgets/now_playing_overlay.dart';
 import '../widgets/snack.dart';
 import 'downloads_page.dart';
-
-// ============================================================
-//  HapticHelper
-// ============================================================
-
-class HapticHelper {
-  static bool _hasVibrator = false;
-  static bool _hasAmplitude = false;
-  static bool _checked = false;
-
-  static Future<void> initialize() async {
-    if (_checked) return;
-    if (!Platform.isAndroid && !Platform.isIOS) {
-      _hasVibrator = false;
-      _hasAmplitude = false;
-      _checked = true;
-      return;
-    }
-    try {
-      _hasVibrator = await Vibration.hasVibrator();
-      if (_hasVibrator) {
-        _hasAmplitude = await Vibration.hasAmplitudeControl();
-      }
-    } catch (_) {
-      _hasVibrator = false;
-      _hasAmplitude = false;
-    }
-    _checked = true;
-  }
-
-  static Future<void> _ensureChecked() async {
-    if (_checked) return;
-    await initialize();
-  }
-
-  static bool _isEnabled(WidgetRef? ref) {
-    if (ref == null) return true;
-    try {
-      return ref.read(vibrationEnabledProvider);
-    } catch (_) {
-      return true;
-    }
-  }
-
-  static Future<void> microTick({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.selectionClick();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 5, amplitude: 40);
-    } else {
-      await Vibration.vibrate(duration: 5);
-    }
-  }
-
-  static Future<void> light({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 80);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  static Future<void> medium({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 20, amplitude: 140);
-    } else {
-      await Vibration.vibrate(duration: 20);
-    }
-  }
-
-  static Future<void> strong({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.heavyImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 30, amplitude: 220);
-    } else {
-      await Vibration.vibrate(duration: 40);
-    }
-  }
-
-  static Future<void> weak({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(duration: 10, amplitude: 50);
-    } else {
-      await Vibration.vibrate(duration: 10);
-    }
-  }
-
-  static Future<void> confirmDelete({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(
-        pattern: [0, 30, 50, 20],
-        intensities: [0, 255, 0, 100],
-      );
-    } else {
-      await Vibration.vibrate(duration: 35);
-    }
-  }
-
-  static Future<void> error({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.vibrate();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(
-        pattern: [0, 50, 30, 50],
-        intensities: [0, 200, 0, 200],
-      );
-    } else {
-      await Vibration.vibrate(pattern: [0, 50, 30, 50]);
-    }
-  }
-
-  static Future<void> success({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.mediumImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(
-        pattern: [0, 20, 30, 40],
-        intensities: [0, 100, 0, 255],
-      );
-    } else {
-      await Vibration.vibrate(pattern: [0, 20, 30, 40]);
-    }
-  }
-
-  static Future<void> tripleTick({WidgetRef? ref}) async {
-    if (!_isEnabled(ref)) return;
-    await _ensureChecked();
-    if (!_hasVibrator) {
-      await HapticFeedback.lightImpact();
-      await Future.delayed(const Duration(milliseconds: 60));
-      await HapticFeedback.lightImpact();
-      await Future.delayed(const Duration(milliseconds: 60));
-      await HapticFeedback.lightImpact();
-      return;
-    }
-    if (_hasAmplitude) {
-      await Vibration.vibrate(
-        pattern: [0, 15, 40, 15, 40, 15],
-        intensities: [0, 120, 0, 120, 0, 120],
-      );
-    } else {
-      await Vibration.vibrate(pattern: [0, 15, 40, 15, 40, 15]);
-    }
-  }
-
-  static void reset() {
-    _checked = false;
-    _hasVibrator = false;
-    _hasAmplitude = false;
-  }
-}
-
-// ============================================================
-//  Soulseek Settings Page
-// ============================================================
 
 final SoulseekSettingsRepository _repo = SoulseekSettingsRepository.instance;
 
@@ -1643,7 +1446,7 @@ class _InlineTextField extends StatelessWidget {
                 ),
               ),
             ),
-            if (trailing != null) trailing!,
+            ?trailing,
           ],
         ),
       ),

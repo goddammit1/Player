@@ -201,7 +201,13 @@ const eventsChannel = MethodChannel('soulseek/events');
 
 Widget wrap(Widget home) {
   return ProviderScope(
-    overrides: [playerServiceProvider.overrideWithValue(_FakePlayer())],
+    overrides: [
+      playerServiceProvider.overrideWithValue(_FakePlayer()),
+      // Страница вибрирует на тапах (HapticHelper читает этот провайдер):
+      // без seeded ленивая загрузка из БД пишет state после dispose.
+      vibrationEnabledProvider
+          .overrideWith((ref) => VibrationNotifier.seeded(false)),
+    ],
     child: MaterialApp(home: home),
   );
 }
@@ -408,7 +414,7 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════════
 
   testWidgets(
-      'Cancel во время подключения: статус Disconnected, поздний ответ '
+      'Cancel во время подключения: строка статуса скрыта, поздний ответ '
       'connect не применяется и разрывается', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 3000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -416,11 +422,14 @@ void main() {
       await tester.runAsync(() async {
         await openPageAndTapConnect(tester);
         expect(find.text('Cancel'), findsOneWidget);
+        expect(find.text('Connecting…'), findsOneWidget);
 
+        // Без соединения строка статуса не показывается — только Connect.
         await tester.tap(find.text('Cancel'));
         await Future<void>.delayed(const Duration(milliseconds: 50));
         await tester.pump();
-        expect(find.text('Disconnected'), findsOneWidget);
+        expect(find.text('Connecting…'), findsNothing);
+        expect(find.text('Disconnected'), findsNothing);
         expect(find.text('Connect'), findsOneWidget);
 
         // Натив всё-таки вошёл — страница не показывает «Connected»
@@ -429,7 +438,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         await tester.pump();
         expect(find.text('Connected'), findsNothing);
-        expect(find.text('Disconnected'), findsOneWidget);
+        expect(find.text('Connect'), findsOneWidget);
         expect(disconnectCalls, 2);
         expect(find.textContaining('Connection failed'), findsNothing);
       });
@@ -439,7 +448,8 @@ void main() {
     }
   });
 
-  testWidgets('после входа логин в статусе, Save неактивна без правок',
+  testWidgets(
+      'после входа логин в статусе, Save появляется только после правки',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 3000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -455,15 +465,24 @@ void main() {
         await tester.pump(const Duration(milliseconds: 400));
 
         expect(find.text('as user'), findsOneWidget);
-        // Поля остаются (смена аккаунта), Save ждёт правки.
-        expect(find.text('Save'), findsOneWidget);
+        // Поля остаются (смена аккаунта); без правок кнопки сохранения нет.
+        expect(find.text('Save'), findsNothing);
+        expect(find.text('Save and reconnect'), findsNothing);
+
+        await tester.enterText(find.byType(TextField).at(1), 'other');
+        await tester.pump(const Duration(milliseconds: 400));
         final save = tester.widget<InkWell>(
           find.ancestor(
-            of: find.text('Save'),
+            of: find.text('Save and reconnect'),
             matching: find.byType(InkWell),
           ),
         );
-        expect(save.onTap, isNull);
+        expect(save.onTap, isNotNull);
+
+        // Вернули прежний пароль — правок нет, кнопка снова скрыта.
+        await tester.enterText(find.byType(TextField).at(1), 'pass');
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.text('Save and reconnect'), findsNothing);
       });
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -600,8 +619,9 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         await tester.pump();
         expect(disconnectCalls, 1);
-        // Статус + snack «Disconnected» от обычного disconnect.
-        expect(find.text('Disconnected'), findsNWidgets(2));
+        // Только snack «Disconnected» от обычного disconnect: без соединения
+        // строка статуса скрыта.
+        expect(find.text('Disconnected'), findsOneWidget);
         expect(find.text('Reconnecting…'), findsNothing);
         expect(find.text('Connect'), findsOneWidget);
         expect(connectCalls, 0);
@@ -664,8 +684,12 @@ void main() {
         expect(find.text('Connected'), findsOneWidget);
 
         // Опечатка в пароле → кнопка предлагает переподключиться.
+        // Кнопка появляется в группе через AnimatedSize — даём ей раскрыться,
+        // иначе тап попадает мимо. Анимация стартует в кадре, где замечен
+        // новый размер, поэтому сначала обычный кадр, потом время.
         await tester.enterText(find.byType(TextField).at(1), 'typo');
         await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
         expect(find.text('Save and reconnect'), findsOneWidget);
 
         connectError = PlatformException(
