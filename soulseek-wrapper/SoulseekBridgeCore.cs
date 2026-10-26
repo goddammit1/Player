@@ -348,6 +348,7 @@ namespace Soulseek.Wrapper
                 lock (resultsLock)
                 {
                     int responseIndex = responseCount++;
+                    int fileIndex = 0;
                     foreach (var file in response.Files)
                     {
                         if (results.Count >= fileLimit)
@@ -357,8 +358,10 @@ namespace Soulseek.Wrapper
 
                         if (PassesFileFilter(file, filters))
                         {
-                            results.Add(MapSearchResult(req.RequestId, responseIndex, response, file));
+                            results.Add(MapSearchResult(req.RequestId, responseIndex, fileIndex, response, file));
                         }
+
+                        fileIndex++;
                     }
                 }
 
@@ -1255,11 +1258,13 @@ namespace Soulseek.Wrapper
         //  Внутренние хелперы — маппинг и фильтрация
         // ─────────────────────────────────────────────────────────────────────
 
-        private static SearchResultDto MapSearchResult(string requestId, int responseIndex, SearchResponse response, SlskFile file)
+        private static SearchResultDto MapSearchResult(string requestId, int responseIndex, int fileIndex, SearchResponse response, SlskFile file)
         {
             return new SearchResultDto
             {
-                ResultId = requestId + "_" + responseIndex + "_" + file.Code,
+                // Индекс файла в ответе, а не file.Code: Code у всех файлов ответа
+                // одинаковый (обычно 1), и id файлов одной папки совпадали.
+                ResultId = requestId + "_" + responseIndex + "_" + fileIndex,
                 Username = response.Username,
                 Filename = file.Filename,
                 SizeBytes = file.Size,

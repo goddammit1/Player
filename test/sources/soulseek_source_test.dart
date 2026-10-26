@@ -2732,6 +2732,23 @@ void main() {
       expect(tracks[2].extra.containsKey('folderKey'), isFalse);
     });
 
+    test('files of one response sharing a resultId still form the folder',
+        () async {
+      // Старый мост собирал resultId из file.Code — одинаковый у всех
+      // файлов ответа; от папки оставался один первый файл.
+      channel.searchResults = [
+        for (final name in ['01 - Battery', '02 - Master of Puppets'])
+          _searchResult(
+            resultId: 'req_0_1',
+            username: 'peerA',
+            filename: 'Metallica\\Master of Puppets\\$name.flac',
+          ),
+      ];
+      final tracks = await source.search('metallica master of puppets');
+      expect(tracks.map((t) => t.title), ['Battery', 'Master of Puppets']);
+      expect(tracks.every((t) => t.extra['folderKey'] != null), isTrue);
+    });
+
     test(
       'same folder content at another peer → folderPeers, not a copy',
       () async {

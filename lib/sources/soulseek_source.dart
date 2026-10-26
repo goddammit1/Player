@@ -2373,7 +2373,6 @@ class _SearchAccumulator {
   }) toTrack;
 
   final _seenPeerFiles = <String>{};
-  final _seenIds = <String>{};
   final _entries = <_Entry>[];
   final _groupByKey = <String, _ResultGroup>{};
   final _groupByFile = <String, _ResultGroup>{};
@@ -2386,15 +2385,14 @@ class _SearchAccumulator {
     for (final r in batch) {
       // Пост-фильтрация на Dart-стороне (дублирование native-фильтров).
       if (!filters.matches(r)) continue;
-      // Точные повторы — тот же resultId или тот же файл того же пира
-      // (P4-защита: дубликаты resultId давали несколько треков с одинаковым
-      // globalId → мульти-подсветка «играющих»). Здесь же отсеивается
-      // повтор дельт в итоговом списке поиска.
+      // Точные повторы — тот же файл того же пира (P4-защита: повтор давал
+      // несколько треков с одинаковым globalId → мульти-подсветка
+      // «играющих»). Здесь же отсеивается повтор дельт в итоговом списке
+      // поиска. По resultId не дедуплицируем: старый мост собирал его из
+      // file.Code, одинакового у всех файлов ответа, и от папки пира
+      // оставался один первый файл.
       final peerFileKey = '${r.username}|${r.filename}|${r.sizeBytes}';
-      if (_seenPeerFiles.contains(peerFileKey)) continue;
-      if (r.resultId.isNotEmpty && _seenIds.contains(r.resultId)) continue;
-      _seenPeerFiles.add(peerFileKey);
-      if (r.resultId.isNotEmpty) _seenIds.add(r.resultId);
+      if (!_seenPeerFiles.add(peerFileKey)) continue;
       fresh.add(r);
     }
     if (fresh.isEmpty) return false;
