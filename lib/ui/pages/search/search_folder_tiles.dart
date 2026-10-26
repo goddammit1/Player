@@ -10,17 +10,25 @@ import '../../widgets/soulseek_folder_sheet.dart';
 class SearchEntry {
   SearchEntry.track(Track track)
       : tracks = [track],
-        isFolder = false;
+        isFolder = false,
+        focus = null;
 
-  SearchEntry.folder(this.tracks) : isFolder = true;
+  SearchEntry.folder(this.tracks, {this.focus}) : isFolder = true;
 
   final List<Track> tracks;
   final bool isFolder;
+
+  /// Трек папки, который искали ([folderFocusIndex]); null — искали саму
+  /// папку (альбом) или совпадение неочевидно.
+  final int? focus;
+
+  Track? get focusTrack => focus == null ? null : tracks[focus!];
 }
 
 /// Сворачивает треки папок в [SearchEntry.folder] на месте первого трека
-/// папки; остальные треки — по одному.
-List<SearchEntry> groupSearchEntries(List<Track> tracks) {
+/// папки; остальные треки — по одному. [query] — запрос поиска: по нему в
+/// папке находится искомый трек ([SearchEntry.focus]).
+List<SearchEntry> groupSearchEntries(List<Track> tracks, {String query = ''}) {
   final entries = <SearchEntry>[];
   final folders = <String, List<Track>>{};
   for (final t in tracks) {
@@ -38,8 +46,63 @@ List<SearchEntry> groupSearchEntries(List<Track> tracks) {
     folders[key] = list;
     entries.add(SearchEntry.folder(list));
   }
-  return entries;
+  return [
+    for (final e in entries)
+      e.isFolder
+          ? SearchEntry.folder(e.tracks,
+              focus: folderFocusIndex(e.tracks, query))
+          : e,
+  ];
 }
+
+/// Индекс трека [tracks], который искали запросом [query], или null.
+///
+/// Пир отвечает файлами, у которых слова запроса есть где-то в пути, — если
+/// слова названия трека входят и в название папки (заглавный трек альбома),
+/// совпадает весь альбом, и без этого карточка играла бы первый трек.
+/// Кандидат — трек, все слова названия которого (без скобок «(Live)»,
+/// «[Remastered]» и номера) есть в запросе; из нескольких выигрывает более
+/// длинное название, затем меньше лишних слов в полном названии.
+int? folderFocusIndex(List<Track> tracks, String query) {
+  final q = _words(query).toSet();
+  if (q.isEmpty) return null;
+  int? best;
+  var bestScore = 0;
+  for (var i = 0; i < tracks.length; i++) {
+    final title = tracks[i].title;
+    final core = _titleWords(title.replaceAll(_brackets, ' '));
+    if (core.isEmpty || !core.every(q.contains)) continue;
+    final extra = _titleWords(title).where((w) => !q.contains(w)).length;
+    final score = core.length * 100 - extra;
+    if (best == null || score > bestScore) {
+      best = i;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+final _brackets = RegExp(r'\([^)]*\)|\[[^\]]*\]|\{[^}]*\}');
+final _nonWord = RegExp(r'[^\p{L}\p{N}]+', unicode: true);
+final _digits = RegExp(r'^\d+$');
+
+List<String> _words(String s) => s
+    .toLowerCase()
+    .replaceAll('ё', 'е')
+    .split(_nonWord)
+    .where((w) => w.isNotEmpty)
+    .toList();
+
+/// Слова названия без ведущего номера трека («01 Title» → [title]).
+List<String> _titleWords(String title) =>
+    _words(title).skipWhile(_digits.hasMatch).toList();
+
+/// Заголовки карточки: искомый трек и «исполнитель · папка» или, без
+/// [focus], папка и исполнитель.
+(String, String) _folderTitles(SoulseekFolderInfo info, Track? focus) =>
+    focus == null
+        ? (info.name, info.artist)
+        : (focus.title, '${info.artist} · ${info.name}');
 
 /// Строка «пользователь · N tracks · FLAC · ×2» под названием папки.
 String _folderMeta(SoulseekFolderInfo info, int count) => [
@@ -56,6 +119,7 @@ class SearchFolderTileList extends StatelessWidget {
   const SearchFolderTileList({
     super.key,
     required this.tracks,
+    this.focus,
     required this.isPlaying,
     required this.onPlay,
     required this.colors,
@@ -63,17 +127,21 @@ class SearchFolderTileList extends StatelessWidget {
 
   final List<Track> tracks;
 
+  /// Искомый трек папки ([SearchEntry.focusTrack]).
+  final Track? focus;
+
   /// Играет один из треков папки.
   final bool isPlaying;
 
-  /// Воспроизвести папку с начала.
+  /// Воспроизвести папку — с [focus] или с начала.
   final VoidCallback onPlay;
   final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     final info = SoulseekFolderInfo.of(tracks);
-    final first = tracks.first;
+    final first = focus ?? tracks.first;
+    final (title, subtitle) = _folderTitles(info, focus);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 3),
       decoration: BoxDecoration(
@@ -83,7 +151,7 @@ class SearchFolderTileList extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () => showSoulseekFolderSheet(context, tracks),
+          onTap: () => showSoulseekFolderSheet(context, tracks, focus: focus),
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -124,7 +192,7 @@ class SearchFolderTileList extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        info.name,
+                        title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -135,7 +203,7 @@ class SearchFolderTileList extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        info.artist,
+                        subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -177,7 +245,7 @@ class SearchFolderTileList extends StatelessWidget {
                     color: colors.textPrimary,
                   ),
                   iconSize: 30,
-                  tooltip: 'Play folder',
+                  tooltip: focus == null ? 'Play folder' : 'Play',
                 ),
               ],
             ),
@@ -196,21 +264,26 @@ class SearchFolderTileGrid extends StatelessWidget {
   const SearchFolderTileGrid({
     super.key,
     required this.tracks,
+    this.focus,
     required this.isPlaying,
     required this.colors,
   });
 
   final List<Track> tracks;
+
+  /// Искомый трек папки ([SearchEntry.focusTrack]).
+  final Track? focus;
   final bool isPlaying;
   final dynamic colors;
 
   @override
   Widget build(BuildContext context) {
     final info = SoulseekFolderInfo.of(tracks);
-    final first = tracks.first;
+    final first = focus ?? tracks.first;
+    final (title, subtitle) = _folderTitles(info, focus);
     final radius = SmoothBorderRadius(cornerRadius: 40, cornerSmoothing: 1.0);
     return GestureDetector(
-      onTap: () => showSoulseekFolderSheet(context, tracks),
+      onTap: () => showSoulseekFolderSheet(context, tracks, focus: focus),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final side = constraints.maxWidth;
@@ -299,7 +372,7 @@ class SearchFolderTileGrid extends StatelessWidget {
                   right: 16,
                   bottom: 24,
                   child: Text(
-                    info.name,
+                    title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -314,7 +387,7 @@ class SearchFolderTileGrid extends StatelessWidget {
                   right: 16,
                   bottom: 12,
                   child: Text(
-                    info.artist,
+                    subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(

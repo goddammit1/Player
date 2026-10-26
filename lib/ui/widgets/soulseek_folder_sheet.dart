@@ -80,13 +80,17 @@ class SoulseekFolderInfo {
 }
 
 /// Показывает шторку папки, в которой лежат [tracks] (треки одного пира и
-/// одного каталога).
-Future<void> showSoulseekFolderSheet(BuildContext context, List<Track> tracks) {
+/// одного каталога). [focus] — искомый трек: выделен, список прокручен к нему.
+Future<void> showSoulseekFolderSheet(
+  BuildContext context,
+  List<Track> tracks, {
+  Track? focus,
+}) {
   if (tracks.isEmpty) return Future.value();
   if (isDesktop) {
     return showDesktopModalSheet(
       context: context,
-      builder: (_) => SoulseekFolderSheet(tracks: tracks),
+      builder: (_) => SoulseekFolderSheet(tracks: tracks, focus: focus),
     );
   }
   return showModalBottomSheet<void>(
@@ -94,15 +98,18 @@ Future<void> showSoulseekFolderSheet(BuildContext context, List<Track> tracks) {
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.black.withValues(alpha: 0.5),
-    builder: (_) => SoulseekFolderSheet(tracks: tracks),
+    builder: (_) => SoulseekFolderSheet(tracks: tracks, focus: focus),
   );
 }
 
 class SoulseekFolderSheet extends ConsumerStatefulWidget {
-  const SoulseekFolderSheet({super.key, required this.tracks});
+  const SoulseekFolderSheet({super.key, required this.tracks, this.focus});
 
   /// Известные треки папки (из выдачи поиска).
   final List<Track> tracks;
+
+  /// Искомый трек папки (см. `folderFocusIndex`).
+  final Track? focus;
 
   @override
   ConsumerState<SoulseekFolderSheet> createState() =>
@@ -114,10 +121,24 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
   bool _loading = false;
   bool _failed = false;
 
+  /// Строка искомого трека — для прокрутки к нему.
+  final _focusKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
+    _scrollToFocus();
     _loadFolder();
+  }
+
+  /// Прокручивает список к [SoulseekFolderSheet.focus] после кадра.
+  void _scrollToFocus() {
+    if (widget.focus == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _focusKey.currentContext;
+      if (ctx == null || !ctx.mounted) return;
+      Scrollable.ensureVisible(ctx, alignment: 0.3);
+    });
   }
 
   Future<void> _loadFolder() async {
@@ -131,6 +152,8 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
         _tracks = full;
         _loading = false;
       });
+      // В полной папке искомый трек мог сместиться.
+      _scrollToFocus();
     } catch (_) {
       // Пир офлайн / не принял соединение — остаются совпавшие файлы.
       if (!mounted) return;
@@ -303,85 +326,107 @@ class _SoulseekFolderSheetState extends ConsumerState<SoulseekFolderSheet> {
       stream: player.mediaItem,
       builder: (context, snap) {
         final currentId = snap.data?.id;
-        return ListView.builder(
+        final focusId = widget.focus?.globalId;
+        // Не ленивый список: строка искомого трека должна быть построена,
+        // чтобы к ней прокрутить (в папке десятки треков).
+        return ListView(
           padding: EdgeInsets.fromLTRB(8, 6, 8, bottomInset + 12),
-          itemCount: _tracks.length,
-          itemBuilder: (context, i) {
-            final t = _tracks[i];
-            final playing = currentId != null && currentId == t.globalId;
-            final duration = t.duration;
-            return Material(
-              color: playing ? colors.elevatedHi : Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () => _play(i),
-                onLongPress: () => showTrackSettingsSheet(context, track: t),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 28,
-                        child: playing
-                            ? Icon(Icons.equalizer_rounded,
-                                size: 18, color: colors.accent)
-                            : Text(
-                                '${i + 1}',
-                                style: TextStyle(
-                                  color: colors.textTertiary,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                      ),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              t.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: colors.textPrimary,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            if (t.qualityLabel != null &&
-                                t.qualityLabel!.isNotEmpty)
-                              Text(
-                                t.qualityLabel!,
-                                style: TextStyle(
-                                  color: colors.textTertiary,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      if (duration != null)
-                        Text(
-                          '${duration.inMinutes}:'
-                          '${(duration.inSeconds % 60).toString().padLeft(2, '0')}',
-                          style: TextStyle(
-                            color: colors.textSecondary,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
+          children: [
+            for (var i = 0; i < _tracks.length; i++)
+              _buildRow(
+                i,
+                colors,
+                playing: currentId != null && currentId == _tracks[i].globalId,
+                focused: focusId != null && focusId == _tracks[i].globalId,
               ),
-            );
-          },
+          ],
         );
       },
+    );
+  }
+
+  Widget _buildRow(
+    int i,
+    dynamic colors, {
+    required bool playing,
+    required bool focused,
+  }) {
+    final t = _tracks[i];
+    final duration = t.duration;
+    return Material(
+      key: focused ? _focusKey : null,
+      // Искомый трек — фоном: акцент палитры обложки бывает неотличим от
+      // фона строки.
+      color: playing
+          ? colors.elevatedHi
+          : focused
+              ? colors.elevated
+              : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _play(i),
+        onLongPress: () => showTrackSettingsSheet(context, track: t),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 28,
+                child: playing
+                    ? Icon(Icons.equalizer_rounded,
+                        size: 18, color: colors.accent)
+                    : Text(
+                        '${i + 1}',
+                        style: TextStyle(
+                          color: colors.textTertiary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      t.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: focused ? FontWeight.w700 : FontWeight.w600,
+                      ),
+                    ),
+                    if (t.qualityLabel != null &&
+                        t.qualityLabel!.isNotEmpty)
+                      Text(
+                        t.qualityLabel!,
+                        style: TextStyle(
+                          color: colors.textTertiary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (duration != null)
+                Text(
+                  '${duration.inMinutes}:'
+                  '${(duration.inSeconds % 60).toString().padLeft(2, '0')}',
+                  style: TextStyle(
+                    color: colors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

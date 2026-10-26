@@ -276,7 +276,8 @@ class _SearchPageState extends ConsumerState<SearchPage>
     dynamic colors,
   ) {
     final player = ref.read(playerServiceProvider);
-    final entries = groupSearchEntries(tracks);
+    final entries =
+        groupSearchEntries(tracks, query: ref.read(searchProvider).query);
     bool playing(SearchEntry e, String? currentId) =>
         currentId != null && e.tracks.any((t) => t.globalId == currentId);
     if (viewMode == SearchViewMode.grid) {
@@ -298,6 +299,7 @@ class _SearchPageState extends ConsumerState<SearchPage>
                 if (e.isFolder) {
                   return SearchFolderTileGrid(
                     tracks: e.tracks,
+                    focus: e.focusTrack,
                     isPlaying: playing(e, currentId),
                     colors: colors,
                   );
@@ -327,8 +329,9 @@ class _SearchPageState extends ConsumerState<SearchPage>
               if (e.isFolder) {
                 return SearchFolderTileList(
                   tracks: e.tracks,
+                  focus: e.focusTrack,
                   isPlaying: playing(e, currentId),
-                  onPlay: () => _playFolder(e.tracks),
+                  onPlay: () => _playFolder(e.tracks, e.focus ?? 0),
                   colors: colors,
                 );
               }
@@ -349,9 +352,12 @@ class _SearchPageState extends ConsumerState<SearchPage>
     );
   }
 
-  /// Папка Soulseek с первого трека; очередь — только треки папки.
-  void _playFolder(List<Track> tracks) {
-    ref.read(playerServiceProvider).setQueue(List.of(tracks));
+  /// Папка Soulseek с трека [startIndex] (искомого, см. [SearchEntry.focus]);
+  /// очередь — только треки папки.
+  void _playFolder(List<Track> tracks, int startIndex) {
+    ref
+        .read(playerServiceProvider)
+        .setQueue(List.of(tracks), startIndex: startIndex);
   }
 
   /// Заголовок изолированной секции — имена её источников («Soulseek»).
