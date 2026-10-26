@@ -408,6 +408,38 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
   /// Сбрасывает кэш выдачи (например, после смены фильтров в настройках).
   void clearSearchCache() => _searchCache.clear();
 
+  /// Сколько ждать первого ответа, прежде чем повторить запрос с
+  /// [wildcardQuery]. Сеть молча отбрасывает запросы с некоторыми именами
+  /// исполнителей («deftones», «lady gaga»): ни один пир не отвечает за весь
+  /// бюджет. Обычный запрос получает первые ответы за 2–4 с.
+  @visibleForTesting
+  Duration wildcardRetryDelay = const Duration(seconds: 8);
+
+  /// Верхняя граница длительности поиска: ожидание ответа до повтора
+  /// (не дольше бюджета) плюс полный бюджет повтора.
+  Duration get maxSearchDuration {
+    final budget = Duration(milliseconds: searchTimeoutMs);
+    final wait = budget < wildcardRetryDelay ? budget : wildcardRetryDelay;
+    return wait + budget;
+  }
+
+  /// Запрос с `*` вместо первой буквы каждого слова: так заблокированное
+  /// имя проходит («deftones» → «*eftones»), а пиры находят то же самое.
+  /// Слова короче трёх символов и исключения (`-live`) не трогаются: из
+  /// «of» вышел бы однобуквенный терм. Null — менять нечего.
+  @visibleForTesting
+  static String? wildcardQuery(String query) {
+    final words = query.trim().split(RegExp(r'\s+'));
+    final wild = [
+      for (final w in words)
+        w.length < 3 || w.startsWith('-') || w.startsWith('*')
+            ? w
+            : '*${w.substring(1)}',
+    ];
+    final result = wild.join(' ');
+    return result == words.join(' ') ? null : result;
+  }
+
   @override
   Future<List<Track>> search(String query, {int limit = searchResultLimit}) =>
       searchProgressive(query, limit: limit)
@@ -489,26 +521,50 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
       }
 
       // Подписка до запуска поиска — иначе первые дельты потерялись бы.
+      // Повтор идёт с тем же requestId (первый поиск к тому моменту
+      // завершён), так что подписка и отмена по [run.requestId] работают
+      // для обоих.
+      var answered = false;
       progressSub = _channel.searchProgress
           .where((e) => e.requestId == run.requestId)
           .listen((e) {
+        if (e.results.isNotEmpty) answered = true;
         if (acc.addBatch(e.results)) run.publish(acc.snapshot());
       });
 
-      final results = await _channel.search(
-        requestId: run.requestId,
-        query: q,
-        timeoutMs: searchTimeoutMs,
-        idleTimeoutMs: searchIdleTimeoutMs,
-        responseLimit: searchResponseLimit,
-        fileLimit: searchFileLimit,
-        filters: searchFilters,
-      );
+      Future<List<SoulseekSearchResult>> nativeSearch(String query) =>
+          _channel.search(
+            requestId: run.requestId,
+            query: query,
+            timeoutMs: searchTimeoutMs,
+            idleTimeoutMs: searchIdleTimeoutMs,
+            responseLimit: searchResponseLimit,
+            fileLimit: searchFileLimit,
+            filters: searchFilters,
+          );
+
+      // Нет ни одного ответа за [wildcardRetryDelay] — запрос, похоже,
+      // заблокирован: останавливаем его и повторяем с [wildcardQuery].
+      final wildcard = wildcardQuery(q);
+      final retryTimer = wildcard == null
+          ? null
+          : Timer(wildcardRetryDelay, () {
+              if (!answered && !run.cancelled) {
+                unawaited(_channel.cancelSearch(run.requestId));
+              }
+            });
+      var results = await nativeSearch(q);
+      retryTimer?.cancel();
+      var searched = q;
+      if (wildcard != null && results.isEmpty && !run.cancelled) {
+        searched = wildcard;
+        results = await nativeSearch(wildcard);
+      }
       // Итоговый список — надмножество дельт: уже учтённое отсеет дедуп.
       acc.addBatch(results);
 
       if (kDebugMode) {
-        debugPrint('[Soulseek] search "$q": ${results.length} raw, '
+        debugPrint('[Soulseek] search "$searched": ${results.length} raw, '
             '${acc.snapshot().length} tracks after dedup+group+limit');
       }
     } on SoulseekException catch (e) {
@@ -522,9 +578,10 @@ class SoulseekSource implements TrackSource, ProgressiveSearchSource {
     }
 
     final tracks = acc.snapshot();
-    // В кэш — только полный ответ: отменённый поиск или ошибка (нет
-    // соединения) не должны на 10 минут подменять настоящую выдачу.
-    if (!run.cancelled && !failed) {
+    // В кэш — только полный непустой ответ: отменённый поиск, ошибка (нет
+    // соединения) или пустая выдача (пиры не ответили) не должны на
+    // 10 минут подменять настоящую.
+    if (!run.cancelled && !failed && tracks.isNotEmpty) {
       _searchCache
         ..remove(key)
         ..[key] = (at: DateTime.now(), tracks: tracks);

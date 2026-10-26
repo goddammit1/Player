@@ -76,6 +76,7 @@ class _TestChannel implements SoulseekChannel {
     searchCalls++;
     lastRequestId = requestId;
     lastSearchQuery = query;
+    searchQueries.add(query);
     lastSearchTimeoutMs = timeoutMs;
     lastIdleTimeoutMs = idleTimeoutMs;
     lastResponseLimit = responseLimit;
@@ -83,11 +84,15 @@ class _TestChannel implements SoulseekChannel {
     if (searchError != null) throw searchError!;
     final gate = searchGate;
     if (gate != null) return gate.future;
-    return searchResults;
+    return searchResultsByQuery[query] ?? searchResults;
   }
+
+  /// Ответы на конкретные запросы (повтор с `*`); прочие — [searchResults].
+  final Map<String, List<SoulseekSearchResult>> searchResultsByQuery = {};
 
   /// Число вызовов нативного search (проверка кэша / присоединения).
   int searchCalls = 0;
+  final List<String> searchQueries = [];
   String? lastRequestId;
 
   /// Если задан — search() ждёт его вместо немедленного ответа
@@ -858,7 +863,7 @@ void main() {
     });
 
     test('passes trimmed query to channel', () async {
-      channel.searchResults = [];
+      channel.searchResults = [_searchResult()];
       await source.search('  query  ');
       expect(channel.lastSearchQuery, 'query');
     });
@@ -2990,6 +2995,72 @@ void main() {
         expect(channel.searchCalls, 2);
       },
     );
+
+    test('empty result is not cached', () async {
+      channel.searchResults = [];
+      expect(await source.search('ab'), isEmpty);
+      channel.searchResults = [_searchResult()];
+      expect(await source.search('ab'), hasLength(1));
+      expect(channel.searchCalls, 2);
+    });
+
+    test('wildcardQuery replaces the first letter of words of 3+ chars', () {
+      expect(SoulseekSource.wildcardQuery('deftones'), '*eftones');
+      expect(SoulseekSource.wildcardQuery('Deftones  white pony'),
+          '*eftones *hite *ony');
+      expect(SoulseekSource.wildcardQuery('pink floyd dark side of the moon'),
+          '*ink *loyd *ark *ide of *he *oon');
+      expect(SoulseekSource.wildcardQuery('*eftones -live'), isNull);
+      expect(SoulseekSource.wildcardQuery('ab cd'), isNull);
+    });
+
+    test('no results → repeated with wildcards under the same requestId',
+        () async {
+      channel.searchResults = [];
+      channel.searchResultsByQuery['*eftones'] = [_searchResult()];
+      final tracks = await source.search('deftones');
+      expect(channel.searchQueries, ['deftones', '*eftones']);
+      expect(tracks, hasLength(1));
+      // Повтор нашёл треки — выдача кэшируется под исходным запросом.
+      await source.search('deftones');
+      expect(channel.searchCalls, 2);
+    });
+
+    test('no answer within the retry delay → native search is cancelled',
+        () async {
+      source.wildcardRetryDelay = const Duration(milliseconds: 20);
+      channel.searchGate = Completer();
+      final result = source.search('deftones');
+      await Future<void>.delayed(Duration.zero);
+      final requestId = channel.lastRequestId;
+
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(channel.cancelledSearches, [requestId]);
+
+      // Отменённый натив возвращает пустое накопленное → повтор с `*`.
+      final gate = channel.searchGate!;
+      channel.searchGate = null;
+      channel.searchResultsByQuery['*eftones'] = [_searchResult()];
+      gate.complete([]);
+      expect(await result, hasLength(1));
+      expect(channel.searchQueries, ['deftones', '*eftones']);
+      expect(channel.lastRequestId, requestId);
+    });
+
+    test('an answer before the retry delay keeps the original search',
+        () async {
+      source.wildcardRetryDelay = const Duration(milliseconds: 20);
+      channel.searchGate = Completer();
+      final result = source.search('deftones');
+      await Future<void>.delayed(Duration.zero);
+      channel.emitProgress([_searchResult()]);
+
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(channel.cancelledSearches, isEmpty);
+      channel.searchGate!.complete([_searchResult()]);
+      expect(await result, hasLength(1));
+      expect(channel.searchQueries, ['deftones']);
+    });
 
     test('failed search is not cached', () async {
       channel.searchError = const SoulseekException('NOT_CONNECTED', 'x');
